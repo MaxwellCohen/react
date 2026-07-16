@@ -555,9 +555,9 @@ describe('ReactDOMServerHydration', () => {
       const htmlString = ReactDOMServer.renderToString(<App />);
       container.innerHTML = htmlString;
 
+      // validate that the nonce attribute is hidden by getAttribute
+      // mimicking the behavior of browsers when CSP is enabled
       const script = container.querySelector('script');
-      // With CSP enabled, JSDOM simulates browser nonce hiding:
-      // getAttribute("nonce") === "" while .nonce remains accessible.
       expect(script.getAttribute('nonce')).toBe('');
       expect(script.nonce).toBe('r4nd0m');
 

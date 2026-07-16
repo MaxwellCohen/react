@@ -52,6 +52,11 @@ export function setupNonceHiding(Element: typeof Element) {
   };
 }
 
+/**
+ * Enables or disables the CSP nonce-hiding behavior installed by
+ * setupNonceHiding. Tests can toggle this per case to simulate browsers
+ * that hide nonce content attributes.
+ */
 export function setHideNonceAttribute(enabled: boolean) {
   const ElementCtor =
     typeof window !== 'undefined' ? window.Element : global.Element;
