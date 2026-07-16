@@ -13,10 +13,10 @@ module.exports.JSDOM = function JSDOM() {
 
   const {
     setupDocumentReadyState,
-    setupCSPNonceHiding,
+    setupNonceHiding,
   } = require('./ReactJSDOMUtils');
   setupDocumentReadyState(result.window.document, result.window.Event);
-  setupCSPNonceHiding(result.window.Element);
+  setupNonceHiding(result.window.Element);
 
   return result;
 };

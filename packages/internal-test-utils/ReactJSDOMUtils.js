@@ -38,7 +38,7 @@ export function setupDocumentReadyState(
  * accessible. JSDOM does not implement this, so we simulate it.
  * https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cryptographicnonce
  */
-export function setupCSPNonceHiding(Element: typeof Element) {
+export function setupNonceHiding(Element: typeof Element) {
   const originalGetAttribute = Element.prototype.getAttribute;
   Element.prototype.getAttribute = function (name: string) {
     if (
