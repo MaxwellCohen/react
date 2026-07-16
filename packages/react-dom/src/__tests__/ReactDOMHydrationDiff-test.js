@@ -1194,7 +1194,7 @@ describe('ReactDOMServerHydration', () => {
   describe('special nodes', () => {
     describe('Suspense', () => {
       function Never() {
-        throw new Promise(_ => {});
+        throw new Promise(resolve => {});
       }
 
       // @gate __DEV__
