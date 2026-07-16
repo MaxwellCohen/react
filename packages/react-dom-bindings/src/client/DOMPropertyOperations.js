@@ -42,9 +42,11 @@ export function getValueForAttribute(
       }
       return expected === undefined ? undefined : null;
     }
-    const tagName = node.tagName.toLowerCase();
-    const scriptNonce = tagName === "script" && name === "nonce";
-    const value = scriptNonce ? node.nonce : node.getAttribute(name);
+    // When CSP is enabled, browsers hide the nonce attribute
+    // so we need to access the nonce property directly
+    // https://html.spec.whatwg.org/multipage/urls-and-fetching.html#cryptographicnonce
+    const isNonce = name.toLowerCase() === 'nonce';
+    const value = isNonce ? (node as any).nonce : node.getAttribute(name);
     if (__DEV__) {
       checkAttributeStringCoercion(expected, name);
     }
