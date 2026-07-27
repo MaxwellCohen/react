@@ -4087,22 +4087,17 @@ function pushStartCustomElement(
             typeof propValue !== 'function' &&
             typeof propValue !== 'symbol'
           ) {
-            const prefix = attributeName.toLowerCase().slice(0, 5);
-            const propValueNeedsStringification =
-              prefix === 'data-' || prefix === 'aria-';
-            if (
-              propValueNeedsStringification &&
-              typeof propValue === 'boolean'
-            ) {
-              // aria and data attributes are stringified as 'true' if they have the boolean value `true`
-              // this is because data-foo="true" is the same as data-foo on the DOM
-              propValue = propValue ? 'true' : 'false';
-              // $FlowFixMe[invalid-compare]
-            } else if (propValue === false) {
-              continue;
-              // $FlowFixMe[invalid-compare]
-            } else if (propValue === true) {
-              propValue = '';
+            // Match pushAttribute / setValueForAttribute: aria-* and data-* booleans
+            // stringify ("true"/"false"). Other booleans use empty-string presence.
+            if (typeof propValue === 'boolean') {
+              const prefix = attributeName.toLowerCase().slice(0, 5);
+              if (prefix !== 'data-' && prefix !== 'aria-') {
+                // $FlowFixMe[invalid-compare]
+                if (propValue === false) {
+                  continue;
+                }
+                propValue = '';
+              }
             } else if (typeof propValue === 'object') {
               continue;
             }
