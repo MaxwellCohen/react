@@ -1,5 +1,6 @@
 {
   "packages": ["packages/react", "packages/react-dom", "packages/react-server-dom-webpack", "packages/scheduler"],
+  "installCommand": "install:csb",
   "buildCommand": "download-build-in-codesandbox-ci",
   "node": "20",
   "publishDirectory": {
