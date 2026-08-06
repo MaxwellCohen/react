@@ -132,6 +132,11 @@ export const enableNoCloningMemoCache: boolean = false;
 // (handled with an MutationObserver) instead of inline-scripts
 export const enableFizzExternalRuntime = __EXPERIMENTAL__;
 
+// Use Declarative Partial Updates (<?start/end> + <template for>) for Suspense
+// streaming so the browser performs the default fallback replacement.
+// Off by default until the experimental HTML shape is reflected across Fizz tests.
+export const enableFizzDeclarativePartialUpdates = true;
+
 export const alwaysThrottleRetries: boolean = true;
 
 // Gate whether useEffectEvent uses the mutation phase (true) or before-mutation

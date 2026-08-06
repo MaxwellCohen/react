@@ -5,6 +5,7 @@
 import {
   clientRenderBoundary,
   completeBoundary,
+  completeBoundaryDeclarative,
   completeBoundaryWithStyles,
   completeSegment,
   listenToFormSubmissionsForReplaying,
@@ -22,6 +23,7 @@ window['$RV'] = revealCompletedBoundariesWithViewTransitions.bind(
   revealCompletedBoundaries,
 );
 window['$RC'] = completeBoundary;
+window['$RP'] = completeBoundaryDeclarative;
 window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
 

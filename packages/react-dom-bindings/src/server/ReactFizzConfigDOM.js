@@ -37,6 +37,7 @@ import {
   enableFizzBlockingRender,
   enableViewTransition,
   enableViewTransitionParentEnterExit,
+  enableFizzDeclarativePartialUpdates,
 } from 'shared/ReactFeatureFlags';
 
 import type {
@@ -81,6 +82,7 @@ import isArray from 'shared/isArray';
 import {
   clientRenderBoundary as clientRenderFunction,
   completeBoundary as completeBoundaryFunction,
+  completeBoundaryDeclarative as completeBoundaryDeclarativeFunction,
   completeBoundaryUpgradeToViewTransitions as upgradeToViewTransitionsInstruction,
   completeBoundaryWithStyles as styleInsertionFunction,
   completeSegment as completeSegmentFunction,
@@ -125,16 +127,17 @@ const ScriptStreamingFormat: StreamingFormat = 0;
 const DataStreamingFormat: StreamingFormat = 1;
 
 export type InstructionState = number;
-const NothingSent /*                      */ = 0b000000000;
-const SentCompleteSegmentFunction /*      */ = 0b000000001;
-const SentCompleteBoundaryFunction /*     */ = 0b000000010;
-const SentClientRenderFunction /*         */ = 0b000000100;
-const SentStyleInsertionFunction /*       */ = 0b000001000;
-const SentFormReplayingRuntime /*         */ = 0b000010000;
-const SentCompletedShellId /*             */ = 0b000100000;
-const SentMarkShellTime /*                */ = 0b001000000;
-const NeedUpgradeToViewTransitions /*     */ = 0b010000000;
-const SentUpgradeToViewTransitions /*     */ = 0b100000000;
+const NothingSent /*                      */ = 0b0000000000;
+const SentCompleteSegmentFunction /*      */ = 0b0000000001;
+const SentCompleteBoundaryFunction /*     */ = 0b0000000010;
+const SentClientRenderFunction /*         */ = 0b0000000100;
+const SentStyleInsertionFunction /*       */ = 0b0000001000;
+const SentFormReplayingRuntime /*         */ = 0b0000010000;
+const SentCompletedShellId /*             */ = 0b0000100000;
+const SentMarkShellTime /*                */ = 0b0001000000;
+const NeedUpgradeToViewTransitions /*     */ = 0b0010000000;
+const SentUpgradeToViewTransitions /*     */ = 0b0100000000;
+const SentCompleteDeclarativeBoundaryFunction /* */ = 0b1000000000;
 
 type NonceOption =
   | string
@@ -4650,6 +4653,11 @@ const startPendingSuspenseBoundary1 = stringToPrecomputedChunk(
   '<!--$?--><template id="',
 );
 const startPendingSuspenseBoundary2 = stringToPrecomputedChunk('"></template>');
+const startPendingSuspenseBoundaryDPU1 = stringToPrecomputedChunk(
+  '<!--$?--><?start name="',
+);
+const startPendingSuspenseBoundaryDPU2 = stringToPrecomputedChunk('">');
+const endPendingSuspenseBoundaryDPU = stringToPrecomputedChunk('<?end>');
 const startClientRenderedSuspenseBoundary =
   stringToPrecomputedChunk('<!--$!-->');
 const endSuspenseBoundary = stringToPrecomputedChunk('<!--/$-->');
@@ -4680,8 +4688,6 @@ export function writeStartPendingSuspenseBoundary(
   renderState: RenderState,
   id: number,
 ): boolean {
-  writeChunk(destination, startPendingSuspenseBoundary1);
-
   // $FlowFixMe[invalid-compare]
   if (id === null) {
     throw new Error(
@@ -4689,6 +4695,14 @@ export function writeStartPendingSuspenseBoundary(
     );
   }
 
+  if (enableFizzDeclarativePartialUpdates) {
+    writeChunk(destination, startPendingSuspenseBoundaryDPU1);
+    writeChunk(destination, renderState.boundaryPrefix);
+    writeChunk(destination, stringToChunk(id.toString(16)));
+    return writeChunkAndReturn(destination, startPendingSuspenseBoundaryDPU2);
+  }
+
+  writeChunk(destination, startPendingSuspenseBoundary1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
   return writeChunkAndReturn(destination, startPendingSuspenseBoundary2);
@@ -4763,6 +4777,9 @@ export function writeEndPendingSuspenseBoundary(
   destination: Destination,
   renderState: RenderState,
 ): boolean {
+  if (enableFizzDeclarativePartialUpdates) {
+    writeChunk(destination, endPendingSuspenseBoundaryDPU);
+  }
   return writeChunkAndReturn(destination, endSuspenseBoundary);
 }
 export function writeEndClientRenderedSuspenseBoundary(
@@ -4904,6 +4921,40 @@ export function writeEndSegment(
   }
 }
 
+const startDeclarativeBoundaryContent1 = stringToPrecomputedChunk(
+  '<template for="',
+);
+const startDeclarativeBoundaryContent2 = stringToPrecomputedChunk('">');
+const endDeclarativeBoundaryMarker1 = stringToPrecomputedChunk(
+  '<?marker name="',
+);
+const endDeclarativeBoundaryMarker2 = stringToPrecomputedChunk('">');
+const endDeclarativeBoundaryTemplate =
+  stringToPrecomputedChunk('</template>');
+
+export function writeStartDeclarativeBoundaryContent(
+  destination: Destination,
+  renderState: RenderState,
+  id: number,
+): boolean {
+  writeChunk(destination, startDeclarativeBoundaryContent1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  return writeChunkAndReturn(destination, startDeclarativeBoundaryContent2);
+}
+
+export function writeEndDeclarativeBoundaryContent(
+  destination: Destination,
+  renderState: RenderState,
+  id: number,
+): boolean {
+  writeChunk(destination, endDeclarativeBoundaryMarker1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  writeChunk(destination, endDeclarativeBoundaryMarker2);
+  return writeChunkAndReturn(destination, endDeclarativeBoundaryTemplate);
+}
+
 const completeSegmentScript1Full = stringToPrecomputedChunk(
   completeSegmentFunction + '$RS("',
 );
@@ -4966,10 +5017,15 @@ export function writeCompletedSegmentInstruction(
 const completeBoundaryScriptFunctionOnly = stringToPrecomputedChunk(
   completeBoundaryFunction,
 );
+const completeBoundaryDeclarativeScriptFunctionOnly = stringToPrecomputedChunk(
+  completeBoundaryDeclarativeFunction,
+);
 const completeBoundaryUpgradeToViewTransitionsInstruction = stringToChunk(
   upgradeToViewTransitionsInstruction,
 );
 const completeBoundaryScript1Partial = stringToPrecomputedChunk('$RC("');
+const completeBoundaryDeclarativeScript1Partial =
+  stringToPrecomputedChunk('$RP("');
 
 const completeBoundaryWithStylesScript1FullPartial = stringToPrecomputedChunk(
   styleInsertionFunction + '$RR("',
@@ -5119,6 +5175,36 @@ export function writeCompletedBoundaryInstruction(
   } else {
     writeMore = writeChunkAndReturn(destination, completeBoundaryDataEnd);
   }
+  return writeBootstrap(destination, renderState) && writeMore;
+}
+
+export function writeCompletedDeclarativeBoundaryInstruction(
+  destination: Destination,
+  resumableState: ResumableState,
+  renderState: RenderState,
+  id: number,
+): boolean {
+  // Always use an inline script for $RP. The external-runtime / data-attribute
+  // format is awkward here because the instruction must run after the sibling
+  // <template for> is in the document, and the MutationObserver path is easy
+  // to miss in test environments. Inline scripts execute in document order.
+  writeChunk(destination, renderState.startInlineScript);
+  writeChunk(destination, endOfStartTag);
+  if (
+    (resumableState.instructions & SentCompleteDeclarativeBoundaryFunction) ===
+    NothingSent
+  ) {
+    resumableState.instructions |= SentCompleteDeclarativeBoundaryFunction;
+    writeChunk(destination, completeBoundaryDeclarativeScriptFunctionOnly);
+  }
+  writeChunk(destination, completeBoundaryDeclarativeScript1Partial);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  writeChunk(destination, completeBoundaryScript3b);
+  const writeMore = writeChunkAndReturn(
+    destination,
+    completeBoundaryScriptEnd,
+  );
   return writeBootstrap(destination, renderState) && writeMore;
 }
 
@@ -5415,6 +5501,23 @@ export function writeHoistablesForBoundary(
     renderState.stylesToHoist = true;
   }
   return destinationHasCapacity;
+}
+
+export function boundaryRequiresStyleInsertion(
+  hoistableState: HoistableState,
+): boolean {
+  let requires = false;
+  hoistableState.styles.forEach(styleQueue => {
+    if (styleQueue.hrefs.length > 0) {
+      requires = true;
+    }
+  });
+  hoistableState.stylesheets.forEach(stylesheet => {
+    if (stylesheet.state !== PREAMBLE) {
+      requires = true;
+    }
+  });
+  return requires;
 }
 
 function flushResource(this: Destination, resource: Resource) {

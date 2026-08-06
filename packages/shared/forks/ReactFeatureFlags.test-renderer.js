@@ -48,6 +48,8 @@ export const enableTransitionTracing: boolean = false;
 
 export const enableFizzExternalRuntime: boolean = true;
 
+export const enableFizzDeclarativePartialUpdates: boolean = false;
+
 export const alwaysThrottleRetries: boolean = true;
 
 export const passChildrenWhenCloningPersistedNodes: boolean = false;

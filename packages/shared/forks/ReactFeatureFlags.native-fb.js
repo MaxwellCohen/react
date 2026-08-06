@@ -48,6 +48,8 @@ export const enableBrowserAPI: boolean = true;
 export const enableEffectEventMutationPhase: boolean = true;
 export const enableMoveBefore: boolean = true;
 export const enableFizzExternalRuntime: boolean = true;
+
+export const enableFizzDeclarativePartialUpdates: boolean = false;
 export const enableInfiniteRenderLoopDetection: boolean = false;
 export const enableInfiniteRenderLoopDetectionForceThrow: boolean = false;
 export const enableLegacyCache: boolean = false;
