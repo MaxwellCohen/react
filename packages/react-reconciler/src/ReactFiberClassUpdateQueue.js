@@ -142,6 +142,9 @@ export type SharedQueue<State> = {
   pending: Update<State> | null,
   lanes: Lanes,
   hiddenCallbacks: Array<() => mixed> | null,
+  // Cached FiberRoot so class setState can skip the return-path walk after
+  // the first schedule. Lazily populated.
+  root: FiberRoot | null,
 };
 
 export type UpdateQueue<State> = {
@@ -182,6 +185,7 @@ export function initializeUpdateQueue<State>(fiber: Fiber): void {
       pending: null,
       lanes: NoLanes,
       hiddenCallbacks: null,
+      root: null,
     },
     callbacks: null,
   };

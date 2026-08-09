@@ -241,6 +241,13 @@ type BaseFiberRootProperties = {
   // task that the root will work on.
   callbackNode: any,
   callbackPriority: Lane,
+  // Lanes selected when the current callbackNode was scheduled. Reused by the
+  // Scheduler task entry point when pendingLanes have not changed, avoiding a
+  // second getNextLanes pass. Cleared whenever the callback is cleared.
+  callbackLanes: Lanes,
+  // Snapshot of root.pendingLanes at schedule time, used to invalidate
+  // callbackLanes if more work arrives before the task runs.
+  callbackPendingLanes: Lanes,
   expirationTimes: LaneMap<number>,
   hiddenUpdates: LaneMap<Array<ConcurrentUpdate> | null>,
 

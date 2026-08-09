@@ -356,4 +356,74 @@ describe('ReactDOMTextComponent', () => {
       ),
     );
   });
+
+  it('updates direct primitive text children in place', async () => {
+    const container = document.createElement('div');
+    const root = ReactDOMClient.createRoot(container);
+    const outputRef = React.createRef();
+
+    await act(() => {
+      root.render(<output ref={outputRef}>{0}</output>);
+    });
+
+    const output = outputRef.current;
+    const textNode = output.firstChild;
+    expect(output.textContent).toBe('0');
+    expect(textNode.nodeType).toBe(3);
+
+    await act(() => {
+      root.render(<output ref={outputRef}>{1}</output>);
+    });
+
+    expect(outputRef.current).toBe(output);
+    expect(output.firstChild).toBe(textNode);
+    expect(textNode.nodeValue).toBe('1');
+    expect(output.textContent).toBe('1');
+  });
+
+  it('keeps DOM in sync across chained layout-effect setState', async () => {
+    const container = document.createElement('div');
+    const root = ReactDOMClient.createRoot(container);
+    const UPDATES = 25;
+
+    function App() {
+      const [output, setOutput] = React.useState(-1);
+      const advancerRef = React.useRef(null);
+      const outputRef = React.useRef(-1);
+      const elRef = React.useRef(null);
+      outputRef.current = output;
+
+      React.useLayoutEffect(() => {
+        if (advancerRef.current) {
+          advancerRef.current();
+          return;
+        }
+
+        let last = -1;
+        const element = elRef.current;
+        const advance = () => {
+          expect(outputRef.current).toBe(last);
+          expect(element.textContent).toBe(String(last));
+          if (last === UPDATES) {
+            return;
+          }
+          Promise.resolve().then(() => {
+            last = last + 1;
+            setOutput(last);
+          });
+        };
+
+        advancerRef.current = advance;
+        advance();
+      });
+
+      return <output ref={elRef}>{output}</output>;
+    }
+
+    await act(() => {
+      root.render(<App />);
+    });
+
+    expect(container.textContent).toBe(String(UPDATES));
+  });
 });

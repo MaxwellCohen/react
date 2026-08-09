@@ -3803,6 +3803,8 @@ function commitRoot(
       // So we can clear these now to allow a new callback to be scheduled.
       root.callbackNode = null;
       root.callbackPriority = NoLane;
+      root.callbackLanes = NoLanes;
+      root.callbackPendingLanes = NoLanes;
       scheduleCallback(NormalSchedulerPriority, () => {
         if (enableProfilerTimer && enableComponentPerformanceTrack) {
           // Track the currently executing event if there is one so we can ignore this
@@ -3824,6 +3826,8 @@ function commitRoot(
     // so we can clear the callback now.
     root.callbackNode = null;
     root.callbackPriority = NoLane;
+    root.callbackLanes = NoLanes;
+    root.callbackPendingLanes = NoLanes;
   }
 
   if (enableProfilerTimer) {
@@ -4744,6 +4748,8 @@ function flushPassiveEffectsImpl() {
     // We've finished our work for this render pass.
     root.callbackNode = null;
     root.callbackPriority = NoLane;
+    root.callbackLanes = NoLanes;
+    root.callbackPendingLanes = NoLanes;
   }
 
   if ((executionContext & (RenderContext | CommitContext)) !== NoContext) {

@@ -180,6 +180,9 @@ export type UpdateQueue<S, A> = {
   dispatch: (A => mixed) | null,
   lastRenderedReducer: ((S, A) => S) | null,
   lastRenderedState: S | null,
+  // Cached FiberRoot so setState can avoid walking the return path to find the
+  // root on every update. Lazily populated on first schedule.
+  root: FiberRoot | null,
 };
 
 let didWarnAboutMismatchedHooksForComponent;
@@ -1294,6 +1297,7 @@ function mountReducer<S, I, A>(
     dispatch: null,
     lastRenderedReducer: reducer,
     lastRenderedState: initialState as any,
+    root: null,
   };
   hook.queue = queue;
   const dispatch: Dispatch<A> = (queue.dispatch = dispatchReducerAction.bind(
@@ -1940,6 +1944,7 @@ function mountStateImpl<S>(initialState: (() => S) | S): Hook {
     dispatch: null,
     lastRenderedReducer: basicStateReducer,
     lastRenderedState: initialState as any,
+    root: null,
   };
   hook.queue = queue;
   return hook;
@@ -1984,6 +1989,7 @@ function mountOptimistic<S, A>(
     // Optimistic state does not use the eager update optimization.
     lastRenderedReducer: null,
     lastRenderedState: null,
+    root: null,
   };
   hook.queue = queue;
   // This is different than the normal setState function.
@@ -2411,6 +2417,7 @@ function mountActionState<S, P>(
     dispatch: null as any,
     lastRenderedReducer: actionStateReducer,
     lastRenderedState: initialState,
+    root: null,
   };
   stateHook.queue = stateQueue;
   const setState: Dispatch<S | Awaited<S>> = dispatchSetState.bind(
@@ -3330,6 +3337,7 @@ function ensureFormComponentIsStateful(formFiber: Fiber) {
     dispatch: null as any,
     lastRenderedReducer: basicStateReducer,
     lastRenderedState: NoPendingHostTransition,
+    root: null,
   };
 
   const stateHook: Hook = {
@@ -3353,6 +3361,7 @@ function ensureFormComponentIsStateful(formFiber: Fiber) {
     dispatch: null as any,
     lastRenderedReducer: basicStateReducer,
     lastRenderedState: initialResetState,
+    root: null,
   };
   const resetStateHook: Hook = {
     memoizedState: initialResetState,

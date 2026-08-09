@@ -435,6 +435,8 @@ function scheduleTaskForRootDuringMicrotask(
     }
     root.callbackNode = null;
     root.callbackPriority = NoLane;
+    root.callbackLanes = NoLanes;
+    root.callbackPendingLanes = NoLanes;
     return NoLane;
   }
 
@@ -453,6 +455,8 @@ function scheduleTaskForRootDuringMicrotask(
     }
     root.callbackPriority = SyncLane;
     root.callbackNode = null;
+    root.callbackLanes = nextLanes;
+    root.callbackPendingLanes = root.pendingLanes;
     return SyncLane;
   } else {
     // We use the highest priority lane to represent the priority of the callback.
@@ -470,7 +474,10 @@ function scheduleTaskForRootDuringMicrotask(
         existingCallbackNode !== fakeActCallbackNode
       )
     ) {
-      // The priority hasn't changed. We can reuse the existing task.
+      // The priority hasn't changed. We can reuse the existing task, but refresh
+      // the cached lanes in case more work arrived at the same priority.
+      root.callbackLanes = nextLanes;
+      root.callbackPendingLanes = root.pendingLanes;
       return newCallbackPriority;
     } else {
       // Cancel the existing callback. We'll schedule a new one below.
@@ -504,6 +511,8 @@ function scheduleTaskForRootDuringMicrotask(
 
     root.callbackPriority = newCallbackPriority;
     root.callbackNode = newCallbackNode;
+    root.callbackLanes = nextLanes;
+    root.callbackPendingLanes = root.pendingLanes;
     return newCallbackPriority;
   }
 }
@@ -537,6 +546,8 @@ function performWorkOnRootViaSchedulerTask(
     // it'll need to consider rescheduling a task for any skipped roots.
     root.callbackNode = null;
     root.callbackPriority = NoLane;
+    root.callbackLanes = NoLanes;
+    root.callbackPendingLanes = NoLanes;
     return null;
   }
 
@@ -558,25 +569,33 @@ function performWorkOnRootViaSchedulerTask(
   }
 
   // Determine the next lanes to work on, using the fields stored on the root.
-  // TODO: We already called getNextLanes when we scheduled the callback; we
-  // should be able to avoid calling it again by stashing the result on the
-  // root object. However, because we always schedule the callback during
-  // a microtask (scheduleTaskForRootDuringMicrotask), it's possible that
-  // an update was scheduled earlier during this same browser task (and
-  // therefore before the microtasks have run). That's because Scheduler batches
-  // together multiple callbacks into a single browser macrotask, without
-  // yielding to microtasks in between. We should probably change this to align
-  // with the postTask behavior (and literally use postTask when
-  // it's available).
+  // Prefer the lanes stashed when the callback was scheduled. Recompute when
+  // pending lanes changed (updates can arrive in the same browser task before
+  // this Scheduler callback runs), when this root is already rendering, when a
+  // commit is pending, or when suspended/pinged lanes may affect selection.
   const workInProgressRoot = getWorkInProgressRoot();
   const workInProgressRootRenderLanes = getWorkInProgressRootRenderLanes();
   const rootHasPendingCommit =
     root.cancelPendingCommit !== null || root.timeoutHandle !== noTimeout;
-  const lanes = getNextLanes(
-    root,
-    root === workInProgressRoot ? workInProgressRootRenderLanes : NoLanes,
-    rootHasPendingCommit,
-  );
+  let lanes = root.callbackLanes;
+  if (
+    lanes === NoLanes ||
+    root.pendingLanes !== root.callbackPendingLanes ||
+    root.suspendedLanes !== NoLanes ||
+    root.pingedLanes !== NoLanes ||
+    rootHasPendingCommit ||
+    root === workInProgressRoot
+  ) {
+    lanes = getNextLanes(
+      root,
+      root === workInProgressRoot ? workInProgressRootRenderLanes : NoLanes,
+      rootHasPendingCommit,
+    );
+  }
+  // Consume the cache regardless of whether we reused it, so a continuation
+  // cannot accidentally reuse stale lanes after this render.
+  root.callbackLanes = NoLanes;
+  root.callbackPendingLanes = NoLanes;
   if (lanes === NoLanes) {
     // No more work on this root.
     return null;

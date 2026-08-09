@@ -36,6 +36,9 @@ export type ConcurrentUpdate = {
 
 type ConcurrentQueue = {
   pending: ConcurrentUpdate | null,
+  // Lazily cached FiberRoot. Avoids walking the fiber return path on every
+  // setState once the queue has been associated with a root.
+  root: FiberRoot | null,
 };
 
 // If a render is in progress, and we receive an update from a concurrent event,
@@ -121,7 +124,7 @@ export function enqueueConcurrentHookUpdate<S, A>(
   const concurrentQueue: ConcurrentQueue = queue as any;
   const concurrentUpdate: ConcurrentUpdate = update as any;
   enqueueUpdate(fiber, concurrentQueue, concurrentUpdate, lane);
-  return getRootForUpdatedFiber(fiber);
+  return getRootForUpdatedFiber(fiber, concurrentQueue);
 }
 
 export function enqueueConcurrentHookUpdateAndEagerlyBailout<S, A>(
@@ -159,7 +162,7 @@ export function enqueueConcurrentClassUpdate<State>(
   const concurrentQueue: ConcurrentQueue = queue as any;
   const concurrentUpdate: ConcurrentUpdate = update as any;
   enqueueUpdate(fiber, concurrentQueue, concurrentUpdate, lane);
-  return getRootForUpdatedFiber(fiber);
+  return getRootForUpdatedFiber(fiber, concurrentQueue);
 }
 
 export function enqueueConcurrentRenderForLane(
@@ -167,7 +170,7 @@ export function enqueueConcurrentRenderForLane(
   lane: Lane,
 ): FiberRoot | null {
   enqueueUpdate(fiber, null, null, lane);
-  return getRootForUpdatedFiber(fiber);
+  return getRootForUpdatedFiber(fiber, null);
 }
 
 // Calling this function outside this module should only be done for backwards
@@ -181,7 +184,7 @@ export function unsafe_markUpdateLaneFromFiberToRoot(
   // undefined behavior and we can change it if we need to; it just so happens
   // that, at the time of this writing, there's an internal product test that
   // happens to rely on this.
-  const root = getRootForUpdatedFiber(sourceFiber);
+  const root = getRootForUpdatedFiber(sourceFiber, null);
   markUpdateLaneFromFiberToRoot(sourceFiber, null, lane);
   return root;
 }
@@ -249,7 +252,10 @@ function markUpdateLaneFromFiberToRoot(
   return null;
 }
 
-function getRootForUpdatedFiber(sourceFiber: Fiber): FiberRoot | null {
+function getRootForUpdatedFiber(
+  sourceFiber: Fiber,
+  queue: ConcurrentQueue | null,
+): FiberRoot | null {
   // TODO: We will detect and infinite update loop and throw even if this fiber
   // has already unmounted. This isn't really necessary but it happens to be the
   // current behavior we've used for several release cycles. Consider not
@@ -257,13 +263,22 @@ function getRootForUpdatedFiber(sourceFiber: Fiber): FiberRoot | null {
   // not possible for that to cause an infinite update loop.
   throwIfInfiniteUpdateLoopDetected(false);
 
+  // Fast path: most setState calls after mount already know which root owns
+  // the queue. Skip the return-path walk used only to discover the root.
+  // childLanes still propagate later in finishQueueingConcurrentUpdates.
+  if (queue !== null && queue.root !== null) {
+    if (__DEV__) {
+      detectUpdateOnUnmountedFiber(sourceFiber, sourceFiber);
+    }
+    return queue.root;
+  }
+
   // When a setState happens, we must ensure the root is scheduled. Because
   // update queues do not have a backpointer to the root, the only way to do
   // this currently is to walk up the return path. This used to not be a big
   // deal because we would have to walk up the return path to set
   // the `childLanes`, anyway, but now those two traversals happen at
   // different times.
-  // TODO: Consider adding a `root` backpointer on the update queue.
   detectUpdateOnUnmountedFiber(sourceFiber, sourceFiber);
   let node = sourceFiber;
   let parent = node.return;
@@ -272,7 +287,11 @@ function getRootForUpdatedFiber(sourceFiber: Fiber): FiberRoot | null {
     node = parent;
     parent = node.return;
   }
-  return node.tag === HostRoot ? (node.stateNode as FiberRoot) : null;
+  const root = node.tag === HostRoot ? (node.stateNode as FiberRoot) : null;
+  if (queue !== null) {
+    queue.root = root;
+  }
+  return root;
 }
 
 function detectUpdateOnUnmountedFiber(sourceFiber: Fiber, parent: Fiber) {

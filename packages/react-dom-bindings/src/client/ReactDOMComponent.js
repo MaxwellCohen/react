@@ -18,6 +18,7 @@ import {
 
 import {checkHtmlStringCoercion} from 'shared/CheckStringCoercion';
 import {checkAttributeStringCoercion} from 'shared/CheckStringCoercion';
+import {checkPropStringCoercion} from 'shared/CheckStringCoercion';
 import {checkControlledValueProps} from '../shared/ReactControlledValuePropTypes';
 
 import {
@@ -1999,6 +2000,30 @@ export function updateProperties(
     }
   }
 
+  // Fast path: only a primitive text child changed. Skip the generic two-pass
+  // prop iteration used for hosts with many attributes/events.
+  const nextChildren = nextProps.children;
+  const lastChildren = lastProps.children;
+  if (
+    nextChildren !== lastChildren &&
+    tag !== 'body' &&
+    isPrimitiveTextChild(nextChildren) &&
+    isPrimitiveTextChild(lastChildren) &&
+    !hostPropsHaveNonChildrenChanges(lastProps, nextProps)
+  ) {
+    if (__DEV__) {
+      checkPropStringCoercion(nextChildren, 'children');
+    }
+    // $FlowFixMe[unsafe-addition] Flow doesn't want us to use `+` with bigint
+    const text = '' + nextChildren;
+    if (__DEV__) {
+      validateTextNesting(text, tag, false);
+    }
+    setTextContent(domElement, text);
+    trackHostMutation();
+    return;
+  }
+
   for (const propKey in lastProps) {
     const lastProp = lastProps[propKey];
     if (
@@ -2020,6 +2045,40 @@ export function updateProperties(
       setProp(domElement, tag, propKey, nextProp, nextProps, lastProp);
     }
   }
+}
+
+function isPrimitiveTextChild(value: mixed): boolean {
+  return (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'bigint'
+  );
+}
+
+function hostPropsHaveNonChildrenChanges(
+  lastProps: Object,
+  nextProps: Object,
+): boolean {
+  for (const propKey in nextProps) {
+    if (
+      propKey !== 'children' &&
+      nextProps.hasOwnProperty(propKey) &&
+      nextProps[propKey] !== lastProps[propKey]
+    ) {
+      return true;
+    }
+  }
+  for (const propKey in lastProps) {
+    if (
+      propKey !== 'children' &&
+      lastProps.hasOwnProperty(propKey) &&
+      lastProps[propKey] != null &&
+      !nextProps.hasOwnProperty(propKey)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getPossibleStandardName(propName: string): string | null {
