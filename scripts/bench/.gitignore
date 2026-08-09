@@ -1,2 +1,6 @@
 react-dom.production.min.js
 react.production.min.js
+
+# Benchmark run artifacts
+results-*.json
+.chrome-profile-*/

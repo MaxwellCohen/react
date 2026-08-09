@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+  <body>
+    <div id="app"></div>
+    <script src="./bundle.production.js"></script>
+    <script>
+      runBenchmark().then((ms) => {
+        window.__BENCH_MS__ = ms;
+      }).catch((err) => {
+        window.__BENCH_ERROR__ = String(err && err.stack || err);
+      });
+    </script>
+  </body>
+</html>
