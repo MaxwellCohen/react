@@ -403,6 +403,61 @@ function setProp(
   props: any,
   prevValue: mixed,
 ): void {
+  if (isEventPropKey(key)) {
+    // Fast path for event props. Changed handlers are among the most commonly
+    // updated props (e.g. inline functions get a new identity on every render)
+    // and handlers are resolved from the current props at dispatch time, so
+    // there's no work to do here except for the few events that need a
+    // non-delegated listener attached to the instance. Checking the prefix
+    // first avoids walking the whole switch below for every event prop.
+    // Updating events doesn't affect the visuals so we don't track a host
+    // mutation for them.
+    switch (key) {
+      case 'onClick': {
+        // TODO: This cast may not be sound for SVG, MathML or custom elements.
+        if (value != null) {
+          if (__DEV__ && typeof value !== 'function') {
+            warnForInvalidEventListener(key, value);
+          }
+          trapClickOnNonInteractiveElement(domElement as any as HTMLElement);
+        }
+        break;
+      }
+      case 'onScroll': {
+        if (value != null) {
+          if (__DEV__ && typeof value !== 'function') {
+            warnForInvalidEventListener(key, value);
+          }
+          listenToNonDelegatedEvent('scroll', domElement);
+        }
+        break;
+      }
+      case 'onScrollEnd': {
+        if (value != null) {
+          if (__DEV__ && typeof value !== 'function') {
+            warnForInvalidEventListener(key, value);
+          }
+          listenToNonDelegatedEvent('scrollend', domElement);
+          if (enableScrollEndPolyfill) {
+            // For use by the polyfill.
+            listenToNonDelegatedEvent('scroll', domElement);
+          }
+        }
+        break;
+      }
+      default: {
+        if (
+          __DEV__ &&
+          registrationNameDependencies.hasOwnProperty(key) &&
+          value != null &&
+          typeof value !== 'function'
+        ) {
+          warnForInvalidEventListener(key, value);
+        }
+      }
+    }
+    return;
+  }
   switch (key) {
     case 'children': {
       if (typeof value === 'string') {
@@ -615,38 +670,6 @@ function setProp(
       ) as any;
       domElement.setAttribute(key, sanitizedValue);
       break;
-    }
-    case 'onClick': {
-      // TODO: This cast may not be sound for SVG, MathML or custom elements.
-      if (value != null) {
-        if (__DEV__ && typeof value !== 'function') {
-          warnForInvalidEventListener(key, value);
-        }
-        trapClickOnNonInteractiveElement(domElement as any as HTMLElement);
-      }
-      return;
-    }
-    case 'onScroll': {
-      if (value != null) {
-        if (__DEV__ && typeof value !== 'function') {
-          warnForInvalidEventListener(key, value);
-        }
-        listenToNonDelegatedEvent('scroll', domElement);
-      }
-      return;
-    }
-    case 'onScrollEnd': {
-      if (value != null) {
-        if (__DEV__ && typeof value !== 'function') {
-          warnForInvalidEventListener(key, value);
-        }
-        listenToNonDelegatedEvent('scrollend', domElement);
-        if (enableScrollEndPolyfill) {
-          // For use by the polyfill.
-          listenToNonDelegatedEvent('scroll', domElement);
-        }
-      }
-      return;
     }
     case 'dangerouslySetInnerHTML': {
       if (value != null) {
@@ -975,25 +998,8 @@ function setProp(
       }
     // Fall through
     default: {
-      if (
-        key.length > 2 &&
-        (key[0] === 'o' || key[0] === 'O') &&
-        (key[1] === 'n' || key[1] === 'N')
-      ) {
-        if (
-          __DEV__ &&
-          registrationNameDependencies.hasOwnProperty(key) &&
-          value != null &&
-          typeof value !== 'function'
-        ) {
-          warnForInvalidEventListener(key, value);
-        }
-        // Updating events doesn't affect the visuals.
-        return;
-      } else {
-        const attributeName = getAttributeAlias(key);
-        setValueForAttribute(domElement, attributeName, value);
-      }
+      const attributeName = getAttributeAlias(key);
+      setValueForAttribute(domElement, attributeName, value);
     }
   }
   // To avoid marking things as host mutations we do early returns above.
@@ -2000,8 +2006,9 @@ export function updateProperties(
     }
   }
 
-  // Fast path: only a primitive text child changed. Skip the generic two-pass
-  // prop iteration used for hosts with many attributes/events.
+  // Fast path: only a primitive text child changed (ignoring event handler
+  // identity changes, which are not host mutations). Skips the generic
+  // two-pass prop iteration used for hosts with many attributes/events.
   const nextChildren = nextProps.children;
   const lastChildren = lastProps.children;
   if (
@@ -2009,7 +2016,7 @@ export function updateProperties(
     tag !== 'body' &&
     isPrimitiveTextChild(nextChildren) &&
     isPrimitiveTextChild(lastChildren) &&
-    !hostPropsHaveNonChildrenChanges(lastProps, nextProps)
+    !hostPropsHaveNonChildrenHostChanges(lastProps, nextProps)
   ) {
     if (__DEV__) {
       checkPropStringCoercion(nextChildren, 'children');
@@ -2031,7 +2038,11 @@ export function updateProperties(
       lastProp != null &&
       !nextProps.hasOwnProperty(propKey)
     ) {
-      setProp(domElement, tag, propKey, null, nextProps, lastProp);
+      // Event props don't need DOM teardown on removal; listeners are resolved
+      // from the current props object at dispatch time.
+      if (!isEventPropKey(propKey)) {
+        setProp(domElement, tag, propKey, null, nextProps, lastProp);
+      }
     }
   }
   for (const propKey in nextProps) {
@@ -2042,6 +2053,15 @@ export function updateProperties(
       nextProp !== lastProp &&
       (nextProp != null || lastProp != null)
     ) {
+      if (
+        isEventPropKey(propKey) &&
+        !eventPropNeedsDomSetup(propKey, nextProp, lastProp)
+      ) {
+        // Inline handlers get a new identity every render. They are read from
+        // the fiber's current props at dispatch time, so identity changes are
+        // not host mutations. Only a few events need one-time DOM setup.
+        continue;
+      }
       setProp(domElement, tag, propKey, nextProp, nextProps, lastProp);
     }
   }
@@ -2055,7 +2075,28 @@ function isPrimitiveTextChild(value: mixed): boolean {
   );
 }
 
-function hostPropsHaveNonChildrenChanges(
+function isEventPropKey(key: string): boolean {
+  return (
+    key.length > 2 &&
+    (key[0] === 'o' || key[0] === 'O') &&
+    (key[1] === 'n' || key[1] === 'N')
+  );
+}
+
+function eventPropNeedsDomSetup(
+  key: string,
+  nextProp: mixed,
+  lastProp: mixed,
+): boolean {
+  // onClick/onScroll/onScrollEnd attach a listener or Safari click trap the
+  // first time they become non-null. Later identity changes are no-ops.
+  if (nextProp == null || lastProp != null) {
+    return false;
+  }
+  return key === 'onClick' || key === 'onScroll' || key === 'onScrollEnd';
+}
+
+function hostPropsHaveNonChildrenHostChanges(
   lastProps: Object,
   nextProps: Object,
 ): boolean {
@@ -2065,6 +2106,12 @@ function hostPropsHaveNonChildrenChanges(
       nextProps.hasOwnProperty(propKey) &&
       nextProps[propKey] !== lastProps[propKey]
     ) {
+      if (
+        isEventPropKey(propKey) &&
+        !eventPropNeedsDomSetup(propKey, nextProps[propKey], lastProps[propKey])
+      ) {
+        continue;
+      }
       return true;
     }
   }
@@ -2075,7 +2122,10 @@ function hostPropsHaveNonChildrenChanges(
       lastProps[propKey] != null &&
       !nextProps.hasOwnProperty(propKey)
     ) {
-      return true;
+      // Removing an event prop is not a host mutation.
+      if (!isEventPropKey(propKey)) {
+        return true;
+      }
     }
   }
   return false;
