@@ -1,0 +1,75 @@
+# Publishes preview builds of all npm packages (see ReactVersions.js) to pkg.pr.new
+# so contributors can install a PR's exact build before merge, e.g.:
+#   yarn add https://pkg.pr.new/react/react/react@<sha>
+#
+# Requires the pkg.pr.new GitHub App (https://github.com/apps/pkg-pr-new) to be
+# installed on this repository. Publishing authenticates through the app, not
+# through repo secrets.
+name: (Runtime) Publish Preview Packages
+
+on:
+  pull_request:
+    paths-ignore:
+      - compiler/**
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  TZ: /usr/share/zoneinfo/America/Los_Angeles
+  # https://github.com/actions/cache/blob/main/tips-and-workarounds.md#cache-segment-restore-timeout
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
+
+jobs:
+  publish_preview_packages:
+    name: Publish preview packages to pkg.pr.new
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11.0.22
+
+      - name: Restore cached node_modules
+        uses: actions/cache/restore@v4
+        id: node_modules
+        with:
+          path: |
+            **/node_modules
+          key: runtime-and-compiler-node_modules-v10-${{ runner.arch }}-${{ runner.os }}-${{ hashFiles('yarn.lock', 'compiler/yarn.lock') }}
+
+      - name: Install runtime dependencies
+        run: yarn install --frozen-lockfile
+        if: steps.node_modules.outputs.cache-hit != 'true'
+
+      - name: Install compiler dependencies
+        run: yarn --cwd compiler install --frozen-lockfile
+        if: steps.node_modules.outputs.cache-hit != 'true'
+
+      - name: Ensure clean build directory
+        run: rm -rf build
+
+      - name: Build all packages
+        run: yarn build -r=experimental
+
+      - name: Publish to pkg.pr.new
+        run: |
+          yarn pkg-pr-new publish \
+            --commentWithSha \
+            --no-compact \
+            --packageManager=yarn \
+            --yarn \
+            build/oss-experimental/*
