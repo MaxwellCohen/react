@@ -92,6 +92,9 @@ function handleNode(node_: Node) {
   } else if (dataset['rci'] != null) {
     window['$RC'](dataset['bid'], dataset['sid']);
     node.remove();
+  } else if (dataset['rpi'] != null) {
+    window['$RP'](dataset['bid']);
+    node.remove();
   } else if (dataset['rsi'] != null) {
     window['$RS'](dataset['sid'], dataset['pid']);
     node.remove();

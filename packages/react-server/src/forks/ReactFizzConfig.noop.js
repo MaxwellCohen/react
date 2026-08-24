@@ -83,12 +83,20 @@ export const writeEndClientRenderedSuspenseBoundary =
   $$$config.writeEndClientRenderedSuspenseBoundary;
 export const writeStartSegment = $$$config.writeStartSegment;
 export const writeEndSegment = $$$config.writeEndSegment;
+export const writeStartDeclarativeBoundaryContent =
+  $$$config.writeStartDeclarativeBoundaryContent;
+export const writeEndDeclarativeBoundaryContent =
+  $$$config.writeEndDeclarativeBoundaryContent;
 export const writeCompletedSegmentInstruction =
   $$$config.writeCompletedSegmentInstruction;
 export const writeCompletedBoundaryInstruction =
   $$$config.writeCompletedBoundaryInstruction;
+export const writeCompletedDeclarativeBoundaryInstruction =
+  $$$config.writeCompletedDeclarativeBoundaryInstruction;
 export const writeClientRenderBoundaryInstruction =
   $$$config.writeClientRenderBoundaryInstruction;
+export const boundaryRequiresStyleInsertion =
+  $$$config.boundaryRequiresStyleInsertion;
 export const NotPendingTransition = $$$config.NotPendingTransition;
 export const createPreambleState = $$$config.createPreambleState;
 export const canHavePreamble = $$$config.canHavePreamble;

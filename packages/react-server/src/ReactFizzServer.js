@@ -69,10 +69,14 @@ import {
   writeEndClientRenderedSuspenseBoundary,
   writeStartSegment,
   writeEndSegment,
+  writeStartDeclarativeBoundaryContent,
+  writeEndDeclarativeBoundaryContent,
   writeClientRenderBoundaryInstruction,
   writeCompletedBoundaryInstruction,
+  writeCompletedDeclarativeBoundaryInstruction,
   writeCompletedSegmentInstruction,
   writeHoistablesForBoundary,
+  boundaryRequiresStyleInsertion,
   pushTextInstance,
   pushStartInstance,
   pushEndInstance,
@@ -189,6 +193,7 @@ import {
   enableFizzBlockingRender,
   enableAsyncDebugInfo,
   enableCPUSuspense,
+  enableFizzDeclarativePartialUpdates,
 } from 'shared/ReactFeatureFlags';
 
 import assign from 'shared/assign';
@@ -6046,17 +6051,46 @@ function flushSegmentContainer(
   return writeEndSegment(destination, segment.parentFormatContext);
 }
 
+function flushDeclarativeBoundaryContent(
+  request: Request,
+  destination: Destination,
+  segment: Segment,
+  hoistableState: HoistableState,
+  boundaryID: number,
+): boolean {
+  writeStartDeclarativeBoundaryContent(
+    destination,
+    request.renderState,
+    boundaryID,
+  );
+  flushSegment(request, destination, segment, hoistableState);
+  return writeEndDeclarativeBoundaryContent(
+    destination,
+    request.renderState,
+    boundaryID,
+  );
+}
+
 function flushCompletedBoundary(
   request: Request,
   destination: Destination,
   boundary: SuspenseBoundary,
 ): boolean {
   flushedByteSize = boundary.byteSize; // Start counting bytes
+  const useDeclarative =
+    enableFizzDeclarativePartialUpdates &&
+    !boundaryRequiresStyleInsertion(boundary.contentState);
   const completedSegments = boundary.completedSegments;
   let i = 0;
   for (; i < completedSegments.length; i++) {
     const segment = completedSegments[i];
-    flushPartiallyCompletedSegment(request, destination, boundary, segment);
+    flushPartiallyCompletedSegment(
+      request,
+      destination,
+      boundary,
+      segment,
+      useDeclarative,
+    );
   }
   completedSegments.length = 0;
 
@@ -6074,6 +6108,14 @@ function flushCompletedBoundary(
     boundary.contentState,
     request.renderState,
   );
+  if (useDeclarative) {
+    return writeCompletedDeclarativeBoundaryInstruction(
+      destination,
+      request.resumableState,
+      request.renderState,
+      boundary.rootSegmentID,
+    );
+  }
   return writeCompletedBoundaryInstruction(
     destination,
     request.resumableState,
@@ -6088,6 +6130,17 @@ function flushPartialBoundary(
   destination: Destination,
   boundary: SuspenseBoundary,
 ): boolean {
+  if (enableFizzDeclarativePartialUpdates) {
+    // Keep content segments until flushCompletedBoundary so the no-styles path
+    // can wrap the root in <template for> instead of a hidden S: container.
+    // Progressive $RS into an already-emitted root is incompatible with that.
+    return writeHoistablesForBoundary(
+      destination,
+      boundary.contentState,
+      request.renderState,
+    );
+  }
+
   flushedByteSize = boundary.byteSize; // Start counting bytes
   const completedSegments = boundary.completedSegments;
   let i = 0;
@@ -6131,6 +6184,7 @@ function flushPartiallyCompletedSegment(
   destination: Destination,
   boundary: SuspenseBoundary,
   segment: Segment,
+  useDeclarative: boolean = false,
 ): boolean {
   if (segment.status === FLUSHED) {
     // We've already flushed this inline
@@ -6151,10 +6205,28 @@ function flushPartiallyCompletedSegment(
       );
     }
 
+    if (useDeclarative) {
+      return flushDeclarativeBoundaryContent(
+        request,
+        destination,
+        segment,
+        hoistableState,
+        rootSegmentID,
+      );
+    }
     return flushSegmentContainer(request, destination, segment, hoistableState);
   } else if (segmentID === boundary.rootSegmentID) {
     // When we emit postponed boundaries, we might have assigned the ID already
     // but it's still the root segment so we can't inject it into the parent yet.
+    if (useDeclarative) {
+      return flushDeclarativeBoundaryContent(
+        request,
+        destination,
+        segment,
+        hoistableState,
+        segmentID,
+      );
+    }
     return flushSegmentContainer(request, destination, segment, hoistableState);
   } else {
     flushSegmentContainer(request, destination, segment, hoistableState);

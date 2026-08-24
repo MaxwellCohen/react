@@ -27,6 +27,8 @@ export const enableCreateEventHandleAPI = false;
 export const enableBrowserAPI = true;
 export const enableMoveBefore = false;
 export const enableFizzExternalRuntime = true;
+
+export const enableFizzDeclarativePartialUpdates = true;
 export const enableInfiniteRenderLoopDetection = false;
 export const enableInfiniteRenderLoopDetectionForceThrow = false;
 export const enableConditionalUseWarning = false;

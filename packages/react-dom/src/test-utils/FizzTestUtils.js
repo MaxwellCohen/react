@@ -47,6 +47,7 @@ async function insertNodesAndExecuteScripts(
         (element.dataset.rxi != null ||
           element.dataset.rri != null ||
           element.dataset.rci != null ||
+          element.dataset.rpi != null ||
           element.dataset.rsi != null)
       ) {
         // Fizz external runtime instructions are expected to be in the body.
