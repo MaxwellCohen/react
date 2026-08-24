@@ -93,6 +93,7 @@
     "minimist": "^1.2.3",
     "mkdirp": "^0.5.1",
     "ncp": "^2.0.0",
+    "pkg-pr-new": "^0.0.88",
     "prettier": "^3.3.3",
     "prettier-2": "npm:prettier@^2",
     "prettier-plugin-hermes-parser": "^0.36.1",
