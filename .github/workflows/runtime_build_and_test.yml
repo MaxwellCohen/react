@@ -1,7 +1,8 @@
-# Keep this name in sync with the `workflow_run.workflows` list in
-# runtime_sizebot_comment.yml, which matches on this exact string rather than on
-# the file name. Renaming it here alone stops sizebot from ever commenting again,
-# and nothing fails: the comment workflow simply never triggers.
+# Keep this name in sync with the `workflow_run.workflows` lists in
+# runtime_sizebot_comment.yml and runtime_pkg_pr_new.yml, which match on this
+# exact string rather than on the file name. Renaming it here alone stops those
+# workflows from ever triggering again, and nothing fails: sizebot stops
+# commenting and pkg.pr.new stops publishing PR previews.
 name: (Runtime) Build and Test
 
 on:

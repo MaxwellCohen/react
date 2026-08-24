@@ -1,0 +1,86 @@
+name: (Runtime) pkg.pr.new
+
+# Publishes experimental OSS packages from the (Runtime) Build and Test
+# artifacts_combined artifact to https://pkg.pr.new so PR authors and reviewers
+# can install preview builds without waiting for an npm release.
+#
+# Requires the pkg.pr.new GitHub App to be installed on this repository:
+# https://github.com/apps/pkg-pr-new
+#
+# Keep the `workflow_run.workflows` name in sync with the `name:` of
+# runtime_build_and_test.yml. Renaming that workflow without updating this list
+# silently stops previews.
+
+on:
+  workflow_run:
+    workflows: ['(Runtime) Build and Test']
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+env:
+  TZ: /usr/share/zoneinfo/America/Los_Angeles
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
+
+jobs:
+  publish:
+    # Only pull request builds get preview packages. Skip cancelled runs; if the
+    # build never produced artifacts_combined we exit successfully below.
+    if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled' }}
+    name: Publish experimental packages to pkg.pr.new
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    steps:
+      # Checkout the PR head so pkg-pr-new's `git rev-parse HEAD` matches the
+      # commit that produced the artifact. On workflow_run, GITHUB_SHA is the
+      # default-branch commit of this workflow file, which would mint wrong URLs.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Download artifacts_combined
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts_combined
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Skip if build artifacts are missing
+        if: ${{ steps.download.outcome != 'success' }}
+        run: |
+          echo "artifacts_combined was not produced by workflow run ${{ github.event.workflow_run.id }}; skipping pkg.pr.new publish."
+          exit 0
+
+      - name: Unpack build
+        if: ${{ steps.download.outcome == 'success' }}
+        run: tar -xzf build.tgz
+
+      - uses: actions/setup-node@v4
+        if: ${{ steps.download.outcome == 'success' }}
+        with:
+          node-version-file: '.nvmrc'
+
+      # Pin in the job only — do not add pkg-pr-new to the root lockfile, and do
+      # not run yarn install / any scripts from the checked-out PR tree.
+      - name: Install pkg-pr-new
+        if: ${{ steps.download.outcome == 'success' }}
+        run: npm install --no-save pkg-pr-new@0.0.88
+
+      - name: Publish experimental packages
+        if: ${{ steps.download.outcome == 'success' }}
+        run: |
+          ./node_modules/.bin/pkg-pr-new publish \
+            --peerDeps \
+            --comment=update \
+            --commentWithSha \
+            './build/oss-experimental/*'
