@@ -289,6 +289,10 @@ const PREAMBLE_CONTRIBUTION_HEAD = 'head';
 const FORM_STATE_IS_MATCHING = 'F!';
 const FORM_STATE_IS_NOT_MATCHING = 'F';
 
+function isSuspensePendingStartData(data: string): boolean {
+  return data.charCodeAt(0) === 36 && data.charCodeAt(1) === 63;
+}
+
 const DOCUMENT_READY_STATE_LOADING = 'loading';
 
 const STYLE = 'style';
@@ -1262,7 +1266,7 @@ function clearHydrationBoundary(
         }
       } else if (
         data === SUSPENSE_START_DATA ||
-        data === SUSPENSE_PENDING_START_DATA ||
+        isSuspensePendingStartData(data) ||
         data === SUSPENSE_QUEUED_START_DATA ||
         data === SUSPENSE_FALLBACK_START_DATA ||
         data === ACTIVITY_START_DATA
@@ -1384,7 +1388,7 @@ function hideOrUnhideDehydratedBoundary(
         }
       } else if (
         data === SUSPENSE_START_DATA ||
-        data === SUSPENSE_PENDING_START_DATA ||
+        isSuspensePendingStartData(data) ||
         data === SUSPENSE_QUEUED_START_DATA ||
         data === SUSPENSE_FALLBACK_START_DATA
       ) {
@@ -4182,7 +4186,7 @@ export function canHydrateSuspenseInstance(
 
 export function isSuspenseInstancePending(instance: SuspenseInstance): boolean {
   return (
-    instance.data === SUSPENSE_PENDING_START_DATA ||
+    isSuspensePendingStartData(instance.data) ||
     instance.data === SUSPENSE_QUEUED_START_DATA
   );
 }
@@ -4192,7 +4196,7 @@ export function isSuspenseInstanceFallback(
 ): boolean {
   return (
     instance.data === SUSPENSE_FALLBACK_START_DATA ||
-    (instance.data === SUSPENSE_PENDING_START_DATA &&
+    (isSuspensePendingStartData(instance.data) &&
       instance.ownerDocument.readyState !== DOCUMENT_READY_STATE_LOADING)
   );
 }
@@ -4245,7 +4249,7 @@ export function registerSuspenseInstanceRetry(
     // The Fizz runtime must have put this boundary into client render or complete
     // state after the render finished but before it committed. We need to call the
     // callback now rather than wait
-    instance.data !== SUSPENSE_PENDING_START_DATA ||
+    !isSuspensePendingStartData(instance.data) ||
     // The boundary is still in pending status but the document has finished loading
     // before we could register the event handler that would have scheduled the retry
     // on load so we call the callback now.
@@ -4308,7 +4312,7 @@ function getNextHydratable(node: ?Node) {
       if (
         data === SUSPENSE_START_DATA ||
         data === SUSPENSE_FALLBACK_START_DATA ||
-        data === SUSPENSE_PENDING_START_DATA ||
+        isSuspensePendingStartData(data) ||
         data === SUSPENSE_QUEUED_START_DATA ||
         data === ACTIVITY_START_DATA ||
         data === FORM_STATE_IS_MATCHING ||
@@ -4543,7 +4547,7 @@ function getNextHydratableInstanceAfterHydrationBoundary(
       } else if (
         data === SUSPENSE_START_DATA ||
         data === SUSPENSE_FALLBACK_START_DATA ||
-        data === SUSPENSE_PENDING_START_DATA ||
+        isSuspensePendingStartData(data) ||
         data === SUSPENSE_QUEUED_START_DATA ||
         data === ACTIVITY_START_DATA
       ) {
@@ -4585,7 +4589,7 @@ export function getParentHydrationBoundary(
       if (
         data === SUSPENSE_START_DATA ||
         data === SUSPENSE_FALLBACK_START_DATA ||
-        data === SUSPENSE_PENDING_START_DATA ||
+        isSuspensePendingStartData(data) ||
         data === SUSPENSE_QUEUED_START_DATA ||
         data === ACTIVITY_START_DATA
       ) {

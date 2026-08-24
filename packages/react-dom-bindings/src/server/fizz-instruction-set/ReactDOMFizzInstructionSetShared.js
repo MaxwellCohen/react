@@ -5,6 +5,7 @@
 
 const ELEMENT_NODE = 1;
 const COMMENT_NODE = 8;
+const PROCESSING_INSTRUCTION_NODE = 7;
 const ACTIVITY_START_DATA = '&';
 const ACTIVITY_END_DATA = '/&';
 const SUSPENSE_START_DATA = '$';
@@ -12,6 +13,134 @@ const SUSPENSE_END_DATA = '/$';
 const SUSPENSE_PENDING_START_DATA = '$?';
 const SUSPENSE_QUEUED_START_DATA = '$~';
 const SUSPENSE_FALLBACK_START_DATA = '$!';
+
+function flipPendingSuspenseToCompleted(suspenseNode) {
+  suspenseNode.data = SUSPENSE_START_DATA;
+  if (suspenseNode['_reactRetry']) {
+    requestAnimationFrame(suspenseNode['_reactRetry']);
+  }
+}
+
+function isSuspenseBoundaryStartData(data) {
+  return (
+    data === SUSPENSE_START_DATA ||
+    (data.charCodeAt(0) === 36 && data.charCodeAt(1) === 63) ||
+    data === SUSPENSE_QUEUED_START_DATA ||
+    data === SUSPENSE_FALLBACK_START_DATA ||
+    data === ACTIVITY_START_DATA
+  );
+}
+
+function getProcessingInstructionName(node) {
+  if (typeof node.getAttribute === 'function') {
+    return node.getAttribute('name');
+  }
+  // Fallback for environments that expose PI attributes via nodeValue / data.
+  const match = (node.data || node.nodeValue || '').match(
+    /(?:^|\s)name=["']([^"']+)["']/,
+  );
+  return match ? match[1] : null;
+}
+
+function matchesBogusProcessingInstruction(data, target, name) {
+  // Browsers without native DPU parse <?target ...> as comments whose data is
+  // "?target ...". Match those so instruction JS still works in tests / older UAs.
+  if (typeof data !== 'string' || data.charCodeAt(0) !== 63 /* "?" */) {
+    return false;
+  }
+  const match = data.match(/^\?([^\s]+)\s+name=["']([^"']+)["']/);
+  return match != null && match[1] === target && match[2] === name;
+}
+
+function findProcessingInstruction(target, name) {
+  const thisDocument = document;
+  const root = thisDocument.documentElement || thisDocument;
+  const walker = thisDocument.createTreeWalker(
+    root,
+    // eslint-disable-next-line no-bitwise
+    NodeFilter.SHOW_PROCESSING_INSTRUCTION | NodeFilter.SHOW_COMMENT,
+  );
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
+      if (
+        node.target === target &&
+        getProcessingInstructionName(node) === name
+      ) {
+        return node;
+      }
+    } else if (
+      node.nodeType === COMMENT_NODE &&
+      matchesBogusProcessingInstruction(node.data, target, name)
+    ) {
+      return node;
+    }
+  }
+  return null;
+}
+
+function findBoundaryAnchor(boundaryID) {
+  const el = document.getElementById(boundaryID);
+  if (el) {
+    return el;
+  }
+  // Declarative Partial Updates pending shells use <?start name="B:…"> instead
+  // of <template id="B:…">.
+  return findProcessingInstruction('start', boundaryID);
+}
+
+function findTemplateFor(name) {
+  const templates = document.querySelectorAll('template');
+  for (let i = 0; i < templates.length; i++) {
+    if (templates[i].getAttribute('for') === name) {
+      return templates[i];
+    }
+  }
+  return null;
+}
+
+function isEndProcessingInstruction(node) {
+  if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
+    return node.target === 'end';
+  }
+  if (node.nodeType === COMMENT_NODE) {
+    return typeof node.data === 'string' && /^\?end\b/.test(node.data);
+  }
+  return false;
+}
+
+function applyDeclarativePartialUpdate(boundaryID) {
+  // Native DPU browsers apply <template for> while parsing and remove it.
+  // In other environments (and tests) the template remains; polyfill the swap.
+  const template = findTemplateFor(boundaryID);
+  if (template === null || template.parentNode === null) {
+    return;
+  }
+  const start = findProcessingInstruction('start', boundaryID);
+  if (start === null || start.parentNode === null) {
+    template.parentNode.removeChild(template);
+    return;
+  }
+  const parent = start.parentNode;
+  let node = start.nextSibling;
+  while (node) {
+    const next = node.nextSibling;
+    const isEnd = isEndProcessingInstruction(node);
+    parent.removeChild(node);
+    if (isEnd) {
+      break;
+    }
+    node = next;
+  }
+  const content = template.content;
+  while (content.firstChild) {
+    parent.insertBefore(content.firstChild, start);
+  }
+  parent.removeChild(start);
+  if (template.parentNode !== null) {
+    template.parentNode.removeChild(template);
+  }
+}
 
 const FALLBACK_THROTTLE_MS = 300;
 
@@ -69,13 +198,7 @@ export function revealCompletedBoundaries(batch) {
           } else {
             depth--;
           }
-        } else if (
-          data === SUSPENSE_START_DATA ||
-          data === SUSPENSE_PENDING_START_DATA ||
-          data === SUSPENSE_QUEUED_START_DATA ||
-          data === SUSPENSE_FALLBACK_START_DATA ||
-          data === ACTIVITY_START_DATA
-        ) {
+        } else if (isSuspenseBoundaryStartData(data)) {
           depth++;
         }
       }
@@ -198,12 +321,7 @@ export function revealCompletedBoundariesWithViewTransitions(
             } else {
               depth--;
             }
-          } else if (
-            data === SUSPENSE_START_DATA ||
-            data === SUSPENSE_PENDING_START_DATA ||
-            data === SUSPENSE_QUEUED_START_DATA ||
-            data === SUSPENSE_FALLBACK_START_DATA
-          ) {
+          } else if (isSuspenseBoundaryStartData(data)) {
             depth++;
           }
         } else if (node.nodeType === ELEMENT_NODE) {
@@ -382,8 +500,8 @@ export function clientRenderBoundary(
   errorStack,
   errorComponentStack,
 ) {
-  // Find the fallback's first element.
-  const suspenseIdNode = document.getElementById(suspenseBoundaryID);
+  // Find the fallback's first element / declarative start marker.
+  const suspenseIdNode = findBoundaryAnchor(suspenseBoundaryID);
   if (!suspenseIdNode) {
     // The user must have already navigated away from this tree.
     // E.g. because the parent was hydrated.
@@ -393,8 +511,16 @@ export function clientRenderBoundary(
   const suspenseNode = suspenseIdNode.previousSibling;
   // Tag it to be client rendered.
   suspenseNode.data = SUSPENSE_FALLBACK_START_DATA;
-  // assign error metadata to first sibling
-  const dataset = suspenseIdNode.dataset;
+  // Error metadata is stored on an element sibling (existing protocol). When
+  // the anchor is a processing instruction, insert a template for the dataset.
+  let datasetOwner = suspenseIdNode;
+  if (suspenseIdNode.nodeType !== ELEMENT_NODE) {
+    const template = suspenseNode.ownerDocument.createElement('template');
+    template.id = suspenseBoundaryID;
+    suspenseNode.parentNode.insertBefore(template, suspenseIdNode);
+    datasetOwner = template;
+  }
+  const dataset = datasetOwner.dataset;
   if (errorDigest != null) dataset['dgst'] = errorDigest;
   if (errorMsg) dataset['msg'] = errorMsg;
   if (errorStack) dataset['stck'] = errorStack;
@@ -406,6 +532,30 @@ export function clientRenderBoundary(
 }
 
 export function completeBoundary(suspenseBoundaryID, contentID) {
+  if (contentID == null) {
+    // Declarative Partial Updates: <template for> replaces the <?start/<?end>
+    // fallback region. Polyfill when the browser did not apply it natively.
+    applyDeclarativePartialUpdate(suspenseBoundaryID);
+
+    const pendingData =
+      SUSPENSE_PENDING_START_DATA +
+      suspenseBoundaryID.slice(suspenseBoundaryID.indexOf(':') + 1);
+    const root = document.documentElement || document;
+    const walker = document.createTreeWalker(
+      root,
+      // eslint-disable-next-line no-bitwise
+      128, // NodeFilter.SHOW_COMMENT
+    );
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.data === pendingData) {
+        flipPendingSuspenseToCompleted(node);
+        break;
+      }
+    }
+    return;
+  }
+
   const contentNodeOuter = document.getElementById(contentID);
   if (!contentNodeOuter) {
     // If the client has failed hydration we may have already deleted the streaming
@@ -414,8 +564,8 @@ export function completeBoundary(suspenseBoundaryID, contentID) {
     return;
   }
 
-  // Find the fallback's first element.
-  const suspenseIdNodeOuter = document.getElementById(suspenseBoundaryID);
+  // Find the fallback's first element / declarative start marker.
+  const suspenseIdNodeOuter = findBoundaryAnchor(suspenseBoundaryID);
   if (!suspenseIdNodeOuter) {
     // We'll never reveal this boundary so we can remove its content immediately.
     // Otherwise we'll leave it in until we reveal it.
@@ -572,7 +722,7 @@ export function completeBoundaryWithStyles(
     }
   }
 
-  const suspenseIdNodeOuter = document.getElementById(suspenseBoundaryID);
+  const suspenseIdNodeOuter = findBoundaryAnchor(suspenseBoundaryID);
   if (suspenseIdNodeOuter) {
     // Mark this Suspense boundary as queued so we know not to client render it
     // at the end of document load.

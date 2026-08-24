@@ -89,6 +89,8 @@ export const writeCompletedBoundaryInstruction =
   $$$config.writeCompletedBoundaryInstruction;
 export const writeClientRenderBoundaryInstruction =
   $$$config.writeClientRenderBoundaryInstruction;
+export const boundaryRequiresStyleInsertion =
+  $$$config.boundaryRequiresStyleInsertion;
 export const NotPendingTransition = $$$config.NotPendingTransition;
 export const createPreambleState = $$$config.createPreambleState;
 export const canHavePreamble = $$$config.canHavePreamble;

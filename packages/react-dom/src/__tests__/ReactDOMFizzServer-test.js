@@ -6609,7 +6609,7 @@ describe('ReactDOMFizzServer', () => {
       });
 
       expect(document.getElementById('app-div').outerHTML).toEqual(
-        '<div id="app-div">start<!--$?--><template id="B:0"></template>[loading first]<!--/$--><!--$?--><template id="B:1"></template>[loading second]<!--/$-->end</div>',
+        '<div id="app-div">start<!--$?0--><!--?start name="B:0"-->[loading first]<!--?end--><!--/$--><!--$?1--><!--?start name="B:1"-->[loading second]<!--?end--><!--/$-->end</div>',
       );
 
       await act(() => {
@@ -6617,7 +6617,7 @@ describe('ReactDOMFizzServer', () => {
       });
 
       expect(document.getElementById('app-div').outerHTML).toEqual(
-        '<div id="app-div">start<!--$-->firststartfirst suspendedfirstend<!--/$--><!--$?--><template id="B:1"></template>[loading second]<!--/$-->end</div>',
+        '<div id="app-div">start<!--$-->firststart<!-- -->first suspended<!-- -->firstend<!--/$--><!--$?1--><!--?start name="B:1"-->[loading second]<!--?end--><!--/$-->end</div>',
       );
 
       const errors = [];
@@ -6649,7 +6649,7 @@ describe('ReactDOMFizzServer', () => {
           renderOptions.unstable_externalRuntimeSrc,
         )[0].outerHTML,
       ).toEqual(
-        '<div id="app-div">start<!--$-->firststartfirst suspendedfirstend<!--/$--><!--$-->secondstart<b>second suspended</b><!--/$-->end</div>',
+        '<div id="app-div">start<!--$-->firststart<!-- -->first suspended<!-- -->firstend<!--/$--><!--$-->secondstart<b>second suspended<!-- --></b><!--/$-->end</div>',
       );
 
       await waitForAll([]);
