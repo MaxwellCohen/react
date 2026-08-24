@@ -166,6 +166,7 @@ export {
   writeStartPendingSuspenseBoundary,
   writeEndPendingSuspenseBoundary,
   writeHoistablesForBoundary,
+  boundaryRequiresStyleInsertion,
   writePlaceholder,
   writeCompletedRoot,
   createRootFormatContext,

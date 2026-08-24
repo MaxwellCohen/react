@@ -66,6 +66,7 @@ export {
   writeStartPendingSuspenseBoundary,
   writeEndPendingSuspenseBoundary,
   writeHoistablesForBoundary,
+  boundaryRequiresStyleInsertion,
   writePlaceholder,
   createRootFormatContext,
   createRenderState,
