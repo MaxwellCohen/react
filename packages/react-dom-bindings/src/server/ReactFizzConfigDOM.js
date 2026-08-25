@@ -4647,9 +4647,10 @@ export function pushEndActivityBoundary(
 // Suspense boundaries are encoded as comments.
 const startCompletedSuspenseBoundary = stringToPrecomputedChunk('<!--$-->');
 const startPendingSuspenseBoundary1 = stringToPrecomputedChunk(
-  '<!--$?--><template id="',
+  '<!--$?--><?start name="',
 );
-const startPendingSuspenseBoundary2 = stringToPrecomputedChunk('"></template>');
+const startPendingSuspenseBoundary2 = stringToPrecomputedChunk('">');
+const endPendingSuspenseBoundary = stringToPrecomputedChunk('<?end>');
 const startClientRenderedSuspenseBoundary =
   stringToPrecomputedChunk('<!--$!-->');
 const endSuspenseBoundary = stringToPrecomputedChunk('<!--/$-->');
@@ -4680,8 +4681,6 @@ export function writeStartPendingSuspenseBoundary(
   renderState: RenderState,
   id: number,
 ): boolean {
-  writeChunk(destination, startPendingSuspenseBoundary1);
-
   // $FlowFixMe[invalid-compare]
   if (id === null) {
     throw new Error(
@@ -4689,6 +4688,8 @@ export function writeStartPendingSuspenseBoundary(
     );
   }
 
+  // <!--$?--><?start name="B:{id}">
+  writeChunk(destination, startPendingSuspenseBoundary1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
   return writeChunkAndReturn(destination, startPendingSuspenseBoundary2);
@@ -4763,6 +4764,7 @@ export function writeEndPendingSuspenseBoundary(
   destination: Destination,
   renderState: RenderState,
 ): boolean {
+  writeChunk(destination, endPendingSuspenseBoundary);
   return writeChunkAndReturn(destination, endSuspenseBoundary);
 }
 export function writeEndClientRenderedSuspenseBoundary(
@@ -4773,8 +4775,10 @@ export function writeEndClientRenderedSuspenseBoundary(
 }
 
 const startSegmentHTML = stringToPrecomputedChunk('<div hidden id="');
+const startSegmentHTMLForBoundary = stringToPrecomputedChunk('<template for="');
 const startSegmentHTML2 = stringToPrecomputedChunk('">');
 const endSegmentHTML = stringToPrecomputedChunk('</div>');
+const endSegmentHTMLForBoundary = stringToPrecomputedChunk('</template>');
 
 const startSegmentSVG = stringToPrecomputedChunk(
   '<svg aria-hidden="true" style="display:none" id="',
@@ -4813,7 +4817,14 @@ export function writeStartSegment(
   renderState: RenderState,
   formatContext: FormatContext,
   id: number,
+  forDeclarativeBoundary?: boolean,
 ): boolean {
+  if (forDeclarativeBoundary) {
+    writeChunk(destination, startSegmentHTMLForBoundary);
+    writeChunk(destination, renderState.boundaryPrefix);
+    writeChunk(destination, stringToChunk(id.toString(16)));
+    return writeChunkAndReturn(destination, startSegmentHTML2);
+  }
   switch (formatContext.insertionMode) {
     case ROOT_HTML_MODE:
     case HTML_HTML_MODE:
@@ -4872,7 +4883,11 @@ export function writeStartSegment(
 export function writeEndSegment(
   destination: Destination,
   formatContext: FormatContext,
+  forDeclarativeBoundary?: boolean,
 ): boolean {
+  if (forDeclarativeBoundary) {
+    return writeChunkAndReturn(destination, endSegmentHTMLForBoundary);
+  }
   switch (formatContext.insertionMode) {
     case ROOT_HTML_MODE:
     case HTML_HTML_MODE:
@@ -4997,9 +5012,10 @@ export function writeCompletedBoundaryInstruction(
   resumableState: ResumableState,
   renderState: RenderState,
   id: number,
-  hoistableState: HoistableState,
+  hoistableState: ?HoistableState,
 ): boolean {
-  const requiresStyleInsertion = renderState.stylesToHoist;
+  const declarative = hoistableState == null;
+  const requiresStyleInsertion = !declarative && renderState.stylesToHoist;
   const requiresViewTransitions =
     enableViewTransition &&
     (resumableState.instructions & NeedUpgradeToViewTransitions) !==
@@ -5009,7 +5025,10 @@ export function writeCompletedBoundaryInstruction(
   // We reset this state since after this instruction executes all styles
   // up to this point will have been hoisted
   renderState.stylesToHoist = false;
+  // Declarative completions must use inline scripts so $RC runs after the
+  // sibling <template for> is in the document.
   const scriptFormat =
+    declarative ||
     !enableFizzExternalRuntime ||
     resumableState.streamingFormat === ScriptStreamingFormat;
   if (scriptFormat) {
@@ -5086,31 +5105,38 @@ export function writeCompletedBoundaryInstruction(
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, idChunk);
 
-  // Write function arguments, which are string and array literals
-  if (scriptFormat) {
-    writeChunk(destination, completeBoundaryScript2);
-  } else {
-    writeChunk(destination, completeBoundaryData2);
-  }
-  writeChunk(destination, renderState.segmentPrefix);
-  writeChunk(destination, idChunk);
-  if (requiresStyleInsertion) {
-    // Script and data writers must format this differently:
-    //  - script writer emits an array literal, whose string elements are
-    //    escaped for javascript  e.g. ["A", "B"]
-    //  - data writer emits a string literal, which is escaped as html
-    //    e.g. [&#34;A&#34;, &#34;B&#34;]
-    if (scriptFormat) {
-      writeChunk(destination, completeBoundaryScript3a);
-      // hoistableState encodes an array literal
-      writeStyleResourceDependenciesInJS(destination, hoistableState);
-    } else {
-      writeChunk(destination, completeBoundaryData3a);
-      writeStyleResourceDependenciesInAttr(destination, hoistableState);
-    }
-  } else {
+  if (declarative) {
+    // $RC("B:id") — no segment argument; content is in <template for>.
     if (scriptFormat) {
       writeChunk(destination, completeBoundaryScript3b);
+    }
+  } else {
+    // Write function arguments, which are string and array literals
+    if (scriptFormat) {
+      writeChunk(destination, completeBoundaryScript2);
+    } else {
+      writeChunk(destination, completeBoundaryData2);
+    }
+    writeChunk(destination, renderState.segmentPrefix);
+    writeChunk(destination, idChunk);
+    if (requiresStyleInsertion) {
+      // Script and data writers must format this differently:
+      //  - script writer emits an array literal, whose string elements are
+      //    escaped for javascript  e.g. ["A", "B"]
+      //  - data writer emits a string literal, which is escaped as html
+      //    e.g. [&#34;A&#34;, &#34;B&#34;]
+      if (scriptFormat) {
+        writeChunk(destination, completeBoundaryScript3a);
+        // hoistableState encodes an array literal
+        writeStyleResourceDependenciesInJS(destination, hoistableState);
+      } else {
+        writeChunk(destination, completeBoundaryData3a);
+        writeStyleResourceDependenciesInAttr(destination, hoistableState);
+      }
+    } else {
+      if (scriptFormat) {
+        writeChunk(destination, completeBoundaryScript3b);
+      }
     }
   }
   let writeMore;
@@ -5415,6 +5441,46 @@ export function writeHoistablesForBoundary(
     renderState.stylesToHoist = true;
   }
   return destinationHasCapacity;
+}
+
+export function boundaryRequiresStyleInsertion(
+  hoistableState: HoistableState,
+): boolean {
+  let requires = false;
+  hoistableState.styles.forEach(styleQueue => {
+    if (styleQueue.hrefs.length > 0) {
+      requires = true;
+    }
+  });
+  hoistableState.stylesheets.forEach(stylesheet => {
+    if (stylesheet.state !== PREAMBLE) {
+      requires = true;
+    }
+  });
+  return requires;
+}
+
+export function canCompleteBoundaryDeclaratively(
+  resumableState: ResumableState,
+  formatContext: FormatContext,
+): boolean {
+  // Declarative Partial Updates currently emit inline $RC and HTML
+  // <template for> wrappers. Skip external-runtime data instructions and
+  // non-HTML insertion contexts (SVG/MathML/table) where namespace/wrappers matter.
+  if (resumableState.streamingFormat !== ScriptStreamingFormat) {
+    return false;
+  }
+  switch (formatContext.insertionMode) {
+    case ROOT_HTML_MODE:
+    case HTML_HTML_MODE:
+    case HTML_HEAD_MODE:
+    case HTML_MODE: {
+      return true;
+    }
+    default: {
+      return false;
+    }
+  }
 }
 
 function flushResource(this: Destination, resource: Resource) {

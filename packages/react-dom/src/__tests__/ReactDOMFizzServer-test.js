@@ -6609,7 +6609,7 @@ describe('ReactDOMFizzServer', () => {
       });
 
       expect(document.getElementById('app-div').outerHTML).toEqual(
-        '<div id="app-div">start<!--$?--><template id="B:0"></template>[loading first]<!--/$--><!--$?--><template id="B:1"></template>[loading second]<!--/$-->end</div>',
+        '<div id="app-div">start<!--$?--><!--?start name="B:0"-->[loading first]<!--?end--><!--/$--><!--$?--><!--?start name="B:1"-->[loading second]<!--?end--><!--/$-->end</div>',
       );
 
       await act(() => {
@@ -6617,7 +6617,7 @@ describe('ReactDOMFizzServer', () => {
       });
 
       expect(document.getElementById('app-div').outerHTML).toEqual(
-        '<div id="app-div">start<!--$-->firststartfirst suspendedfirstend<!--/$--><!--$?--><template id="B:1"></template>[loading second]<!--/$-->end</div>',
+        '<div id="app-div">start<!--$-->firststartfirst suspendedfirstend<!--/$--><!--$?--><!--?start name="B:1"-->[loading second]<!--?end--><!--/$-->end</div>',
       );
 
       const errors = [];
