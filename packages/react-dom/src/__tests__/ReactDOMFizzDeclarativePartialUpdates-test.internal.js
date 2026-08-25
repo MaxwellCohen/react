@@ -80,10 +80,9 @@ describe('ReactDOMFizzDeclarativePartialUpdates', () => {
       pipe(writable);
     });
 
-    expect(shell).toContain(
-      '<!--$?--><template id="B:0"></template><?start name="B:0">',
-    );
+    expect(shell).toContain('<!--$?--><?start name="B:0">');
     expect(shell).toContain('<?end><!--/$-->');
+    expect(shell).not.toContain('<template id="B:');
     expect(shell).not.toContain('<div hidden id="S:');
 
     const completion = await serverAct(async () => {
@@ -118,7 +117,7 @@ describe('ReactDOMFizzDeclarativePartialUpdates', () => {
     });
 
     // Outlined child leaves a P: hole, so the root is flushed as a classic S: container.
-    expect(shell).toContain('<?start name="B:0">');
+    expect(shell).toContain('<!--$?--><?start name="B:0">');
     expect(shell).toContain('<div hidden id="S:');
 
     const completion = await serverAct(async () => {
