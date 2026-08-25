@@ -97,7 +97,7 @@ describe('ReactDOMFizzDeclarativePartialUpdates', () => {
     expect(container.textContent).not.toContain('Loading');
   });
 
-  it('falls back to classic S: completion after a progressive partial flush', async () => {
+  it('defers classic partial flushes so outlined children still complete declaratively', async () => {
     let resolve;
     const promise = new Promise(r => (resolve = r));
     function Suspend() {
@@ -117,17 +117,18 @@ describe('ReactDOMFizzDeclarativePartialUpdates', () => {
       pipe(writable);
     });
 
-    // Outlined child leaves a P: hole, so the root is flushed as a classic S: container.
+    // Approach B defers the root S: container so completion can use <template for>.
     expect(shell).toContain('<?start name="B:0">');
-    expect(shell).toContain('<div hidden id="S:');
+    expect(shell).not.toContain('<div hidden id="S:');
 
     const completion = await serverAct(async () => {
       resolve('Done');
     });
 
+    expect(completion).toContain('<template for="B:');
     expect(completion).toContain('$RC("B:');
-    expect(completion).toContain(',"S:');
-    expect(completion).not.toContain('<template for="B:');
+    expect(completion).not.toContain('$RC("B:0","S:');
     expect(container.textContent).toContain('Done');
+    expect(container.textContent).not.toContain('Loading');
   });
 });

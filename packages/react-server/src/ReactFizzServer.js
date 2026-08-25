@@ -6130,6 +6130,26 @@ function flushPartialBoundary(
 ): boolean {
   flushedByteSize = boundary.byteSize; // Start counting bytes
   const completedSegments = boundary.completedSegments;
+  const contentSegment =
+    completedSegments.length > 0 ? completedSegments[0] : null;
+  // Keep content segments until flushCompletedBoundary when we can still wrap
+  // them in <template for>. Progressive classic S:/$RS is incompatible with that.
+  if (
+    contentSegment !== null &&
+    !boundary.flushedClassicSegments &&
+    !boundaryRequiresStyleInsertion(boundary.contentState) &&
+    canCompleteBoundaryDeclaratively(
+      request.resumableState,
+      contentSegment.parentFormatContext,
+    )
+  ) {
+    return writeHoistablesForBoundary(
+      destination,
+      boundary.contentState,
+      request.renderState,
+    );
+  }
+
   let i = 0;
   for (; i < completedSegments.length; i++) {
     const segment = completedSegments[i];
