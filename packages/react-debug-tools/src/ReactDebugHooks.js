@@ -35,7 +35,6 @@ import {
 import {
   REACT_MEMO_CACHE_SENTINEL,
   REACT_CONTEXT_TYPE,
-  REACT_RECOVERABLE_TYPE,
 } from 'shared/ReactSymbols';
 import hasOwnProperty from 'shared/hasOwnProperty';
 
@@ -111,11 +110,13 @@ function getPrimitiveStackCache(): Map<string, Array<any>> {
           $$typeof: REACT_CONTEXT_TYPE,
           _currentValue: null,
         } as any);
-        const recoverable = {
-          $$typeof: REACT_RECOVERABLE_TYPE,
-          _reason: undefined,
-        };
-        Dispatcher.use(recoverable as any);
+        Dispatcher.use({
+          then(onFulfilled) {
+            onFulfilled(undefined);
+          },
+          status: 'fulfilled',
+          value: undefined,
+        });
         Dispatcher.use({
           then() {},
           status: 'fulfilled',
@@ -246,16 +247,6 @@ function use<T>(usable: Usable<T>): T {
         dispatcherHookName: 'Use',
       });
       throw SuspenseException;
-    } else if (usable.$$typeof === REACT_RECOVERABLE_TYPE) {
-      hookLog.push({
-        displayName: null,
-        primitive: 'Recoverable',
-        stackError: new Error(),
-        value: undefined,
-        debugInfo: null,
-        dispatcherHookName: 'Use',
-      });
-      return undefined as any;
     } else if (usable.$$typeof === REACT_CONTEXT_TYPE) {
       const context: ReactContext<T> = usable as any;
       const value = readContext(context);

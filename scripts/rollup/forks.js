@@ -428,6 +428,20 @@ const forks = Object.freeze({
     );
   },
 
+  // browser() fulfills in browser-targeted react-dom builds and rejects when
+  // rendering HTML with react-dom/server (same classic react-dom package).
+  './packages/react-dom/src/shared/ReactDOMBrowser.js': (bundleType, entry) => {
+    switch (bundleType) {
+      case FB_WWW_DEV:
+      case FB_WWW_PROD:
+      case FB_WWW_PROFILING:
+        return './packages/react-dom/src/shared/ReactDOMBrowser.client.js';
+      default:
+        // Node/OSS react-dom builds are used with react-dom/server; reject.
+        return null;
+    }
+  },
+
   // We wrap top-level listeners into guards on www.
   './packages/react-dom-bindings/src/events/EventListener.js': (
     bundleType,

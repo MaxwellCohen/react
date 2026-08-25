@@ -7,22 +7,8 @@
  * @flow
  */
 
-import type {ReactRecoverable, ReactRecoverableReason} from 'shared/ReactTypes';
-
-import {enableBrowserAPI} from 'shared/ReactFeatureFlags';
-import {REACT_RECOVERABLE_TYPE} from 'shared/ReactSymbols';
-
-const browserImpl = function browser(
-  reason?: ReactRecoverableReason,
-): ReactRecoverable {
-  // This also runs in the browser, where the reason is never observed. Keep the
-  // value cheap and let an SSR renderer initialize the error if it defers work.
-  return {
-    $$typeof: REACT_RECOVERABLE_TYPE,
-    _reason: reason,
-  };
-};
-
-export const browser:
-  | ((reason?: ReactRecoverableReason) => ReactRecoverable)
-  | void = enableBrowserAPI ? browserImpl : undefined;
+// Default for source/jest and Node builds used with react-dom/server:
+// rejected thenable so HTML rendering bails to the browser.
+// Browser-targeted bundles fork to ReactDOMBrowser.client.js via
+// scripts/rollup/forks.js.
+export {browser} from './ReactDOMBrowser.server';

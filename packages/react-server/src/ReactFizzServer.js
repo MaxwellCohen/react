@@ -205,6 +205,15 @@ import {
   setCaptureSuspendedCallSiteDEV,
 } from './ReactFizzThenable';
 
+function isWakeable(value: mixed): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value: any).then === 'function' &&
+    (value: any).$$typeof !== REACT_RECOVERABLE_TYPE
+  );
+}
+
 // Linked list representing the identity of a component given the component/tag name and key.
 // The name might be minified but we assume that it's going to be the same generated name. Typically
 // because it's just the same compiled output in practice.
@@ -3297,7 +3306,7 @@ function replayElement(
           typeof x === 'object' &&
           x !== null &&
           (x === SuspenseException ||
-            typeof x.then === 'function' ||
+            isWakeable(x) ||
             // Rethrow so retryReplayTask can trampoline on stack overflow.
             x.message === 'Maximum call stack size exceeded')
         ) {
@@ -3821,7 +3830,7 @@ function replayFragment(
       if (
         typeof x === 'object' &&
         x !== null &&
-        (x === SuspenseException || typeof x.then === 'function')
+        (x === SuspenseException || isWakeable(x))
       ) {
         // Suspend
         throw x;
@@ -4353,8 +4362,7 @@ function renderNode(
         // We are aborting so we can just bubble up to the task by falling through
         // $FlowFixMe[invalid-compare]
       } else if (typeof x === 'object' && x !== null) {
-        // $FlowFixMe[method-unbinding]
-        if (typeof x.then === 'function') {
+        if (isWakeable(x)) {
           const wakeable: Wakeable = x as any;
           const thenableState =
             thrownValue === SuspenseException
@@ -4455,8 +4463,7 @@ function renderNode(
         // We are aborting so we can just bubble up to the task by falling through
         // $FlowFixMe[invalid-compare]
       } else if (typeof x === 'object' && x !== null) {
-        // $FlowFixMe[method-unbinding]
-        if (typeof x.then === 'function') {
+        if (isWakeable(x)) {
           const wakeable: Wakeable = x as any;
           const thenableState =
             thrownValue === SuspenseException
@@ -5420,8 +5427,7 @@ function retryRenderTask(
     }
 
     if (typeof x === 'object' && x !== null) {
-      // $FlowFixMe[method-unbinding]
-      if (typeof x.then === 'function') {
+      if (isWakeable(x)) {
         // Something suspended again, let's pick it back up later.
         segment.status = PENDING;
         task.thenableState =
@@ -5539,8 +5545,7 @@ function retryReplayTask(request: Request, task: ReplayTask): void {
 
     // $FlowFixMe[invalid-compare]
     if (typeof x === 'object' && x !== null) {
-      // $FlowFixMe[method-unbinding]
-      if (typeof x.then === 'function') {
+      if (isWakeable(x)) {
         // Something suspended again, let's pick it back up later.
         const ping = task.ping;
         x.then(ping.resolve, ping.reject);
@@ -6573,7 +6578,7 @@ export function abort(request: Request, reason: mixed): void {
   // cannot reenter abort().
   request.aborted = true;
   const error = isRecoverableReason
-    ? createRecoverableError(reason as any)
+    ? createRecoverableError((reason as any)._reason)
     : reason === undefined
       ? new Error('The render was aborted by the server without a reason.')
       : typeof reason === 'object' &&

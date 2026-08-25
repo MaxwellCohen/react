@@ -20,6 +20,7 @@ describe('ReactDOMServerSuspense', () => {
   beforeEach(() => {
     // Reset warning cache.
     jest.resetModules();
+    jest.dontMock('react-dom/src/shared/ReactDOMBrowser');
 
     React = require('react');
     ReactDOM = require('react-dom');
@@ -116,13 +117,34 @@ describe('ReactDOMServerSuspense', () => {
     container.innerHTML = ReactDOMServer.renderToString(app);
     expect(getVisibleChildren(container)).toEqual(<div>Fallback</div>);
 
+    // Client bundles resolve browser() to a fulfilled thenable.
+    jest.resetModules();
+    jest.doMock('react-dom/src/shared/ReactDOMBrowser', () =>
+      jest.requireActual('react-dom/src/shared/ReactDOMBrowser.client'),
+    );
+    React = require('react');
+    ReactDOM = require('react-dom');
+    ReactDOMClient = require('react-dom/client');
+    act = require('internal-test-utils').act;
+
+    function ClientBrowserOnly() {
+      React.use(ReactDOM.browser('Only render this content in the browser'));
+      return <div>Children</div>;
+    }
+
     const recoverableErrors = [];
     await act(() => {
-      ReactDOMClient.hydrateRoot(container, app, {
-        onRecoverableError(error) {
-          recoverableErrors.push(error);
+      ReactDOMClient.hydrateRoot(
+        container,
+        <React.Suspense fallback={<div>Fallback</div>}>
+          <ClientBrowserOnly />
+        </React.Suspense>,
+        {
+          onRecoverableError(error) {
+            recoverableErrors.push(error);
+          },
         },
-      });
+      );
     });
 
     expect(recoverableErrors).toEqual([]);
