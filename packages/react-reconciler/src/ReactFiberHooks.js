@@ -46,7 +46,6 @@ import {
 } from 'shared/ReactFeatureFlags';
 import {
   REACT_CONTEXT_TYPE,
-  REACT_RECOVERABLE_TYPE,
   REACT_MEMO_CACHE_SENTINEL,
 } from 'shared/ReactSymbols';
 
@@ -1164,10 +1163,6 @@ function use<T>(usable: Usable<T>): T {
       // This is a thenable.
       const thenable: Thenable<T> = usable as any;
       return useThenable(thenable);
-    } else if (usable.$$typeof === REACT_RECOVERABLE_TYPE) {
-      // Fiber is the final renderer, so there is no downstream host that
-      // needs to recover this subtree. Continue rendering through it.
-      return undefined as any;
     } else if (usable.$$typeof === REACT_CONTEXT_TYPE) {
       const context: ReactContext<T> = usable as any;
       return readContext(context);

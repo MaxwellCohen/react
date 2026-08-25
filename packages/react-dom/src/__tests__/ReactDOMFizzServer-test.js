@@ -60,6 +60,7 @@ function normalizeError(msg) {
 describe('ReactDOMFizzServer', () => {
   beforeEach(() => {
     jest.resetModules();
+    jest.dontMock('react-dom/src/shared/ReactDOMBrowser');
     JSDOM = require('jsdom').JSDOM;
 
     const jsdom = new JSDOM(
@@ -186,6 +187,29 @@ describe('ReactDOMFizzServer', () => {
     return components
       .map(component => `\n    in ${component} (at **)`)
       .join('');
+  }
+
+  // react-dom/server rejects browser(); the client build fulfills it.
+  // Source defaults to the server module — switch before hydrateRoot.
+  function loadClientBrowserAPI() {
+    jest.resetModules();
+    jest.doMock('react-dom/src/shared/ReactDOMBrowser', () =>
+      jest.requireActual('react-dom/src/shared/ReactDOMBrowser.client'),
+    );
+    Scheduler = require('scheduler');
+    React = require('react');
+    ReactDOM = require('react-dom');
+    ReactDOMClient = require('react-dom/client');
+    Suspense = React.Suspense;
+    use = React.use;
+    ({
+      assertConsoleErrorDev,
+      assertLog,
+      act: clientAct,
+      waitFor,
+      waitForAll,
+      waitForPaint,
+    } = require('internal-test-utils'));
   }
 
   const bodyStartMatch = /<body(?:>| .*?>)/;
@@ -419,10 +443,9 @@ describe('ReactDOMFizzServer', () => {
       );
       return browserReason;
     });
-    const browserOnly = ReactDOM.browser(initializeReason);
 
     function BrowserOnly() {
-      use(browserOnly);
+      use(ReactDOM.browser(initializeReason));
       const text = use(browserText);
       Scheduler.log(text);
       return <span>{text}</span>;
@@ -469,8 +492,28 @@ describe('ReactDOMFizzServer', () => {
         <span>Fallback</span>
       </div>,
     );
+
+    loadClientBrowserAPI();
+
+    function ClientBrowserOnly() {
+      use(ReactDOM.browser(initializeReason));
+      const text = use(browserText);
+      Scheduler.log(text);
+      return <span>{text}</span>;
+    }
+
+    function ClientApp() {
+      return (
+        <div>
+          <Suspense fallback={<span>Fallback</span>}>
+            <ClientBrowserOnly />
+          </Suspense>
+        </div>
+      );
+    }
+
     const recoverableErrors = [];
-    ReactDOMClient.hydrateRoot(container, <App />, {
+    ReactDOMClient.hydrateRoot(container, <ClientApp />, {
       onRecoverableError(error) {
         recoverableErrors.push(error);
       },
@@ -558,8 +601,26 @@ describe('ReactDOMFizzServer', () => {
       'Only render this content in a browser',
     );
 
+    loadClientBrowserAPI();
+
+    function ClientBrowserOnly() {
+      use(serverReady);
+      use(ReactDOM.browser(initializeReason));
+      return <span>Browser</span>;
+    }
+
+    function ClientApp() {
+      return (
+        <div>
+          <Suspense fallback={<span>Fallback</span>}>
+            <ClientBrowserOnly />
+          </Suspense>
+        </div>
+      );
+    }
+
     const recoverableErrors = [];
-    ReactDOMClient.hydrateRoot(container, <App />, {
+    ReactDOMClient.hydrateRoot(container, <ClientApp />, {
       onRecoverableError(error) {
         recoverableErrors.push(error);
       },

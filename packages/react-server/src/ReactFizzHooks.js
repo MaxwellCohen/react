@@ -14,7 +14,6 @@ import type {
   StartTransitionOptions,
   Thenable,
   Usable,
-  ReactRecoverable,
   ReactCustomFormAction,
   Awaited,
 } from 'shared/ReactTypes';
@@ -48,8 +47,11 @@ import {
 } from 'shared/ReactSymbols';
 import {checkAttributeStringCoercion} from 'shared/CheckStringCoercion';
 import {getFormState} from './ReactFizzServer';
+import {createRecoverableError} from './ReactServerRecoverable';
 
 import noop from 'shared/noop';
+
+export {createRecoverableError};
 
 type BasicStateAction<S> = (S => S) | S;
 type Dispatch<A> = A => void;
@@ -92,35 +94,6 @@ let actionStateMatchingIndex: number = -1;
 // Counts the number of use(thenable) calls in this component
 let thenableIndexCounter: number = 0;
 let thenableState: ThenableState | null = null;
-
-const browserReasonInitializationFallback =
-  'The reason for browser-only rendering could not be determined because its ' +
-  'initializer threw.';
-
-export function createRecoverableError(recoverable: ReactRecoverable): Error {
-  const reason = recoverable._reason;
-  let initializedReason;
-  if (typeof reason === 'function') {
-    try {
-      initializedReason = reason();
-    } catch {
-      // A reason is only diagnostic metadata. Its initializer must not affect
-      // whether the renderer can defer this subtree to the browser.
-      initializedReason = browserReasonInitializationFallback;
-    }
-  } else {
-    initializedReason = reason;
-  }
-  // Always create the recoverable at the consumption point so its stack
-  // identifies the relevant use() or abort() call. A lazy reason is diagnostic
-  // metadata and can be any value supported by Error.cause.
-  const error = new Error(
-    'Browser-only rendering was requested by `browser()`.',
-    reason === undefined ? undefined : {cause: initializedReason},
-  );
-  Object.defineProperty(error, REACT_RECOVERABLE_TYPE, {value: true});
-  return error;
-}
 
 export function isRecoverableError(error: mixed): boolean {
   if (typeof error !== 'object' || error === null) {
@@ -823,12 +796,6 @@ function use<T>(usable: Usable<T>): T {
       // This is a thenable.
       const thenable: Thenable<T> = usable as any;
       return unwrapThenable(thenable);
-    } else if (usable.$$typeof === REACT_RECOVERABLE_TYPE) {
-      // Create the recoverable error here so its stack captures the component
-      // that passed this value to use(). The internal brand lets the renderer
-      // distinguish it from an Error thrown by application code.
-      const recoverable: ReactRecoverable = usable as any;
-      throw createRecoverableError(recoverable);
     } else if (usable.$$typeof === REACT_CONTEXT_TYPE) {
       const context: ReactContext<T> = usable as any;
       return readContext(context);

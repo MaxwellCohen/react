@@ -12,6 +12,10 @@
 describe('ReactDOM.browser', () => {
   beforeEach(() => {
     jest.resetModules();
+    // Source default is the server module; exercise the client thenable here.
+    jest.doMock('react-dom/src/shared/ReactDOMBrowser', () =>
+      jest.requireActual('react-dom/src/shared/ReactDOMBrowser.client'),
+    );
   });
 
   // @gate enableBrowserAPI
