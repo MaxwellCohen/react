@@ -260,6 +260,7 @@ const ReactNoopServer = ReactFizzServer({
     renderState: RenderState,
     formatContext: null,
     id: number,
+    forDeclarativeBoundary?: boolean,
   ): boolean {
     const segment: Segment = {
       children: [],
@@ -271,7 +272,11 @@ const ReactNoopServer = ReactFizzServer({
     destination.stack.push(segment);
     return true;
   },
-  writeEndSegment(destination: Destination, formatContext: null): boolean {
+  writeEndSegment(
+    destination: Destination,
+    formatContext: null,
+    forDeclarativeBoundary?: boolean,
+  ): boolean {
     destination.stack.pop();
     return true;
   },
@@ -326,6 +331,12 @@ const ReactNoopServer = ReactFizzServer({
   writePreambleEnd() {},
   writeHoistables() {},
   writeHoistablesForBoundary() {},
+  boundaryRequiresStyleInsertion() {
+    return false;
+  },
+  canCompleteBoundaryDeclaratively() {
+    return false;
+  },
   writePostamble() {},
   hoistHoistables(parent: HoistableState, child: HoistableState) {},
   hasSuspenseyContent(

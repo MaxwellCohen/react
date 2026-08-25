@@ -5,6 +5,7 @@
 
 const ELEMENT_NODE = 1;
 const COMMENT_NODE = 8;
+const PROCESSING_INSTRUCTION_NODE = 7;
 const ACTIVITY_START_DATA = '&';
 const ACTIVITY_END_DATA = '/&';
 const SUSPENSE_START_DATA = '$';
@@ -12,6 +13,114 @@ const SUSPENSE_END_DATA = '/$';
 const SUSPENSE_PENDING_START_DATA = '$?';
 const SUSPENSE_QUEUED_START_DATA = '$~';
 const SUSPENSE_FALLBACK_START_DATA = '$!';
+
+function getProcessingInstructionName(node) {
+  if (typeof node.getAttribute === 'function') {
+    return node.getAttribute('name');
+  }
+  // Fallback for environments that expose PI attributes via nodeValue / data.
+  const match = (node.data || node.nodeValue || '').match(
+    /(?:^|\s)name=["']([^"']+)["']/,
+  );
+  return match ? match[1] : null;
+}
+
+function matchesBogusProcessingInstruction(data, target, name) {
+  // Browsers without native DPU parse <?target ...> as comments whose data is
+  // "?target ...". Match those so instruction JS still works in tests / older UAs.
+  if (typeof data !== 'string' || data.charCodeAt(0) !== 63 /* "?" */) {
+    return false;
+  }
+  const match = data.match(/^\?([^\s]+)\s+name=["']([^"']+)["']/);
+  return match != null && match[1] === target && match[2] === name;
+}
+
+function isStart(node, name) {
+  if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
+    return (
+      node.target === 'start' && getProcessingInstructionName(node) === name
+    );
+  }
+  if (node.nodeType === COMMENT_NODE) {
+    return matchesBogusProcessingInstruction(node.data, 'start', name);
+  }
+  return false;
+}
+
+function isEnd(node) {
+  if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
+    return node.target === 'end';
+  }
+  if (node.nodeType === COMMENT_NODE) {
+    return typeof node.data === 'string' && /^\?end\b/.test(node.data);
+  }
+  return false;
+}
+
+function findTemplateFor(name) {
+  const templates = document.querySelectorAll('template');
+  for (let i = 0; i < templates.length; i++) {
+    if (templates[i].getAttribute('for') === name) {
+      return templates[i];
+    }
+  }
+  return null;
+}
+
+function findStartFromBoundaryAnchor(boundaryID) {
+  // Walk siblings after <template id="B:…"> — not a document-wide TreeWalker.
+  const anchor = document.getElementById(boundaryID);
+  if (!anchor) {
+    return null;
+  }
+  let node = anchor.nextSibling;
+  while (node) {
+    if (isStart(node, boundaryID)) {
+      return node;
+    }
+    if (
+      node.nodeType === COMMENT_NODE &&
+      (node.data === SUSPENSE_END_DATA || node.data === ACTIVITY_END_DATA)
+    ) {
+      break;
+    }
+    node = node.nextSibling;
+  }
+  return null;
+}
+
+function applyDeclarativePartialUpdate(boundaryID) {
+  // Native DPU browsers apply <template for> while parsing and remove it.
+  // In other environments (and tests) the template remains; polyfill the swap.
+  const template = findTemplateFor(boundaryID);
+  if (template === null || template.parentNode === null) {
+    return;
+  }
+  const start = findStartFromBoundaryAnchor(boundaryID);
+  if (start === null || start.parentNode === null) {
+    template.parentNode.removeChild(template);
+    return;
+  }
+  const parent = start.parentNode;
+  let node = start.nextSibling;
+  while (node) {
+    const next = node.nextSibling;
+    const end = isEnd(node);
+    parent.removeChild(node);
+    if (end) {
+      break;
+    }
+    node = next;
+  }
+  const content = template.content;
+  while (content.firstChild) {
+    parent.insertBefore(content.firstChild, start);
+  }
+  parent.removeChild(start);
+  if (template.parentNode !== null) {
+    template.parentNode.removeChild(template);
+  }
+}
 
 const FALLBACK_THROTTLE_MS = 300;
 
@@ -406,6 +515,27 @@ export function clientRenderBoundary(
 }
 
 export function completeBoundary(suspenseBoundaryID, contentID) {
+  if (contentID == null) {
+    // Declarative Partial Updates: <template for> replaces the <?start/<?end>
+    // fallback region. Polyfill when the browser did not apply it natively.
+    applyDeclarativePartialUpdate(suspenseBoundaryID);
+
+    const suspenseIdNode = document.getElementById(suspenseBoundaryID);
+    if (!suspenseIdNode) {
+      // The user must have already navigated away from this tree.
+      return;
+    }
+    // Flip the pending Suspense comment and hand off to hydration.
+    const suspenseNode = suspenseIdNode.previousSibling;
+    suspenseNode.data = SUSPENSE_START_DATA;
+    if (suspenseNode['_reactRetry']) {
+      requestAnimationFrame(suspenseNode['_reactRetry']);
+    }
+    // The B: template was only an anchor for $RC / $RX; remove it now.
+    suspenseIdNode.parentNode.removeChild(suspenseIdNode);
+    return;
+  }
+
   const contentNodeOuter = document.getElementById(contentID);
   if (!contentNodeOuter) {
     // If the client has failed hydration we may have already deleted the streaming
