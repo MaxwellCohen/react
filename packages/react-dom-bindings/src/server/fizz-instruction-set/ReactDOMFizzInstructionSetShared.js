@@ -67,26 +67,32 @@ function findTemplateFor(name) {
   return null;
 }
 
-function findStartFromBoundaryAnchor(boundaryID) {
-  // Walk siblings after <template id="B:…"> — not a document-wide TreeWalker.
-  const anchor = document.getElementById(boundaryID);
-  if (!anchor) {
-    return null;
-  }
-  let node = anchor.nextSibling;
-  while (node) {
+function findStartMarker(boundaryID) {
+  const thisDocument = document;
+  const root = thisDocument.documentElement || thisDocument;
+  const walker = thisDocument.createTreeWalker(
+    root,
+    // SHOW_PROCESSING_INSTRUCTION (512) | SHOW_COMMENT (128)
+    // Numeric so the inline instruction script does not depend on NodeFilter.
+    640,
+  );
+  let node;
+  while ((node = walker.nextNode())) {
     if (isStart(node, boundaryID)) {
       return node;
     }
-    if (
-      node.nodeType === COMMENT_NODE &&
-      (node.data === SUSPENSE_END_DATA || node.data === ACTIVITY_END_DATA)
-    ) {
-      break;
-    }
-    node = node.nextSibling;
   }
   return null;
+}
+
+function findBoundaryAnchor(boundaryID) {
+  // Prefer a lingering <template id="B:…"> (e.g. $RX error metadata), else the
+  // <?start name="B:…"> marker from the pending shell.
+  const el = document.getElementById(boundaryID);
+  if (el) {
+    return el;
+  }
+  return findStartMarker(boundaryID);
 }
 
 function applyDeclarativePartialUpdate(boundaryID) {
@@ -96,7 +102,7 @@ function applyDeclarativePartialUpdate(boundaryID) {
   if (template === null || template.parentNode === null) {
     return;
   }
-  const start = findStartFromBoundaryAnchor(boundaryID);
+  const start = findStartMarker(boundaryID);
   if (start === null || start.parentNode === null) {
     template.parentNode.removeChild(template);
     return;
@@ -491,8 +497,8 @@ export function clientRenderBoundary(
   errorStack,
   errorComponentStack,
 ) {
-  // Find the fallback's first element.
-  const suspenseIdNode = document.getElementById(suspenseBoundaryID);
+  // Find the fallback's first element / declarative start marker.
+  const suspenseIdNode = findBoundaryAnchor(suspenseBoundaryID);
   if (!suspenseIdNode) {
     // The user must have already navigated away from this tree.
     // E.g. because the parent was hydrated.
@@ -502,8 +508,16 @@ export function clientRenderBoundary(
   const suspenseNode = suspenseIdNode.previousSibling;
   // Tag it to be client rendered.
   suspenseNode.data = SUSPENSE_FALLBACK_START_DATA;
-  // assign error metadata to first sibling
-  const dataset = suspenseIdNode.dataset;
+  // Error metadata is stored on an element sibling (existing protocol). When
+  // the anchor is a processing instruction / comment, insert a template for the dataset.
+  let datasetOwner = suspenseIdNode;
+  if (suspenseIdNode.nodeType !== ELEMENT_NODE) {
+    const template = suspenseNode.ownerDocument.createElement('template');
+    template.id = suspenseBoundaryID;
+    suspenseNode.parentNode.insertBefore(template, suspenseIdNode);
+    datasetOwner = template;
+  }
+  const dataset = datasetOwner.dataset;
   if (errorDigest != null) dataset['dgst'] = errorDigest;
   if (errorMsg) dataset['msg'] = errorMsg;
   if (errorStack) dataset['stck'] = errorStack;
@@ -516,23 +530,29 @@ export function clientRenderBoundary(
 
 export function completeBoundary(suspenseBoundaryID, contentID) {
   if (contentID == null) {
-    // Declarative Partial Updates: <template for> replaces the <?start/<?end>
+    // Capture the pending comment before the polyfill removes <?start>.
+    const start = findStartMarker(suspenseBoundaryID);
+    const suspenseNode =
+      start !== null &&
+      start.previousSibling &&
+      start.previousSibling.nodeType === COMMENT_NODE
+        ? start.previousSibling
+        : null;
+
+    // Declarative Partial Updates: <template for> replaces the <?start>/<?end>
     // fallback region. Polyfill when the browser did not apply it natively.
     applyDeclarativePartialUpdate(suspenseBoundaryID);
 
-    const suspenseIdNode = document.getElementById(suspenseBoundaryID);
-    if (!suspenseIdNode) {
-      // The user must have already navigated away from this tree.
-      return;
+    if (
+      suspenseNode &&
+      (suspenseNode.data === SUSPENSE_PENDING_START_DATA ||
+        suspenseNode.data === SUSPENSE_QUEUED_START_DATA)
+    ) {
+      suspenseNode.data = SUSPENSE_START_DATA;
+      if (suspenseNode['_reactRetry']) {
+        requestAnimationFrame(suspenseNode['_reactRetry']);
+      }
     }
-    // Flip the pending Suspense comment and hand off to hydration.
-    const suspenseNode = suspenseIdNode.previousSibling;
-    suspenseNode.data = SUSPENSE_START_DATA;
-    if (suspenseNode['_reactRetry']) {
-      requestAnimationFrame(suspenseNode['_reactRetry']);
-    }
-    // The B: template was only an anchor for $RC / $RX; remove it now.
-    suspenseIdNode.parentNode.removeChild(suspenseIdNode);
     return;
   }
 
@@ -544,8 +564,8 @@ export function completeBoundary(suspenseBoundaryID, contentID) {
     return;
   }
 
-  // Find the fallback's first element.
-  const suspenseIdNodeOuter = document.getElementById(suspenseBoundaryID);
+  // Find the fallback's first element / declarative start marker.
+  const suspenseIdNodeOuter = findBoundaryAnchor(suspenseBoundaryID);
   if (!suspenseIdNodeOuter) {
     // We'll never reveal this boundary so we can remove its content immediately.
     // Otherwise we'll leave it in until we reveal it.
@@ -702,7 +722,7 @@ export function completeBoundaryWithStyles(
     }
   }
 
-  const suspenseIdNodeOuter = document.getElementById(suspenseBoundaryID);
+  const suspenseIdNodeOuter = findBoundaryAnchor(suspenseBoundaryID);
   if (suspenseIdNodeOuter) {
     // Mark this Suspense boundary as queued so we know not to client render it
     // at the end of document load.

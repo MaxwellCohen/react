@@ -80,10 +80,9 @@ describe('ReactDOMFizzDeclarativePartialUpdates', () => {
       pipe(writable);
     });
 
-    expect(shell).toContain(
-      '<!--$?--><template id="B:0"></template><?start name="B:0">',
-    );
+    expect(shell).toContain('<!--$?--><?start name="B:0">');
     expect(shell).toContain('<?end><!--/$-->');
+    expect(shell).not.toContain('<template id="B:');
     expect(shell).not.toContain('<div hidden id="S:');
 
     const completion = await serverAct(async () => {
