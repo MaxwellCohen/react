@@ -6070,7 +6070,7 @@ function flushCompletedBoundary(
   flushedByteSize = boundary.byteSize; // Start counting bytes
   const completedSegments = boundary.completedSegments;
   const contentSegment = completedSegments.length > 0 ? completedSegments[0] : null;
-  const useDeclarative =
+  const isDeclarative =
     contentSegment !== null &&
     !boundary.flushedClassicSegments &&
     !boundaryRequiresStyleInsertion(boundary.contentState) &&
@@ -6086,7 +6086,7 @@ function flushCompletedBoundary(
       destination,
       boundary,
       segment,
-      useDeclarative,
+      isDeclarative,
     );
   }
   completedSegments.length = 0;
@@ -6105,7 +6105,7 @@ function flushCompletedBoundary(
     boundary.contentState,
     request.renderState,
   );
-  if (useDeclarative) {
+  if (isDeclarative) {
     return writeCompletedBoundaryInstruction(
       destination,
       request.resumableState,
@@ -6173,7 +6173,7 @@ function flushPartiallyCompletedSegment(
   destination: Destination,
   boundary: SuspenseBoundary,
   segment: Segment,
-  useDeclarative: boolean = false,
+  isDeclarative: boolean = false,
 ): boolean {
   if (segment.status === FLUSHED) {
     // We've already flushed this inline
@@ -6194,7 +6194,7 @@ function flushPartiallyCompletedSegment(
       );
     }
 
-    if (useDeclarative) {
+    if (isDeclarative) {
       return flushSegmentContainer(
         request,
         destination,
@@ -6208,7 +6208,7 @@ function flushPartiallyCompletedSegment(
   } else if (segmentID === boundary.rootSegmentID) {
     // When we emit postponed boundaries, we might have assigned the ID already
     // but it's still the root segment so we can't inject it into the parent yet.
-    if (useDeclarative) {
+    if (isDeclarative) {
       return flushSegmentContainer(
         request,
         destination,
