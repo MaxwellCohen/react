@@ -103,6 +103,10 @@ export const writePreambleStart = $$$config.writePreambleStart;
 export const writePreambleEnd = $$$config.writePreambleEnd;
 export const writeHoistables = $$$config.writeHoistables;
 export const writeHoistablesForBoundary = $$$config.writeHoistablesForBoundary;
+export const boundaryRequiresStyleInsertion =
+  $$$config.boundaryRequiresStyleInsertion;
+export const canCompleteBoundaryDeclaratively =
+  $$$config.canCompleteBoundaryDeclaratively;
 export const writePostamble = $$$config.writePostamble;
 export const hoistHoistables = $$$config.hoistHoistables;
 export const createHoistableState = $$$config.createHoistableState;

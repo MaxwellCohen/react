@@ -73,6 +73,8 @@ import {
   writeCompletedBoundaryInstruction,
   writeCompletedSegmentInstruction,
   writeHoistablesForBoundary,
+  boundaryRequiresStyleInsertion,
+  canCompleteBoundaryDeclaratively,
   pushTextInstance,
   pushStartInstance,
   pushEndInstance,
@@ -270,6 +272,9 @@ type SuspenseBoundary = {
   fallbackAbortableTasks: Set<Task>, // used to cancel task on the fallback if the boundary completes or gets canceled.
   contentState: HoistableState,
   fallbackState: HoistableState,
+  // True once any content segment was flushed via classic hidden S: / $RS.
+  // Disqualifies Declarative Partial Updates completion for this boundary.
+  flushedClassicSegments: boolean,
   preamble: null | Preamble,
   tracked: null | {
     contentKeyPath: null | KeyNode, // used to track the path for replay nodes
@@ -901,6 +906,7 @@ function createSuspenseBoundary(
     errorDigest: null,
     contentState: createHoistableState(),
     fallbackState: createHoistableState(),
+    flushedClassicSegments: false,
     preamble,
     tracked: null,
   };
@@ -6037,15 +6043,44 @@ function flushSegmentContainer(
   destination: Destination,
   segment: Segment,
   hoistableState: HoistableState,
+  forDeclarativeBoundary: boolean = false,
+  boundaryID?: number,
 ): boolean {
+  const id = forDeclarativeBoundary ? boundaryID : segment.id;
+  if (id == null) {
+    throw new Error(
+      'A segment ID must have been assigned by now. This is a bug in React.',
+    );
+  }
   writeStartSegment(
     destination,
     request.renderState,
     segment.parentFormatContext,
-    segment.id,
+    id,
+    forDeclarativeBoundary,
   );
   flushSegment(request, destination, segment, hoistableState);
-  return writeEndSegment(destination, segment.parentFormatContext);
+  return writeEndSegment(
+    destination,
+    segment.parentFormatContext,
+    forDeclarativeBoundary,
+  );
+}
+
+function canFlushBoundaryDeclaratively(
+  request: Request,
+  boundary: SuspenseBoundary,
+  contentSegment: null | Segment,
+): boolean {
+  return (
+    contentSegment !== null &&
+    !boundary.flushedClassicSegments &&
+    !boundaryRequiresStyleInsertion(boundary.contentState) &&
+    canCompleteBoundaryDeclaratively(
+      request.resumableState,
+      contentSegment.parentFormatContext,
+    )
+  );
 }
 
 function flushCompletedBoundary(
@@ -6055,10 +6090,23 @@ function flushCompletedBoundary(
 ): boolean {
   flushedByteSize = boundary.byteSize; // Start counting bytes
   const completedSegments = boundary.completedSegments;
+  const contentSegment =
+    completedSegments.length > 0 ? completedSegments[0] : null;
+  const isDeclarative = canFlushBoundaryDeclaratively(
+    request,
+    boundary,
+    contentSegment,
+  );
   let i = 0;
   for (; i < completedSegments.length; i++) {
     const segment = completedSegments[i];
-    flushPartiallyCompletedSegment(request, destination, boundary, segment);
+    flushPartiallyCompletedSegment(
+      request,
+      destination,
+      boundary,
+      segment,
+      isDeclarative,
+    );
   }
   completedSegments.length = 0;
 
@@ -6081,7 +6129,7 @@ function flushCompletedBoundary(
     request.resumableState,
     request.renderState,
     boundary.rootSegmentID,
-    boundary.contentState,
+    isDeclarative ? null : boundary.contentState,
   );
 }
 
@@ -6092,9 +6140,23 @@ function flushPartialBoundary(
 ): boolean {
   flushedByteSize = boundary.byteSize; // Start counting bytes
   const completedSegments = boundary.completedSegments;
+  const contentSegment =
+    completedSegments.length > 0 ? completedSegments[0] : null;
+  // Keep content segments until flushCompletedBoundary when we can still wrap
+  // them in <template for>. Progressive classic S:/$RS is incompatible with that.
+  if (canFlushBoundaryDeclaratively(request, boundary, contentSegment)) {
+    return writeHoistablesForBoundary(
+      destination,
+      boundary.contentState,
+      request.renderState,
+    );
+  }
+
   let i = 0;
   for (; i < completedSegments.length; i++) {
     const segment = completedSegments[i];
+    // Progressive classic containers disqualify later <template for> completion.
+    boundary.flushedClassicSegments = true;
     if (
       !flushPartiallyCompletedSegment(request, destination, boundary, segment)
     ) {
@@ -6133,6 +6195,7 @@ function flushPartiallyCompletedSegment(
   destination: Destination,
   boundary: SuspenseBoundary,
   segment: Segment,
+  isDeclarative: boolean = false,
 ): boolean {
   if (segment.status === FLUSHED) {
     // We've already flushed this inline
@@ -6153,11 +6216,25 @@ function flushPartiallyCompletedSegment(
       );
     }
 
-    return flushSegmentContainer(request, destination, segment, hoistableState);
+    return flushSegmentContainer(
+      request,
+      destination,
+      segment,
+      hoistableState,
+      isDeclarative,
+      rootSegmentID,
+    );
   } else if (segmentID === boundary.rootSegmentID) {
     // When we emit postponed boundaries, we might have assigned the ID already
     // but it's still the root segment so we can't inject it into the parent yet.
-    return flushSegmentContainer(request, destination, segment, hoistableState);
+    return flushSegmentContainer(
+      request,
+      destination,
+      segment,
+      hoistableState,
+      isDeclarative,
+      segmentID,
+    );
   } else {
     flushSegmentContainer(request, destination, segment, hoistableState);
     return writeCompletedSegmentInstruction(
