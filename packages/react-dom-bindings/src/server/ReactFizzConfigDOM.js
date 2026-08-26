@@ -4647,9 +4647,12 @@ export function pushEndActivityBoundary(
 // Suspense boundaries are encoded as comments.
 const startCompletedSuspenseBoundary = stringToPrecomputedChunk('<!--$-->');
 const startPendingSuspenseBoundary1 = stringToPrecomputedChunk(
-  '<!--$?--><?start name="',
+  '<!--$?--><template id="',
 );
-const startPendingSuspenseBoundary2 = stringToPrecomputedChunk('">');
+const startPendingSuspenseBoundary2 = stringToPrecomputedChunk(
+  '"></template><?start name="',
+);
+const startPendingSuspenseBoundary3 = stringToPrecomputedChunk('">');
 const endPendingSuspenseBoundary = stringToPrecomputedChunk('<?end>');
 const startClientRenderedSuspenseBoundary =
   stringToPrecomputedChunk('<!--$!-->');
@@ -4688,11 +4691,15 @@ export function writeStartPendingSuspenseBoundary(
     );
   }
 
-  // <!--$?--><?start name="B:{id}">
+  const idChunk = stringToChunk(id.toString(16));
+  // <!--$?--><template id="B:{id}"></template><?start name="B:{id}">
   writeChunk(destination, startPendingSuspenseBoundary1);
   writeChunk(destination, renderState.boundaryPrefix);
-  writeChunk(destination, stringToChunk(id.toString(16)));
-  return writeChunkAndReturn(destination, startPendingSuspenseBoundary2);
+  writeChunk(destination, idChunk);
+  writeChunk(destination, startPendingSuspenseBoundary2);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, idChunk);
+  return writeChunkAndReturn(destination, startPendingSuspenseBoundary3);
 }
 export function writeStartClientRenderedSuspenseBoundary(
   destination: Destination,
@@ -5105,7 +5112,7 @@ export function writeCompletedBoundaryInstruction(
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, idChunk);
 
-  if (declarative) {
+  if (hoistableState == null) {
     // $RC("B:id") — no segment argument; content is in <template for>.
     if (scriptFormat) {
       writeChunk(destination, completeBoundaryScript3b);

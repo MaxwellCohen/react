@@ -6047,6 +6047,11 @@ function flushSegmentContainer(
   boundaryID?: number,
 ): boolean {
   const id = forDeclarativeBoundary ? boundaryID : segment.id;
+  if (id == null) {
+    throw new Error(
+      'A segment ID must have been assigned by now. This is a bug in React.',
+    );
+  }
   writeStartSegment(
     destination,
     request.renderState,
@@ -6062,6 +6067,22 @@ function flushSegmentContainer(
   );
 }
 
+function canFlushBoundaryDeclaratively(
+  request: Request,
+  boundary: SuspenseBoundary,
+  contentSegment: null | Segment,
+): boolean {
+  return (
+    contentSegment !== null &&
+    !boundary.flushedClassicSegments &&
+    !boundaryRequiresStyleInsertion(boundary.contentState) &&
+    canCompleteBoundaryDeclaratively(
+      request.resumableState,
+      contentSegment.parentFormatContext,
+    )
+  );
+}
+
 function flushCompletedBoundary(
   request: Request,
   destination: Destination,
@@ -6069,15 +6090,13 @@ function flushCompletedBoundary(
 ): boolean {
   flushedByteSize = boundary.byteSize; // Start counting bytes
   const completedSegments = boundary.completedSegments;
-  const contentSegment = completedSegments.length > 0 ? completedSegments[0] : null;
-  const isDeclarative =
-    contentSegment !== null &&
-    !boundary.flushedClassicSegments &&
-    !boundaryRequiresStyleInsertion(boundary.contentState) &&
-    canCompleteBoundaryDeclaratively(
-      request.resumableState,
-      contentSegment.parentFormatContext,
-    );
+  const contentSegment =
+    completedSegments.length > 0 ? completedSegments[0] : null;
+  const isDeclarative = canFlushBoundaryDeclaratively(
+    request,
+    boundary,
+    contentSegment,
+  );
   let i = 0;
   for (; i < completedSegments.length; i++) {
     const segment = completedSegments[i];
@@ -6105,21 +6124,12 @@ function flushCompletedBoundary(
     boundary.contentState,
     request.renderState,
   );
-  if (isDeclarative) {
-    return writeCompletedBoundaryInstruction(
-      destination,
-      request.resumableState,
-      request.renderState,
-      boundary.rootSegmentID,
-      null,
-    );
-  }
   return writeCompletedBoundaryInstruction(
     destination,
     request.resumableState,
     request.renderState,
     boundary.rootSegmentID,
-    boundary.contentState,
+    isDeclarative ? null : boundary.contentState,
   );
 }
 
@@ -6134,15 +6144,7 @@ function flushPartialBoundary(
     completedSegments.length > 0 ? completedSegments[0] : null;
   // Keep content segments until flushCompletedBoundary when we can still wrap
   // them in <template for>. Progressive classic S:/$RS is incompatible with that.
-  if (
-    contentSegment !== null &&
-    !boundary.flushedClassicSegments &&
-    !boundaryRequiresStyleInsertion(boundary.contentState) &&
-    canCompleteBoundaryDeclaratively(
-      request.resumableState,
-      contentSegment.parentFormatContext,
-    )
-  ) {
+  if (canFlushBoundaryDeclaratively(request, boundary, contentSegment)) {
     return writeHoistablesForBoundary(
       destination,
       boundary.contentState,
@@ -6214,31 +6216,25 @@ function flushPartiallyCompletedSegment(
       );
     }
 
-    if (isDeclarative) {
-      return flushSegmentContainer(
-        request,
-        destination,
-        segment,
-        hoistableState,
-        true,
-        rootSegmentID,
-      );
-    }
-    return flushSegmentContainer(request, destination, segment, hoistableState);
+    return flushSegmentContainer(
+      request,
+      destination,
+      segment,
+      hoistableState,
+      isDeclarative,
+      rootSegmentID,
+    );
   } else if (segmentID === boundary.rootSegmentID) {
     // When we emit postponed boundaries, we might have assigned the ID already
     // but it's still the root segment so we can't inject it into the parent yet.
-    if (isDeclarative) {
-      return flushSegmentContainer(
-        request,
-        destination,
-        segment,
-        hoistableState,
-        true,
-        segmentID,
-      );
-    }
-    return flushSegmentContainer(request, destination, segment, hoistableState);
+    return flushSegmentContainer(
+      request,
+      destination,
+      segment,
+      hoistableState,
+      isDeclarative,
+      segmentID,
+    );
   } else {
     flushSegmentContainer(request, destination, segment, hoistableState);
     return writeCompletedSegmentInstruction(
