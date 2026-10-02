@@ -4095,8 +4095,8 @@ function pushStartCustomElement(
             typeof propValue !== 'function' &&
             typeof propValue !== 'symbol'
           ) {
-            // Match pushAttribute / setValueForAttribute: aria-* and data-* booleans
-            // stringify ("true"/"false"). Other booleans use empty-string presence.
+            // aria-* and data-* booleans stringify ("true"/"false"). Other
+            // booleans use empty-string presence and omit false.
             if (typeof propValue === 'boolean') {
               const prefix = attributeName.toLowerCase().slice(0, 5);
               if (prefix !== 'data-' && prefix !== 'aria-') {
