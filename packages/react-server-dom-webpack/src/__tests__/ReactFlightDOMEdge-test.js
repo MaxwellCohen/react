@@ -635,7 +635,12 @@ describe('ReactFlightDOMEdge', () => {
       },
     );
     // TODO: Cyclic references currently cause a Lazy wrapper which is not ideal.
-    const resultElement = result.root._init(result.root._payload);
+    // (With enableFlightPayloadDedupe the repeated object is outlined instead
+    // of referenced by a path into the unfinished root, so there's no Lazy.)
+    const resultElement =
+      typeof result.root._init === 'function'
+        ? result.root._init(result.root._payload)
+        : result.root;
     // Should still match the result when parsed
     expect(resultElement).toEqual(props.root);
     expect(resultElement.props.children[5]).toBe(
@@ -1330,6 +1335,7 @@ describe('ReactFlightDOMEdge', () => {
   it('should not dedupe strings in the model', async () => {
     // Only import metadata is deduped. Keying a map on arbitrary model strings
     // would hold them in memory for the rest of the request.
+    // (enableFlightPayloadDedupe opts in, with a bounded map.)
     const text = 'a repeated model string well past the import threshold';
     const model = new Array(10).fill(text);
 
@@ -1339,7 +1345,9 @@ describe('ReactFlightDOMEdge', () => {
     const [stream1, stream2] = passThrough(stream).tee();
 
     const payload = await readResult(stream1);
-    expect(payload.split(text).length - 1).toBe(10);
+    expect(payload.split(text).length - 1).toBe(
+      gate(flags => flags.enableFlightPayloadDedupe) ? 2 : 10,
+    );
 
     const result = await ReactServerDOMClient.createFromReadableStream(
       stream2,

@@ -92,6 +92,8 @@ export const enableOptimisticKey: boolean = false;
 
 export const enableFlightHostElision: boolean = false;
 
+export const enableFlightPayloadDedupe: boolean = false;
+
 export const eprh_enableUseKeyedStateCompilerLint: boolean = false;
 export const eprh_enableVerboseNoSetStateInEffectCompilerLint: boolean = false;
 export const eprh_enableExhaustiveEffectDependenciesCompilerLint:
