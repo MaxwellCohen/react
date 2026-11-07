@@ -56,6 +56,9 @@ type Options = {
   formState?: ReactFormState<any, any> | null,
   onHeaders?: (headers: Headers) => void,
   maxHeadersLength?: number,
+  // Experimental (enableFizzDeclarativePatching): stream boundaries with <template for>
+  // instead of inline scripts. Only enable for browsers that support it.
+  unstable_declarativePatching?: boolean,
 };
 
 // TODO: Move to sub-classing ReadableStream.
@@ -129,6 +132,7 @@ function renderToReadableStream(
         options ? options.importMap : undefined,
         onHeadersImpl,
         options ? options.maxHeadersLength : undefined,
+        options ? options.unstable_declarativePatching : undefined,
       ),
       createRootFormatContext(options ? options.namespaceURI : undefined),
       options ? options.progressiveChunkSize : undefined,

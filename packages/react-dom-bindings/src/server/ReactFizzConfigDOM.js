@@ -35,6 +35,7 @@ import {
   enableFizzExternalRuntime,
   enableSrcObject,
   enableFizzBlockingRender,
+  enableFizzDeclarativePatching,
   enableViewTransition,
   enableViewTransitionParentEnterExit,
 } from 'shared/ReactFeatureFlags';
@@ -229,6 +230,10 @@ export type RenderState = {
   // without sending an instruction to hoist them. we do that here
   stylesToHoist: boolean,
 
+  // Opt-in: stream pending boundaries as <?start>/<?end> ranges and completions
+  // as <template for>. Always false unless enableFizzDeclarativePatching.
+  declarativePatching: boolean,
+
   // We allow the legacy renderer to extend this object.
 
   ...
@@ -396,6 +401,7 @@ export function createRenderState(
   importMap: ImportMap | void,
   onHeaders: void | ((headers: HeadersDescriptor) => void),
   maxHeadersLength: void | number,
+  declarativePatching?: boolean,
 ): RenderState {
   const nonceScript = typeof nonce === 'string' ? nonce : nonce && nonce.script;
   const inlineScriptWithNonce =
@@ -553,6 +559,8 @@ export function createRenderState(
     // like a module global for currently rendering boundary
     hoistableState: null,
     stylesToHoist: false,
+    declarativePatching:
+      enableFizzDeclarativePatching && declarativePatching === true,
   };
 
   if (bootstrapScripts !== undefined) {
@@ -4576,6 +4584,11 @@ function writeShellTimeInstruction(
     // External runtime always tracks the shell time in the runtime.
     return true;
   }
+  if (enableFizzDeclarativePatching && renderState.declarativePatching) {
+    // The reveal throttle lives in the $RC runtime which declarative patching
+    // doesn't emit. Boundaries that fall back to $RC just reveal on the next frame.
+    return true;
+  }
   if ((resumableState.instructions & SentMarkShellTime) !== NothingSent) {
     // We already sent this instruction.
     return true;
@@ -4705,6 +4718,146 @@ export function writeStartPendingSuspenseBoundary(
   writeChunk(destination, stringToChunk(id.toString(16)));
   return writeChunkAndReturn(destination, startPendingSuspenseBoundary2);
 }
+// Declarative patching (experimental). Pending boundaries emit their fallback as a
+// <?start name="B:n">…<?end> range and completion is a <template for="B:n"> that the
+// HTML parser applies itself, so no inline script (or nonce) is needed. The
+// <!--$?--> and <!--/$--> comments stay OUTSIDE the range so the comment node React
+// holds on to during hydration is never replaced.
+const startPendingDeclarativeBoundary1 = stringToPrecomputedChunk(
+  '<!--$?--><?start name="',
+);
+const startPendingDeclarativeBoundary2 = stringToPrecomputedChunk('">');
+const endPendingDeclarativeBoundary =
+  stringToPrecomputedChunk('<?end><!--/$-->');
+
+export function supportsDeclarativePatching(
+  renderState: RenderState,
+  formatContext: FormatContext,
+): boolean {
+  if (!enableFizzDeclarativePatching || !renderState.declarativePatching) {
+    return false;
+  }
+  // <template> content is parsed in HTML context so the patch can't create SVG,
+  // MathML or table-only elements. Those boundaries keep using the script path.
+  switch (formatContext.insertionMode) {
+    case ROOT_HTML_MODE:
+    case HTML_MODE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+export function writeStartPendingDeclarativeBoundary(
+  destination: Destination,
+  renderState: RenderState,
+  id: number,
+): boolean {
+  writeChunk(destination, startPendingDeclarativeBoundary1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  return writeChunkAndReturn(destination, startPendingDeclarativeBoundary2);
+}
+
+export function writeEndPendingDeclarativeBoundary(
+  destination: Destination,
+  renderState: RenderState,
+): boolean {
+  return writeChunkAndReturn(destination, endPendingDeclarativeBoundary);
+}
+
+const startDeclarativePatch1 = stringToPrecomputedChunk('<template for="');
+const startDeclarativePatch2 = stringToPrecomputedChunk('">');
+const endDeclarativePatch = stringToPrecomputedChunk('</template>');
+const declarativeStyleOpen1 = stringToPrecomputedChunk(' data-precedence="');
+const declarativeStyleOpen2 = stringToPrecomputedChunk('" data-href="');
+const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
+const declarativeLinkOpen = stringToPrecomputedChunk(
+  '<link rel="stylesheet" href="',
+);
+const declarativeLinkPrecedence = stringToPrecomputedChunk(
+  '" data-precedence="',
+);
+const declarativeLinkEnd = stringToPrecomputedChunk('" blocking="render">');
+
+export function writeStartDeclarativePatch(
+  destination: Destination,
+  renderState: RenderState,
+  id: number,
+  hoistableState: HoistableState,
+): boolean {
+  writeChunk(destination, startDeclarativePatch1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  writeChunk(destination, startDeclarativePatch2);
+
+  // Late <style> tags are written inline (no media="not all" + hoisting script).
+  // They are inserted at the patch location instead of in precedence order.
+  hoistableState.styles.forEach(styleQueue => {
+    const rules = styleQueue.rules;
+    const hrefs = styleQueue.hrefs;
+    if (hrefs.length === 0) {
+      return;
+    }
+    writeChunk(destination, renderState.startInlineStyle);
+    writeChunk(destination, declarativeStyleOpen1);
+    writeChunk(destination, styleQueue.precedence);
+    writeChunk(destination, declarativeStyleOpen2);
+    let i = 0;
+    for (; i < hrefs.length - 1; i++) {
+      writeChunk(destination, hrefs[i]);
+      writeChunk(destination, spaceSeparator);
+    }
+    writeChunk(destination, hrefs[i]);
+    writeChunk(destination, declarativeStyleOpen3);
+    for (i = 0; i < rules.length; i++) {
+      writeChunk(destination, rules[i]);
+    }
+    writeChunk(destination, lateStyleTagTemplateClose);
+    rules.length = 0;
+    hrefs.length = 0;
+  });
+
+  // Stylesheets that gate reveal on the script path ($RR waits for them to load) are
+  // emitted as render-blocking links in front of the content. UNVERIFIED: relies on
+  // blocking="render" delaying paint of the content after it when patched in.
+  hoistableState.stylesheets.forEach(resource => {
+    if (resource.state === PREAMBLE || resource.state === LATE) {
+      // Already in the shell, or already emitted by an earlier boundary.
+      return;
+    }
+    const props = resource.props;
+    const href = props.href;
+    const precedence = props['data-precedence'];
+    if (__DEV__) {
+      checkAttributeStringCoercion(href, 'href');
+    }
+    const coercedHref = sanitizeURL('' + (href as any));
+    if (__DEV__) {
+      checkAttributeStringCoercion(precedence, 'precedence');
+    }
+    const coercedPrecedence = '' + (precedence as any);
+    writeChunk(destination, declarativeLinkOpen);
+    writeChunk(destination, stringToChunk(escapeTextForBrowser(coercedHref)));
+    writeChunk(destination, declarativeLinkPrecedence);
+    writeChunk(
+      destination,
+      stringToChunk(escapeTextForBrowser(coercedPrecedence)),
+    );
+    writeChunk(destination, declarativeLinkEnd);
+    resource.state = LATE;
+  });
+  return true;
+}
+
+export function writeEndDeclarativePatch(
+  destination: Destination,
+  renderState: RenderState,
+): boolean {
+  const writeMore = writeChunkAndReturn(destination, endDeclarativePatch);
+  return writeBootstrap(destination, renderState) && writeMore;
+}
+
 export function writeStartClientRenderedSuspenseBoundary(
   destination: Destination,
   renderState: RenderState,

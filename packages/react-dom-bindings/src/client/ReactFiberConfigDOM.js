@@ -132,6 +132,7 @@ import {
   enableViewTransition,
   enableHydrationChangeEvent,
   enableProfilerTimer,
+  enableFizzDeclarativePatching,
 } from 'shared/ReactFeatureFlags';
 import {
   HostComponent,
@@ -4309,7 +4310,51 @@ export function canHydrateSuspenseInstance(
   return null;
 }
 
+const PROCESSING_INSTRUCTION_NODE = 7;
+
+// Declarative patching leaves `<!--$?--><?start name="B:n">fallback<?end><!--/$-->`. In
+// browsers with support the markers are ProcessingInstruction nodes. Elsewhere they parse
+// as bogus comments with data `?start name="B:n"`.
+function isDeclarativePendingMarker(node: null | Node): boolean {
+  if (node === null) {
+    return false;
+  }
+  if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
+    return (node as any).target === 'start';
+  }
+  return (
+    node.nodeType === COMMENT_NODE &&
+    (node as any as Comment).data.startsWith('?start')
+  );
+}
+
+// There is no script to flip `$?` to `$` when `<template for>` patches a boundary, so we
+// detect it: the start marker is only present while the boundary is still pending. The
+// comment node itself is never replaced, so it is safe to flip it here, which is what
+// the $RC runtime would have done.
+function syncDeclarativelyPatchedBoundary(instance: SuspenseInstance): void {
+  if (!enableFizzDeclarativePatching) {
+    return;
+  }
+  if (instance.data !== SUSPENSE_PENDING_START_DATA) {
+    return;
+  }
+  const next = instance.nextSibling;
+  if (
+    next === null || // The parser hasn't reached the next chunk yet.
+    isDeclarativePendingMarker(next) ||
+    // Script-patched boundaries keep a <template id> as the first node while pending.
+    (next.nodeType === ELEMENT_NODE &&
+      next.nodeName === 'TEMPLATE' &&
+      (next as any as HTMLElement).hasAttribute('id'))
+  ) {
+    return;
+  }
+  instance.data = SUSPENSE_START_DATA;
+}
+
 export function isSuspenseInstancePending(instance: SuspenseInstance): boolean {
+  syncDeclarativelyPatchedBoundary(instance);
   return (
     instance.data === SUSPENSE_PENDING_START_DATA ||
     instance.data === SUSPENSE_QUEUED_START_DATA
@@ -4319,6 +4364,7 @@ export function isSuspenseInstancePending(instance: SuspenseInstance): boolean {
 export function isSuspenseInstanceFallback(
   instance: SuspenseInstance,
 ): boolean {
+  syncDeclarativelyPatchedBoundary(instance);
   return (
     instance.data === SUSPENSE_FALLBACK_START_DATA ||
     (instance.data === SUSPENSE_PENDING_START_DATA &&
@@ -4366,6 +4412,7 @@ export function registerSuspenseInstanceRetry(
   callback: () => void,
 ) {
   const ownerDocument = instance.ownerDocument;
+  syncDeclarativelyPatchedBoundary(instance);
   if (instance.data === SUSPENSE_QUEUED_START_DATA) {
     // The Fizz runtime has already queued this boundary for reveal. We wait for it
     // to be revealed and then retries.
@@ -4385,12 +4432,33 @@ export function registerSuspenseInstanceRetry(
     // We're still in pending status and the document is still loading so we attach
     // a listener to the document load even and expose the retry on the instance for
     // the Fizz runtime to trigger if it ends up resolving this boundary
+    let observer: null | MutationObserver = null;
     const listener = () => {
+      if (observer !== null) {
+        observer.disconnect();
+        observer = null;
+      }
       callback();
       ownerDocument.removeEventListener('DOMContentLoaded', listener);
     };
     ownerDocument.addEventListener('DOMContentLoaded', listener);
     instance._reactRetry = listener;
+    const parentNode = instance.parentNode;
+    if (
+      enableFizzDeclarativePatching &&
+      parentNode !== null &&
+      isDeclarativePendingMarker(instance.nextSibling) &&
+      typeof MutationObserver === 'function'
+    ) {
+      // Nothing calls _reactRetry for <template for> patches, so watch the siblings
+      // for the marker disappearing instead of waiting for DOMContentLoaded.
+      observer = new MutationObserver(() => {
+        if (!isDeclarativePendingMarker(instance.nextSibling)) {
+          listener();
+        }
+      });
+      observer.observe(parentNode, {childList: true});
+    }
   }
 }
 
