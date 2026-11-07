@@ -20,3 +20,5 @@ export function renderRSCEdge(clientManifest, Component, itemCount) {
 }
 
 export {App, AppAsync};
+
+export {default as TableServer} from './TableServer';
