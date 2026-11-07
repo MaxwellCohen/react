@@ -18,6 +18,7 @@ import {
   enableFlightWeakThenables,
   enableFlightObjectReferences,
   enableFlightHostElision,
+  enableFlightPayloadDedupe,
 } from 'shared/ReactFeatureFlags';
 
 import {
@@ -619,6 +620,10 @@ export type Request = {
   writtenImportStrings: Map<string, string>,
   // The combined length of the keys in writtenImportStrings.
   writtenImportStringsSize: number,
+  // enableFlightPayloadDedupe: model strings seen so far. null = seen once,
+  // otherwise the reference to the outlined row.
+  writtenStrings: Map<string, null | string>,
+  writtenStringsSize: number,
   temporaryReferences: void | TemporaryReferenceSet,
   identifierPrefix: string,
   onElidedRow: null | ((id: number, json: string) => void),
@@ -748,6 +753,8 @@ function RequestInstance(
   this.writtenObjects = new WeakMap();
   this.writtenImportStrings = new Map();
   this.writtenImportStringsSize = 0;
+  this.writtenStrings = new Map();
+  this.writtenStringsSize = 0;
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
   this.onElidedRow =
@@ -3028,6 +3035,26 @@ function resolveModel(
     return rendered;
   }
 
+  if (enableFlightPayloadDedupe) {
+    // Track the objects we're inside of, so that a long path reference isn't
+    // outlined for an ancestor (a cycle has to keep pointing at the original).
+    resolvingObjects.add(rendered);
+    try {
+      return resolveModelChildren(request, task, rendered);
+    } finally {
+      resolvingObjects.delete(rendered);
+    }
+  }
+  return resolveModelChildren(request, task, rendered);
+}
+
+const resolvingObjects: Set<any> = new Set();
+
+function resolveModelChildren(
+  request: Request,
+  task: Task,
+  rendered: any,
+): ReactJSONValue {
   if (isArray(rendered)) {
     const resolved: Array<ReactJSONValue> = [];
     for (let i = 0; i < rendered.length; i++) {
@@ -3667,6 +3694,41 @@ function serializeImportString(request: Request, value: string): string {
   return ref;
 }
 
+// enableFlightPayloadDedupe: strings in this length range that repeat are
+// written once into their own row and referenced by id. Shorter strings cost
+// about as much as a reference; longer ones go to text rows already.
+const MIN_DEDUPLICATED_STRING_LENGTH = 40;
+const MAX_DEDUPLICATED_STRINGS_SIZE = 262144;
+// A reference to an object inside another row ("$0:props:children:...") gets
+// replaced by an outlined row once the path is at least this long.
+const MIN_OUTLINED_PATH_REFERENCE_LENGTH = 24;
+
+function serializeDedupedString(request: Request, value: string): string {
+  const written = request.writtenStrings;
+  const existing = written.get(value);
+  if (existing === undefined) {
+    const size = request.writtenStringsSize + value.length;
+    if (size <= MAX_DEDUPLICATED_STRINGS_SIZE) {
+      request.writtenStringsSize = size;
+      written.set(value, null);
+    }
+    return escapeStringValue(value);
+  }
+  if (existing !== null) {
+    return existing;
+  }
+  // Second sighting: outline. This row is queued before the row that is being
+  // serialized right now, so it reaches the client first.
+  request.pendingChunks++;
+  const id = request.nextChunkId++;
+  // $FlowFixMe[incompatible-type] stringify can return null
+  const json: string = stringify(escapeStringValue(value));
+  emitModelChunk(request, id, json);
+  const ref = serializeByValueID(id);
+  written.set(value, ref);
+  return ref;
+}
+
 let modelRoot: null | ReactClientValue = false;
 
 // --- Host elision (prototype, enableFlightHostElision) ---------------------
@@ -4222,6 +4284,17 @@ function renderModelDestructive(
       } else {
         // We've already emitted this as an outlined object, so we can
         // just refer to that by its existing ID.
+        if (
+          enableFlightPayloadDedupe &&
+          existingReference.length >= MIN_OUTLINED_PATH_REFERENCE_LENGTH &&
+          existingReference.indexOf(':') !== -1 &&
+          !resolvingObjects.has(value)
+        ) {
+          // This is a path into another row. Repeating a long path for every
+          // use costs more than writing the object once more in its own row.
+          // Outlining replaces the writtenObjects entry with the new id.
+          return serializeByValueID(outlineModel(request, value));
+        }
         return existingReference;
       }
     } else if (parentPropertyName.indexOf(':') === -1) {
@@ -4433,6 +4506,12 @@ function renderModelDestructive(
       // don't have to double encode and double parse the strings. This can also
       // be more compact in case the string has a lot of escaped characters.
       return serializeLargeTextString(request, value);
+    }
+    if (
+      enableFlightPayloadDedupe &&
+      value.length >= MIN_DEDUPLICATED_STRING_LENGTH
+    ) {
+      return serializeDedupedString(request, value);
     }
     return escapeStringValue(value);
   }

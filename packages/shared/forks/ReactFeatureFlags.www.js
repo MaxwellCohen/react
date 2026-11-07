@@ -112,6 +112,8 @@ export const enableOptimisticKey: boolean = false;
 
 export const enableFlightHostElision: boolean = false;
 
+export const enableFlightPayloadDedupe: boolean = false;
+
 // These flags are only used by eslint-plugin-react-hooks, which has its own
 // fork at ReactFeatureFlags.eslint-plugin.www.js with the www-specific values.
 // Edit that file to change the www values for these flags.

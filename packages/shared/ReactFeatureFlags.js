@@ -129,6 +129,9 @@ export const enableOptimisticKey = __EXPERIMENTAL__;
 // Prototype: elide static host subtrees from the initial Flight payload.
 export const enableFlightHostElision: boolean = false;
 
+// Prototype: outline long repeated reference paths and repeated long strings.
+export const enableFlightPayloadDedupe: boolean = false;
+
 /**
  * Switches Fiber creation to a simple object instead of a constructor.
  */
