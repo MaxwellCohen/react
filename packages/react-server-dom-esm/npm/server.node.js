@@ -15,3 +15,4 @@ exports.decodeFormState = s.decodeFormState;
 exports.registerServerReference = s.registerServerReference;
 exports.registerClientReference = s.registerClientReference;
 exports.createTemporaryReferenceSet = s.createTemporaryReferenceSet;
+exports.unstable_pruneForBrowser = s.unstable_pruneForBrowser;

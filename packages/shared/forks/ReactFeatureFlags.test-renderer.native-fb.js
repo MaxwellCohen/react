@@ -71,6 +71,7 @@ export const enableOptimisticKey = false;
 
 export const enableFlightHostElision: boolean = false;
 
+export const enableFlightHtmlFirst: boolean = false;
 export const enableFlightPayloadDedupe: boolean = false;
 
 export const eprh_enableUseKeyedStateCompilerLint: boolean = false;

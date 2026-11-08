@@ -16,3 +16,4 @@ exports.registerServerObjectReference = s.registerServerObjectReference;
 exports.registerClientReference = s.registerClientReference;
 exports.createClientModuleProxy = s.createClientModuleProxy;
 exports.createTemporaryReferenceSet = s.createTemporaryReferenceSet;
+exports.unstable_pruneForBrowser = s.unstable_pruneForBrowser;

@@ -78,6 +78,7 @@ export const enableOptimisticKey: boolean = false;
 
 export const enableFlightHostElision: boolean = false;
 
+export const enableFlightHtmlFirst: boolean = false;
 export const enableFlightPayloadDedupe: boolean = false;
 
 // Profiling Only

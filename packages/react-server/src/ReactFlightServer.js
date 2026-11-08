@@ -18,6 +18,7 @@ import {
   enableFlightWeakThenables,
   enableFlightObjectReferences,
   enableFlightHostElision,
+  enableFlightHtmlFirst,
   enableFlightPayloadDedupe,
 } from 'shared/ReactFeatureFlags';
 
@@ -627,6 +628,7 @@ export type Request = {
   temporaryReferences: void | TemporaryReferenceSet,
   identifierPrefix: string,
   onElidedRow: null | ((id: number, json: string) => void),
+  onElidedValue: null | ((id: number, value: mixed) => void),
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
   onError: (error: mixed) => ?string,
@@ -704,6 +706,7 @@ function RequestInstance(
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
   onElidedRow: void | ((id: number, json: string) => void),
+  onElidedValue: void | ((id: number, value: mixed) => void),
 ) {
   if (
     ReactSharedInternals.A !== null &&
@@ -757,9 +760,16 @@ function RequestInstance(
   this.writtenStringsSize = 0;
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
+  // enableFlightHtmlFirst: in-process consumers can take the live value of an
+  // elided row instead of JSON (no stringify here, no parse in the client).
+  this.onElidedValue =
+    enableFlightHtmlFirst && typeof onElidedValue === 'function'
+      ? onElidedValue
+      : null;
   this.onElidedRow =
-    enableFlightHostElision && typeof onElidedRow === 'function'
-      ? onElidedRow
+    enableFlightHostElision &&
+    (typeof onElidedRow === 'function' || this.onElidedValue !== null)
+      ? onElidedRow || noop
       : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
@@ -847,6 +857,7 @@ export function createRequest(
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
   onElidedRow?: (id: number, json: string) => void,
+  onElidedValue?: (id: number, value: mixed) => void,
 ): Request {
   if (__DEV__) {
     resetOwnerStackLimit();
@@ -867,6 +878,7 @@ export function createRequest(
     filterStackFrame,
     keepDebugAlive,
     onElidedRow,
+    onElidedValue,
   );
 }
 
@@ -3778,6 +3790,23 @@ const nonElidableTags = new Set([
   'details',
 ]);
 
+// enableFlightHtmlFirst: Fizz renders these in place (not hoisted) unless
+// they are resources, and they carry no behavior the client must re-create:
+// <style> without precedence+href, and non-executable data-block scripts.
+function isElidableStyleOrScript(type: string, props: any): boolean {
+  if (props.itemProp != null) {
+    return false;
+  }
+  if (type === 'style') {
+    return !(typeof props.precedence === 'string' && props.href != null);
+  }
+  return (
+    props.src == null &&
+    !props.async &&
+    (props.type === 'application/ld+json' || props.type === 'application/json')
+  );
+}
+
 function isStaticPropValue(value: mixed): boolean {
   if (value === null || value === undefined) {
     return true;
@@ -3817,12 +3846,28 @@ function isStaticHostNode(node: any): boolean {
     }
     return true;
   }
+  if (enableFlightHtmlFirst && t === 'object' && node instanceof PrunedProp) {
+    // A client element the browser does not run (see PrunedProp) is static for
+    // the host region around it. An interactive client element is not, so that
+    // region keeps its host skeleton and only its static parts are elided: the
+    // client component is handed off to normal hydration with its props.
+    return node.tag !== '';
+  }
   if (t === 'object' && node.$$typeof === REACT_ELEMENT_TYPE) {
     const type = node.type;
-    if (typeof type !== 'string' || nonElidableTags.has(type)) {
+    if (typeof type !== 'string') {
       return false;
     }
     const props = node.props;
+    if (nonElidableTags.has(type)) {
+      if (
+        !enableFlightHtmlFirst ||
+        (type !== 'style' && type !== 'script') ||
+        !isElidableStyleOrScript(type, props)
+      ) {
+        return false;
+      }
+    }
     for (const k in props) {
       if (k === 'children') {
         continue;
@@ -3851,6 +3896,14 @@ function tryElideHostElement(
     return null;
   }
   const id = request.nextChunkId++;
+  const onElidedValue = request.onElidedValue;
+  if (onElidedValue !== null) {
+    if (enableTaint) {
+      assertNoTaint(element, new Set());
+    }
+    onElidedValue(id, element);
+    return '$J' + id.toString(16) + ':' + element.type;
+  }
   const prevSize = serializedSize;
   // The elided row is emitted whole; never defer pieces of it into new tasks.
   serializedSize = -Infinity;
@@ -3867,6 +3920,107 @@ function tryElideHostElement(
   // Not written to the stream: handed to the framework instead.
   onElidedRow(id, json);
   return '$J' + id.toString(16) + ':' + element.type;
+}
+
+const REACT_PRUNED_TYPE: symbol = Symbol.for('react.pruned');
+
+// A live row (onElidedValue) skips serialization, which is where taint is
+// enforced, so apply the same checks to the value before handing it out.
+function assertNoTaint(value: any, seen: Set<any>): void {
+  if (typeof value === 'string' || typeof value === 'bigint') {
+    const tainted = TaintRegistryValues.get(value);
+    if (tainted !== undefined) {
+      throwTaintViolation(tainted.message);
+    }
+    return;
+  }
+  if (value === null || typeof value !== 'object' || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+  const tainted = TaintRegistryObjects.get(value);
+  if (tainted !== undefined) {
+    throwTaintViolation(tainted);
+  }
+  if (value.$$typeof === REACT_ELEMENT_TYPE) {
+    assertNoTaint(value.props, seen);
+  } else if (value.$$typeof === REACT_PRUNED_TYPE) {
+    assertNoTaint(value.value, seen);
+  } else if (isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      assertNoTaint(value[i], seen);
+    }
+  } else {
+    for (const key in value) {
+      assertNoTaint(value[key], seen);
+    }
+  }
+}
+
+// enableFlightHtmlFirst: a prop value the browser does not need to hydrate
+// (the component renders the same without it). SSR gets the real value through
+// the elided row side channel; the stream says "$J<id>:" and the browser's
+// client decodes that to undefined. Other consumers (no side channel, e.g.
+// navigation) get the value inline. The value must be plain JSON-like data.
+// With a host `tag` the value is an element the browser does not have to run
+// at all (a stateless client component, say): the browser stub is an element
+// of that tag that adopts the server DOM, like an elided host element.
+function PrunedProp(this: any, value: mixed, tag: void | string) {
+  // Lets in-process consumers (onElidedValue) recognize and unwrap it.
+  this.$$typeof = REACT_PRUNED_TYPE;
+  this.value = value;
+  this.tag = tag === undefined ? '' : tag;
+}
+
+export function pruneProp(value: mixed, tag?: string): mixed {
+  // $FlowFixMe[incompatible-use]
+  return enableFlightHtmlFirst ? new PrunedProp(value, tag) : value;
+}
+
+function tryPruneProp(
+  request: Request,
+  task: Task,
+  pruned: any,
+): ReactJSONValue {
+  const onElidedRow = request.onElidedRow;
+  if (onElidedRow === null || elisionDepth > 0) {
+    return renderModelDestructive(
+      request,
+      task,
+      {'': pruned.value} as any,
+      '',
+      pruned.value as any,
+    );
+  }
+  const id = request.nextChunkId++;
+  const onElidedValue = request.onElidedValue;
+  if (onElidedValue !== null) {
+    if (enableTaint) {
+      assertNoTaint(pruned.value, new Set());
+    }
+    onElidedValue(id, pruned.value);
+    return '$J' + id.toString(16) + ':' + pruned.tag;
+  }
+  const prevSize = serializedSize;
+  serializedSize = -Infinity;
+  elisionDepth++;
+  let json: string;
+  try {
+    const resolved = resolveModel(
+      request,
+      task,
+      {'': pruned.value} as any,
+      '',
+      pruned.value as any,
+    );
+    // $FlowFixMe[incompatible-type] stringify can return null for undefined but we never do
+    json = stringify(resolved);
+  } finally {
+    elisionDepth--;
+    serializedSize = prevSize;
+  }
+  onElidedRow(id, json);
+  return '$J' + id.toString(16) + ':' + pruned.tag;
 }
 
 function renderModel(
@@ -4013,6 +4167,9 @@ function renderModelDestructive(
   }
 
   if (typeof value === 'object') {
+    if (enableFlightHtmlFirst && value instanceof PrunedProp) {
+      return tryPruneProp(request, task, value);
+    }
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
         if (enableFlightHostElision && request.onElidedRow !== null) {
@@ -4288,7 +4445,8 @@ function renderModelDestructive(
           enableFlightPayloadDedupe &&
           existingReference.length >= MIN_OUTLINED_PATH_REFERENCE_LENGTH &&
           existingReference.indexOf(':') !== -1 &&
-          !resolvingObjects.has(value)
+          !resolvingObjects.has(value) &&
+          !(enableFlightHtmlFirst && elisionDepth > 0)
         ) {
           // This is a path into another row. Repeating a long path for every
           // use costs more than writing the object once more in its own row.
@@ -4501,7 +4659,14 @@ function renderModelDestructive(
       }
     }
     // $FlowFixMe[invalid-compare]
-    if (value.length >= 1024 && byteLengthOfChunk !== null) {
+    if (
+      value.length >= 1024 &&
+      byteLengthOfChunk !== null &&
+      // enableFlightHtmlFirst: an elided row is one self-contained JSON string
+      // for the side channel. Its big strings stay inline in that string so
+      // nothing it contains reaches the main stream.
+      !(enableFlightHtmlFirst && elisionDepth > 0)
+    ) {
       // For large strings, we encode them outside the JSON payload so that we
       // don't have to double encode and double parse the strings. This can also
       // be more compact in case the string has a lot of escaped characters.
@@ -4509,7 +4674,8 @@ function renderModelDestructive(
     }
     if (
       enableFlightPayloadDedupe &&
-      value.length >= MIN_DEDUPLICATED_STRING_LENGTH
+      value.length >= MIN_DEDUPLICATED_STRING_LENGTH &&
+      !(enableFlightHtmlFirst && elisionDepth > 0)
     ) {
       return serializeDedupedString(request, value);
     }

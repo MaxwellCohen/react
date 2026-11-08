@@ -60,12 +60,14 @@ import {
 import type {TemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemporaryReferences';
 
 export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemporaryReferences';
+export {pruneProp as unstable_pruneForBrowser} from 'react-server/src/ReactFlightServer';
 
 export type {TemporaryReferenceSet};
 
 type Options = {
   // Prototype (enableFlightHostElision): receive elided host rows.
   onElidedRow?: (id: number, json: string) => void,
+  onElidedValue?: (id: number, value: mixed) => void,
   debugChannel?: {readable?: ReadableStream, writable?: WritableStream, ...},
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -141,6 +143,7 @@ function renderToReadableStream(
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
     options ? options.onElidedRow : undefined,
+    options ? options.onElidedValue : undefined,
   );
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);
