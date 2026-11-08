@@ -18,6 +18,8 @@ module.exports = [
       'react-dom/static.browser',
       'react-dom/unstable_server-external-runtime',
       'react-server-dom-webpack/src/client/react-flight-dom-client.browser',
+      'react-server-dom-webpack/src/client/react-flight-dom-client.browser.reply',
+      'react-server-dom-webpack/src/client/react-flight-dom-client.browser.parser',
       'react-server-dom-webpack/src/server/react-flight-dom-server.browser',
     ],
     paths: [
@@ -38,12 +40,18 @@ module.exports = [
       'react-server-dom-webpack',
       'react-server-dom-webpack/client',
       'react-server-dom-webpack/client.browser',
+      'react-server-dom-webpack/client.browser.reply',
+      'react-server-dom-webpack/client.browser.parser',
       'react-server-dom-webpack/server.browser',
       'react-server-dom-webpack/static.browser',
       'react-server-dom-webpack/src/client/ReactFlightDOMClientBrowser.js', // react-server-dom-webpack/client.browser
       'react-server-dom-webpack/src/client/ReactFlightClientConfigBundlerWebpack.js',
       'react-server-dom-webpack/src/client/ReactFlightClientConfigBundlerWebpackBrowser.js',
       'react-server-dom-webpack/src/client/react-flight-dom-client.browser',
+      'react-server-dom-webpack/src/client/react-flight-dom-client.browser.reply',
+      'react-server-dom-webpack/src/client/ReactFlightDOMClientBrowserReply.js',
+      'react-server-dom-webpack/src/client/react-flight-dom-client.browser.parser',
+      'react-server-dom-webpack/src/client/ReactFlightDOMClientBrowserParser.js',
       'react-server-dom-webpack/src/server/react-flight-dom-server.browser',
       'react-server-dom-webpack/src/server/ReactFlightDOMServerBrowser.js', // react-server-dom-webpack/src/server/react-flight-dom-server.browser
       'react-devtools',

@@ -48,6 +48,7 @@ import {
   enableFlightWeakThenables,
   enableFlightObjectReferences,
   enableFlightHostElision,
+  enableFlightLazyTypedArrays,
 } from 'shared/ReactFeatureFlags';
 
 import {
@@ -396,6 +397,11 @@ type Response = {
   _stringDecoder: StringDecoder,
   _closed: boolean,
   _closedReason: mixed,
+  _extLoader?: void | ParserExtensionLoader, // enableFlightLazyTypedArrays
+  _ext?: null | ParserExtension, // enableFlightLazyTypedArrays
+  _extQueue?: null | Array<() => void>, // enableFlightLazyTypedArrays
+  _extIds?: null | Set<number>, // enableFlightLazyTypedArrays
+  _extPendingClose?: boolean, // enableFlightLazyTypedArrays
   _allowPartialStream: boolean,
   _tempRefs: void | TemporaryReferenceSet, // the set temporary references can be resolved from
   _timeOrigin: number, // Profiling-only
@@ -414,6 +420,17 @@ type Response = {
   _replayConsole: boolean, // DEV-only
   _rootEnvironmentName: string, // DEV-only, the requested environment name.
 };
+
+// An optional, lazily loaded extension that decodes the rarely needed row
+// types so they stay out of the initial-load bundle (enableFlightLazyTypedArrays).
+export type ParserExtension = {
+  decodeTypedArray: (
+    tag: number,
+    buffer: Array<Uint8Array>,
+    chunk: Uint8Array,
+  ) => $ArrayBufferView,
+};
+export type ParserExtensionLoader = () => Promise<ParserExtension>;
 
 // This indirection exists only to clean up DebugChannel when all Lazy References are GC:ed.
 // Therefore we only use the indirection in DEV.
@@ -3156,6 +3173,7 @@ function ResponseInstance(
   debugStartTime: void | number, // DEV-only
   debugEndTime: void | number, // DEV-only
   debugChannel: void | DebugChannel, // DEV-only
+  extensionLoader: void | ParserExtensionLoader,
 ) {
   const chunks: Map<number, SomeChunk<any>> = new Map();
   this._bundlerConfig = bundlerConfig;
@@ -3172,6 +3190,13 @@ function ResponseInstance(
   this._closedReason = null;
   this._allowPartialStream = allowPartialStream;
   this._tempRefs = temporaryReferences;
+  if (enableFlightLazyTypedArrays) {
+    this._extLoader = extensionLoader;
+    this._ext = null;
+    this._extQueue = null;
+    this._extIds = null;
+    this._extPendingClose = false;
+  }
   if (enableProfilerTimer && enableComponentPerformanceTrack) {
     this._timeOrigin = 0;
     this._pendingInitialRender = null;
@@ -3266,6 +3291,7 @@ export function createResponse(
   debugStartTime: void | number, // DEV-only
   debugEndTime: void | number, // DEV-only
   debugChannel: void | DebugChannel, // DEV-only
+  extensionLoader?: void | ParserExtensionLoader,
 ): WeakResponse {
   if (__DEV__) {
     // We use eval to create fake function stacks which includes Component stacks.
@@ -3292,6 +3318,7 @@ export function createResponse(
       debugStartTime,
       debugEndTime,
       debugChannel,
+      extensionLoader,
     ),
   );
 }
@@ -5219,6 +5246,88 @@ function flushInitialRenderPerformance(response: Response): void {
   }
 }
 
+function resolveLazyTypedArray(
+  response: Response,
+  streamState: StreamState,
+  id: number,
+  tag: number,
+  buffer: Array<Uint8Array>,
+  chunk: Uint8Array,
+): void {
+  const ext = response._ext;
+  if (ext != null) {
+    resolveBuffer(
+      response,
+      id,
+      ext.decodeTypedArray(tag, buffer, chunk),
+      streamState,
+    );
+    return;
+  }
+  // The row parser reuses `buffer`, so take a copy before deferring.
+  const rowBuffer = buffer.slice();
+  enqueueExtensionRow(response, id, () =>
+    resolveLazyTypedArray(response, streamState, id, tag, rowBuffer, chunk),
+  );
+}
+
+// Rows that need the parser extension are replayed once it has loaded. Rows
+// for the same id must stay in order (e.g. a stream's data and its close row),
+// so once an id has a deferred row, all later rows for that id are deferred too.
+function enqueueExtensionRow(
+  response: Response,
+  id: number,
+  replay: () => void,
+): void {
+  let queue = response._extQueue;
+  let ids = response._extIds;
+  if (queue == null || ids == null) {
+    const loader = response._extLoader;
+    if (loader === undefined) {
+      throw new Error(
+        'This Flight response contains rows that require the lazily loaded parser extension, but no unstable_loadParserExtension option was provided.',
+      );
+    }
+    queue = response._extQueue = [];
+    ids = response._extIds = new Set();
+    loader().then(
+      ext => {
+        response._ext = ext;
+        flushExtensionQueue(response);
+      },
+      error => {
+        response._extQueue = null;
+        response._extIds = null;
+        reportGlobalError(getWeakResponse(response), error);
+      },
+    );
+  }
+  queue.push(replay);
+  ids.add(id);
+}
+
+function flushExtensionQueue(response: Response): void {
+  const queue = response._extQueue;
+  // Clear first so that replayed rows are processed directly.
+  response._extQueue = null;
+  response._extIds = null;
+  const weakResponse = getWeakResponse(response);
+  if (queue != null && !response._closed) {
+    try {
+      for (let i = 0; i < queue.length; i++) {
+        queue[i]();
+      }
+    } catch (error) {
+      reportGlobalError(weakResponse, error);
+      return;
+    }
+  }
+  if (response._extPendingClose) {
+    response._extPendingClose = false;
+    close(weakResponse);
+  }
+}
+
 function processFullBinaryRow(
   response: Response,
   streamState: StreamState,
@@ -5227,129 +5336,183 @@ function processFullBinaryRow(
   buffer: Array<Uint8Array>,
   chunk: Uint8Array,
 ): void {
-  switch (tag) {
-    case 65 /* "A" */:
-      // We must always clone to extract it into a separate buffer instead of just a view.
-      resolveBuffer(
-        response,
-        id,
-        mergeBuffer(buffer, chunk).buffer,
-        streamState,
-      );
+  if (
+    enableFlightLazyTypedArrays &&
+    response._extIds != null &&
+    response._extIds.has(id)
+  ) {
+    const rowBuffer = buffer.slice();
+    enqueueExtensionRow(response, id, () =>
+      processFullBinaryRow(response, streamState, id, tag, rowBuffer, chunk),
+    );
+    return;
+  }
+  if (enableFlightLazyTypedArrays) {
+    switch (tag) {
+      case 65 /* "A" */:
+        // We must always clone to extract it into a separate buffer instead of just a view.
+        resolveBuffer(
+          response,
+          id,
+          mergeBuffer(buffer, chunk).buffer,
+          streamState,
+        );
+        return;
+      case 111 /* "o" */:
+        resolveBuffer(
+          response,
+          id,
+          buffer.length === 0 ? chunk : mergeBuffer(buffer, chunk),
+          streamState,
+        );
+        return;
+    }
+
+    if ('OUSsLlGgMmV'.indexOf(String.fromCharCode(tag)) !== -1) {
+      resolveLazyTypedArray(response, streamState, id, tag, buffer, chunk);
       return;
-    case 79 /* "O" */:
-      resolveTypedArray(response, id, buffer, chunk, Int8Array, 1, streamState);
-      return;
-    case 111 /* "o" */:
-      resolveBuffer(
-        response,
-        id,
-        buffer.length === 0 ? chunk : mergeBuffer(buffer, chunk),
-        streamState,
-      );
-      return;
-    case 85 /* "U" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        Uint8ClampedArray,
-        1,
-        streamState,
-      );
-      return;
-    case 83 /* "S" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        Int16Array,
-        2,
-        streamState,
-      );
-      return;
-    case 115 /* "s" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        Uint16Array,
-        2,
-        streamState,
-      );
-      return;
-    case 76 /* "L" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        Int32Array,
-        4,
-        streamState,
-      );
-      return;
-    case 108 /* "l" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        Uint32Array,
-        4,
-        streamState,
-      );
-      return;
-    case 71 /* "G" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        Float32Array,
-        4,
-        streamState,
-      );
-      return;
-    case 103 /* "g" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        Float64Array,
-        8,
-        streamState,
-      );
-      return;
-    case 77 /* "M" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        BigInt64Array,
-        8,
-        streamState,
-      );
-      return;
-    case 109 /* "m" */:
-      resolveTypedArray(
-        response,
-        id,
-        buffer,
-        chunk,
-        BigUint64Array,
-        8,
-        streamState,
-      );
-      return;
-    case 86 /* "V" */:
-      resolveTypedArray(response, id, buffer, chunk, DataView, 1, streamState);
-      return;
+    }
+  } else {
+    switch (tag) {
+      case 65 /* "A" */:
+        // We must always clone to extract it into a separate buffer instead of just a view.
+        resolveBuffer(
+          response,
+          id,
+          mergeBuffer(buffer, chunk).buffer,
+          streamState,
+        );
+        return;
+      case 79 /* "O" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Int8Array,
+          1,
+          streamState,
+        );
+        return;
+      case 111 /* "o" */:
+        resolveBuffer(
+          response,
+          id,
+          buffer.length === 0 ? chunk : mergeBuffer(buffer, chunk),
+          streamState,
+        );
+        return;
+      case 85 /* "U" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Uint8ClampedArray,
+          1,
+          streamState,
+        );
+        return;
+      case 83 /* "S" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Int16Array,
+          2,
+          streamState,
+        );
+        return;
+      case 115 /* "s" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Uint16Array,
+          2,
+          streamState,
+        );
+        return;
+      case 76 /* "L" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Int32Array,
+          4,
+          streamState,
+        );
+        return;
+      case 108 /* "l" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Uint32Array,
+          4,
+          streamState,
+        );
+        return;
+      case 71 /* "G" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Float32Array,
+          4,
+          streamState,
+        );
+        return;
+      case 103 /* "g" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          Float64Array,
+          8,
+          streamState,
+        );
+        return;
+      case 77 /* "M" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          BigInt64Array,
+          8,
+          streamState,
+        );
+        return;
+      case 109 /* "m" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          BigUint64Array,
+          8,
+          streamState,
+        );
+        return;
+      case 86 /* "V" */:
+        resolveTypedArray(
+          response,
+          id,
+          buffer,
+          chunk,
+          DataView,
+          1,
+          streamState,
+        );
+        return;
+    }
   }
 
   const stringDecoder = response._stringDecoder;
@@ -5368,6 +5531,16 @@ function processFullStringRow(
   tag: number,
   row: string,
 ): void {
+  if (
+    enableFlightLazyTypedArrays &&
+    response._extIds != null &&
+    response._extIds.has(id)
+  ) {
+    enqueueExtensionRow(response, id, () =>
+      processFullStringRow(response, streamState, id, tag, row),
+    );
+    return;
+  }
   switch (tag) {
     case 73 /* "I" */: {
       resolveModule(response, id, row, streamState);
@@ -5842,6 +6015,17 @@ export function close(weakResponse: WeakResponse): void {
     return;
   }
   const response = unwrapWeakResponse(weakResponse);
+  if (enableFlightLazyTypedArrays) {
+    if (response._closed) {
+      // Already failed (e.g. the parser extension didn't load). Keep that error.
+      return;
+    }
+    if (response._extQueue != null) {
+      // Rows are still waiting for the parser extension. Close once they're replayed.
+      response._extPendingClose = true;
+      return;
+    }
+  }
   if (response._allowPartialStream) {
     // For partial streams, we halt pending chunks instead of erroring them.
     response._closed = true;
