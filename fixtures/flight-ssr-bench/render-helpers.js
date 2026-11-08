@@ -45,6 +45,58 @@ function renderFizzEdge(AppComponent, itemCount) {
 // Returns a Node Readable stream of HTML with injected Flight scripts.
 // ---------------------------------------------------------------------------
 
+// opts.live (enableFlightHtmlFirst): hand SSR the elided rows as live React
+// nodes (no JSON). Client references in them are resolved with the same
+// manifest the server uses, which a framework has in hand in-process.
+const ELEMENT = Symbol.for('react.transitional.element');
+const PRUNED = Symbol.for('react.pruned');
+const CLIENT_REF = Symbol.for('react.client.reference');
+
+function makeLiveResolver(clientManifest) {
+  const cache = new Map();
+  function resolveType(ref) {
+    let c = cache.get(ref.$$id);
+    if (c === undefined) {
+      const [href, name] = ref.$$id.split('#');
+      const mod = global.__webpack_require__(clientManifest[href].id);
+      c = name && name !== '*' ? mod[name] : mod.default || mod;
+      cache.set(ref.$$id, c);
+    }
+    return c;
+  }
+  return function resolve(node) {
+    if (node === null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) {
+      let out = null;
+      for (let i = 0; i < node.length; i++) {
+        const r = resolve(node[i]);
+        if (r !== node[i]) {
+          if (out === null) out = node.slice();
+          out[i] = r;
+        }
+      }
+      return out || node;
+    }
+    if (node.$$typeof === PRUNED) return resolve(node.value);
+    if (node.$$typeof === ELEMENT) {
+      const type = node.type;
+      const nextType =
+        type !== null &&
+        (typeof type === 'function' || typeof type === 'object') &&
+        type.$$typeof === CLIENT_REF
+          ? resolveType(type)
+          : type;
+      const children = node.props.children;
+      const nextChildren = resolve(children);
+      if (nextType === type && nextChildren === children) return node;
+      const props = Object.assign({}, node.props);
+      if (children !== undefined) props.children = nextChildren;
+      return Object.assign({}, node, {type: nextType, props});
+    }
+    return node;
+  };
+}
+
 function renderFlightFizzNode(
   renderRSCNode,
   AppComponent,
@@ -66,7 +118,12 @@ function renderFlightFizzNode(
     AppComponent,
     itemCount,
     elidedRows
-      ? {onElidedRow: (id, json) => elidedRows.set(id, json)}
+      ? opts.live
+        ? (() => {
+            const resolve = makeLiveResolver(clientManifest);
+            return {onElidedValue: (id, v) => elidedRows.set(id, resolve(v))};
+          })()
+        : {onElidedRow: (id, json) => elidedRows.set(id, json)}
       : undefined
   );
 

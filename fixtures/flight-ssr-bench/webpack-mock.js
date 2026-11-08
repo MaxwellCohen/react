@@ -7,18 +7,30 @@ const fs = require('fs');
 const clientModules = {};
 const clientManifest = {};
 const ssrModuleMap = {};
+const clientFiles = {};
 let moduleIdx = 0;
 
 function registerClientModule(modulePath) {
-  const id = String(moduleIdx++);
-  const chunkId = 'chunk-' + id;
+  const chunkId = 'chunk-' + moduleIdx++;
   const absPath = path.resolve(__dirname, modulePath);
+  // Same id webpack's `named` moduleIds gives the module in the browser build.
+  const id = './' + path.relative(__dirname, absPath).split(path.sep).join('/');
   const actualExports = require(absPath);
   clientModules[id] = actualExports;
+  clientFiles[id] = absPath;
 
   const href = url.pathToFileURL(absPath).href;
   clientManifest[href] = {id, chunks: [chunkId, absPath], name: '*'};
-  ssrModuleMap[id] = {'*': {id, chunks: [chunkId, absPath], name: '*'}};
+  // Frameworks' SSR manifests list no chunks (modules are already loaded on the
+  // server), so client references resolve synchronously and Fizz never suspends
+  // on them. FLIGHT_BENCH_ASYNC_CHUNKS=1 restores the old async chunk load.
+  ssrModuleMap[id] = {
+    '*': {
+      id,
+      chunks: process.env.FLIGHT_BENCH_ASYNC_CHUNKS ? [chunkId, absPath] : [],
+      name: '*',
+    },
+  };
 }
 
 // Auto-register all 'use client' components by scanning src/
@@ -59,4 +71,4 @@ const ssrManifest = {
   serverModuleMap: null,
 };
 
-module.exports = {clientManifest, ssrManifest};
+module.exports = {clientManifest, ssrManifest, clientFiles};
