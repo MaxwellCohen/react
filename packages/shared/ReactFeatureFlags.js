@@ -117,6 +117,10 @@ export const enableOptimisticKey = __EXPERIMENTAL__;
 // Prototype: elide static host subtrees from the initial Flight payload.
 export const enableFlightHostElision: boolean = false;
 
+// Prototype: elide static <style>/JSON-LD <script> and keep big strings of elided
+// rows out of the main stream (builds on enableFlightHostElision).
+export const enableFlightHtmlFirst: boolean = false;
+
 /**
  * Switches Fiber creation to a simple object instead of a constructor.
  */

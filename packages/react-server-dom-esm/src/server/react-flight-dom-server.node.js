@@ -17,4 +17,5 @@ export {
   registerServerReference,
   registerClientReference,
   createTemporaryReferenceSet,
+  unstable_pruneForBrowser,
 } from './ReactFlightDOMServerNode';

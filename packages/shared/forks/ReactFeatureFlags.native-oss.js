@@ -76,6 +76,8 @@ export const enableOptimisticKey: boolean = false;
 
 export const enableFlightHostElision: boolean = false;
 
+export const enableFlightHtmlFirst: boolean = false;
+
 // Profiling Only
 export const enableProfilerTimer: boolean = __PROFILE__;
 export const enableProfilerCommitHooks: boolean = __PROFILE__;

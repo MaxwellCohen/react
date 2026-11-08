@@ -430,7 +430,8 @@ function hasGCedResponse(weakResponse: WeakResponse): boolean {
 
 // The side channel for rows the server elided from the stream. Rows are
 // complete JSON strings, so they are never interleaved with stream bytes.
-export type ElidedRows = {get(id: number): void | string, ...};
+// A row is JSON, or (enableFlightHtmlFirst, in-process) a ready React node.
+export type ElidedRows = {get(id: number): void | string | mixed, ...};
 
 export function attachElidedRows(
   weakResponse: WeakResponse,
@@ -886,6 +887,11 @@ function createResolvedModelChunk<T>(
 ): ResolvedModelChunk<T> {
   // $FlowFixMe[invalid-constructor] Flow doesn't support functions as constructors
   return new ReactPromise(RESOLVED_MODEL, value, {[RESPONSE_SYMBOL]: response});
+}
+
+function createInitializedValueChunk<T>(value: T): InitializedChunk<T> {
+  // $FlowFixMe[invalid-constructor] Flow doesn't support functions as constructors
+  return new ReactPromise(INITIALIZED, value, null);
 }
 
 function createResolvedModuleChunk<T>(
@@ -2799,7 +2805,9 @@ function parseModelString(
             if (json !== undefined) {
               response._chunks.set(
                 id,
-                createResolvedModelChunk(response, json),
+                typeof json === 'string'
+                  ? createResolvedModelChunk(response, json)
+                  : createInitializedValueChunk(json),
               );
             }
           }
@@ -2812,6 +2820,10 @@ function parseModelString(
               key,
               createModel,
             );
+          }
+          if (colon === value.length - 1) {
+            // Pruned prop (enableFlightHtmlFirst): the browser never gets it.
+            return undefined;
           }
           return createElidedHostElement(value.slice(colon + 1));
         }

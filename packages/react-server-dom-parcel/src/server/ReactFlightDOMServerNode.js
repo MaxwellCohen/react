@@ -80,6 +80,7 @@ import type {TemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemp
 import type {FileHandle} from 'react-server/src/ReactFlightReplyServer';
 
 export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemporaryReferences';
+export {pruneProp as unstable_pruneForBrowser} from 'react-server/src/ReactFlightServer';
 
 export type {TemporaryReferenceSet};
 
@@ -158,6 +159,7 @@ function startReadingFromDebugChannelReadable(
 type Options = {
   // Prototype (enableFlightHostElision): receive elided host rows.
   onElidedRow?: (id: number, json: string) => void,
+  onElidedValue?: (id: number, value: mixed) => void,
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -206,6 +208,7 @@ export function renderToPipeableStream(
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
     options ? options.onElidedRow : undefined,
+    options ? options.onElidedValue : undefined,
   );
   let hasStartedFlowing = false;
   startWork(request);

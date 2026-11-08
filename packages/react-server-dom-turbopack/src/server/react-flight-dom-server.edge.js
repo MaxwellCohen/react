@@ -19,4 +19,5 @@ export {
   registerClientReference,
   createClientModuleProxy,
   createTemporaryReferenceSet,
+  unstable_pruneForBrowser,
 } from './ReactFlightDOMServerEdge';
