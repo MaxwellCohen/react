@@ -4786,6 +4786,41 @@ export function writeStartDeclarativePatch(
   id: number,
   hoistableState: HoistableState,
 ): boolean {
+  // Stylesheets that gate reveal on the script path ($RR waits for them to load) are
+  // emitted as render-blocking links BEFORE the <template for>, at the top level of
+  // the document. Verified in Chrome 156: the parser stalls at a body stylesheet link
+  // until it has loaded (with or without blocking="render"), so the patch that follows
+  // is only applied once the CSS is ready and the fallback stays visible meanwhile.
+  // Putting the link inside the template instead stalls the parser mid-patch, after
+  // the fallback range was already cleared, which shows an empty gap for the whole
+  // load. Boundaries patched after this one queue behind the stylesheet.
+  hoistableState.stylesheets.forEach(resource => {
+    if (resource.state === PREAMBLE || resource.state === LATE) {
+      // Already in the shell, or already emitted by an earlier boundary.
+      return;
+    }
+    const props = resource.props;
+    const href = props.href;
+    const precedence = props['data-precedence'];
+    if (__DEV__) {
+      checkAttributeStringCoercion(href, 'href');
+    }
+    const coercedHref = sanitizeURL('' + (href as any));
+    if (__DEV__) {
+      checkAttributeStringCoercion(precedence, 'precedence');
+    }
+    const coercedPrecedence = '' + (precedence as any);
+    writeChunk(destination, declarativeLinkOpen);
+    writeChunk(destination, stringToChunk(escapeTextForBrowser(coercedHref)));
+    writeChunk(destination, declarativeLinkPrecedence);
+    writeChunk(
+      destination,
+      stringToChunk(escapeTextForBrowser(coercedPrecedence)),
+    );
+    writeChunk(destination, declarativeLinkEnd);
+    resource.state = LATE;
+  });
+
   writeChunk(destination, startDeclarativePatch1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
@@ -4818,35 +4853,6 @@ export function writeStartDeclarativePatch(
     hrefs.length = 0;
   });
 
-  // Stylesheets that gate reveal on the script path ($RR waits for them to load) are
-  // emitted as render-blocking links in front of the content. UNVERIFIED: relies on
-  // blocking="render" delaying paint of the content after it when patched in.
-  hoistableState.stylesheets.forEach(resource => {
-    if (resource.state === PREAMBLE || resource.state === LATE) {
-      // Already in the shell, or already emitted by an earlier boundary.
-      return;
-    }
-    const props = resource.props;
-    const href = props.href;
-    const precedence = props['data-precedence'];
-    if (__DEV__) {
-      checkAttributeStringCoercion(href, 'href');
-    }
-    const coercedHref = sanitizeURL('' + (href as any));
-    if (__DEV__) {
-      checkAttributeStringCoercion(precedence, 'precedence');
-    }
-    const coercedPrecedence = '' + (precedence as any);
-    writeChunk(destination, declarativeLinkOpen);
-    writeChunk(destination, stringToChunk(escapeTextForBrowser(coercedHref)));
-    writeChunk(destination, declarativeLinkPrecedence);
-    writeChunk(
-      destination,
-      stringToChunk(escapeTextForBrowser(coercedPrecedence)),
-    );
-    writeChunk(destination, declarativeLinkEnd);
-    resource.state = LATE;
-  });
   return true;
 }
 

@@ -309,8 +309,10 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['styled']);
+    // The link goes in front of the template, not inside it. Chrome stalls the parser at
+    // a body stylesheet, so the patch is only applied once the CSS has loaded.
     expect(out).toContain(
-      '<template for="B:0"><link rel="stylesheet" href="foo.css" data-precedence="default" blocking="render"><div>',
+      '<link rel="stylesheet" href="foo.css" data-precedence="default" blocking="render"><template for="B:0"><div>',
     );
     expect(out).not.toContain('$RR');
   });
@@ -394,6 +396,59 @@ describe('ReactDOMFizzServer declarative patching', () => {
     // Same DOM nodes: hydrated, not client rendered.
     expect(Array.from(container.querySelectorAll('.item'))).toEqual(nodes);
     nodes[1].click();
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('hydrates past inline late styles carried by a patch', async () => {
+    function Styled({onClick}) {
+      readText('styled');
+      return (
+        <>
+          <style href="late-1" precedence="default">
+            {'.item{color:red}'}
+          </style>
+          <div className="item" onClick={onClick}>
+            styled
+          </div>
+        </>
+      );
+    }
+    function StyledApp({onClick}) {
+      return (
+        <div id="app">
+          <Suspense fallback={<p className="fb">loading</p>}>
+            <Styled onClick={onClick} />
+          </Suspense>
+        </div>
+      );
+    }
+    const r = await render(<StyledApp />, {unstable_declarativePatching: true});
+    const container = document.getElementById('container');
+    container.innerHTML = r.shell();
+    const out = await r.finish(['styled']);
+    // The late style is written inline, at the start of the patch.
+    expect(out).toContain(
+      '<template for="B:0"><style data-precedence="default"',
+    );
+    container.innerHTML = out;
+    applyPatches(container);
+    const node = container.querySelector('.item');
+    expect(node).not.toBe(null);
+
+    textCache = new Map();
+    resolveText('styled');
+    const onClick = jest.fn();
+    const errors = [];
+    await act(() => {
+      ReactDOMClient.hydrateRoot(container, <StyledApp onClick={onClick} />, {
+        onRecoverableError: e => errors.push(e),
+      });
+    });
+    // The style sits in front of the first element of the boundary. Hydration has to
+    // step over it instead of reporting a mismatch.
+    expect(errors).toEqual([]);
+    expect(container.querySelector('.item')).toBe(node);
+    node.click();
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 

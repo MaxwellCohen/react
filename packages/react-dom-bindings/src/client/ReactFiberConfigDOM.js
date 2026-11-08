@@ -4493,11 +4493,38 @@ export function isFormStateMarkerMatching(
   return markerInstance.data === FORM_STATE_IS_MATCHING;
 }
 
+// A declarative patch carries its late styles and render-blocking stylesheets inline,
+// so unlike the script path they can sit in the middle of a boundary's body instead of
+// being hoisted to <head>. They are resources owned by the hoisting logic and never a
+// host instance that a component rendered, so hydration has to step over them.
+function isInlineStyleResource(element: Element): boolean {
+  switch (element.nodeName) {
+    case 'LINK':
+      return (
+        element.getAttribute('rel') === 'stylesheet' &&
+        element.hasAttribute('data-precedence')
+      );
+    case 'STYLE':
+      return element.hasAttribute('data-precedence');
+    default:
+      return false;
+  }
+}
+
 function getNextHydratable(node: ?Node) {
   // Skip non-hydratable nodes.
   for (; node != null; node = (node as any as Node).nextSibling) {
     const nodeType = node.nodeType;
-    if (nodeType === ELEMENT_NODE || nodeType === TEXT_NODE) {
+    if (nodeType === ELEMENT_NODE) {
+      if (
+        enableFizzDeclarativePatching &&
+        isInlineStyleResource(node as any as Element)
+      ) {
+        continue;
+      }
+      break;
+    }
+    if (nodeType === TEXT_NODE) {
       break;
     }
     if (nodeType === COMMENT_NODE) {
