@@ -155,6 +155,11 @@ export const enableNoCloningMemoCache: boolean = false;
 // (handled with an MutationObserver) instead of inline-scripts
 export const enableFizzExternalRuntime = __EXPERIMENTAL__;
 
+// Experimental: lets Fizz stream pending Suspense boundaries as <?start>/<?end>
+// ranges and completions as <template for>, instead of $RC scripts. Opt-in per
+// request via the unstable_declarativePatching option.
+export const enableFizzDeclarativePatching: boolean = false;
+
 export const alwaysThrottleRetries: boolean = true;
 
 export const passChildrenWhenCloningPersistedNodes: boolean = false;

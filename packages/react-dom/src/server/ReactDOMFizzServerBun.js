@@ -56,6 +56,15 @@ type Options = {
   formState?: ReactFormState<any, any> | null,
   onHeaders?: (headers: Headers) => void,
   maxHeadersLength?: number,
+  // Experimental (enableFizzDeclarativePatching): stream boundaries with <template for>
+  // instead of inline scripts. Only enable for browsers that support it.
+  // true streams patches that work in every browser (a small $RP script per group of
+  // patches fills in where the browser lacks <template for>). 'native-only' emits no
+  // scripts at all and needs a browser with native support.
+  unstable_declarativePatching?: boolean | 'native-only',
+  // Batch window in ms for declarative patches (default 300, the Suspense reveal throttle;
+  // 0 only groups patches that complete in the same flush).
+  unstable_declarativeBatchMs?: number,
 };
 
 // TODO: Move to sub-classing ReadableStream.
@@ -129,6 +138,8 @@ function renderToReadableStream(
         options ? options.importMap : undefined,
         onHeadersImpl,
         options ? options.maxHeadersLength : undefined,
+        options ? options.unstable_declarativePatching : undefined,
+        options ? options.unstable_declarativeBatchMs : undefined,
       ),
       createRootFormatContext(options ? options.namespaceURI : undefined),
       options ? options.progressiveChunkSize : undefined,

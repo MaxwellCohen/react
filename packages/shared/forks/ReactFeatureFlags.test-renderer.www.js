@@ -49,6 +49,7 @@ export const enableLegacyHidden: boolean = false;
 export const enableTransitionTracing: boolean = false;
 
 export const enableFizzExternalRuntime: boolean = false;
+export const enableFizzDeclarativePatching: boolean = false;
 
 export const alwaysThrottleRetries: boolean = true;
 
