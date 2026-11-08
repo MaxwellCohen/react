@@ -121,7 +121,11 @@ describe('ReactDOMFizzServer declarative patching', () => {
     });
     let pipe;
     await act(async () => {
-      pipe = ReactDOMFizzServer.renderToPipeableStream(element, options).pipe;
+      pipe = ReactDOMFizzServer.renderToPipeableStream(element, {
+        // Most tests look at one completion at a time; the batch window has its own tests.
+        unstable_declarativeBatchMs: 0,
+        ...options,
+      }).pipe;
       pipe(writable);
     });
     return {
@@ -496,5 +500,64 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(items.length).toBe(2);
     items[0].click();
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('client renders an errored boundary as soon as its marker arrives', async () => {
+    Object.defineProperty(document, 'readyState', {
+      configurable: true,
+      get: () => 'loading',
+    });
+    function Boom() {
+      readText('boom');
+      throw new Error('boom');
+    }
+    function ErrorApp({fallbackOnClient}) {
+      return (
+        <div id="app">
+          <Suspense fallback={<span className="fb">Loading</span>}>
+            {fallbackOnClient ? (
+              <p className="client">client rendered</p>
+            ) : (
+              <Boom />
+            )}
+          </Suspense>
+        </div>
+      );
+    }
+    const r = await render(<ErrorApp />, {
+      unstable_declarativePatching: true,
+      onError: () => 'digest-2',
+    });
+    const container = document.getElementById('container');
+    const shell = r.shell();
+    container.innerHTML = shell;
+    expect(container.querySelectorAll('.fb').length).toBe(1);
+
+    const errors = [];
+    await act(() => {
+      ReactDOMClient.hydrateRoot(
+        container,
+        <ErrorApp fallbackOnClient={true} />,
+        {onRecoverableError: e => errors.push(e)},
+      );
+    });
+    // Still waiting: the document is loading and nothing told us the boundary errored.
+    expect(container.querySelectorAll('.client').length).toBe(0);
+
+    const out = await r.finish(['boom']);
+    const marker = out.slice(shell.length);
+    expect(marker).toContain('data-dgst="digest-2"');
+    await act(async () => {
+      // The marker is written at the body level, outside the boundary's own parent.
+      const holder = document.createElement('div');
+      holder.innerHTML = marker;
+      while (holder.firstChild) {
+        document.body.appendChild(holder.firstChild);
+      }
+    });
+    await act(async () => {});
+    expect(container.querySelectorAll('.client').length).toBe(1);
+    expect(errors.length).toBe(1);
+    expect(errors[0].digest).toBe('digest-2');
   });
 });

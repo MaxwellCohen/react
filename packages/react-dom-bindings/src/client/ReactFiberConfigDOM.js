@@ -232,6 +232,8 @@ type HostNodeWithFragmentHandles = (Instance | TextInstance) & {
 declare class ActivityInterface extends Comment {}
 declare class SuspenseInterface extends Comment {
   _reactRetry: void | (() => void);
+  // enableFizzDeclarativePatching: the <template data-rcr> an errored boundary was signalled with.
+  _reactError: void | HTMLElement;
 }
 
 export type ActivityInstance = ActivityInterface;
@@ -4332,11 +4334,34 @@ function isDeclarativePendingMarker(node: null | Node): boolean {
 // detect it: the start marker is only present while the boundary is still pending. The
 // comment node itself is never replaced, so it is safe to flip it here, which is what
 // the $RC runtime would have done.
+// The server signals an errored declarative boundary with <template data-rcr id="E:<name>">
+// (see writeDeclarativeClientRenderedBoundary). The name is in the pending range marker.
+function syncDeclarativelyErroredBoundary(instance: SuspenseInstance): boolean {
+  const marker = instance.nextSibling;
+  if (!isDeclarativePendingMarker(marker)) {
+    return false;
+  }
+  const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
+  if (match === null) {
+    return false;
+  }
+  const errorMarker = instance.ownerDocument.getElementById('E:' + match[1]);
+  if (errorMarker === null) {
+    return false;
+  }
+  instance._reactError = errorMarker;
+  instance.data = SUSPENSE_FALLBACK_START_DATA;
+  return true;
+}
+
 function syncDeclarativelyPatchedBoundary(instance: SuspenseInstance): void {
   if (!enableFizzDeclarativePatching) {
     return;
   }
   if (instance.data !== SUSPENSE_PENDING_START_DATA) {
+    return;
+  }
+  if (syncDeclarativelyErroredBoundary(instance)) {
     return;
   }
   const next = instance.nextSibling;
@@ -4380,9 +4405,11 @@ export function getSuspenseInstanceFallbackErrorDetails(
   stack?: string,
   componentStack?: string,
 } {
-  const dataset =
-    instance.nextSibling &&
-    (instance.nextSibling as any as HTMLElement).dataset;
+  const errorSource =
+    enableFizzDeclarativePatching && instance._reactError !== undefined
+      ? instance._reactError
+      : instance.nextSibling;
+  const dataset = errorSource && (errorSource as any as HTMLElement).dataset;
   let digest, message, stack, componentStack;
   if (dataset) {
     digest = dataset.dgst;
@@ -4453,11 +4480,20 @@ export function registerSuspenseInstanceRetry(
       // Nothing calls _reactRetry for <template for> patches, so watch the siblings
       // for the marker disappearing instead of waiting for DOMContentLoaded.
       observer = new MutationObserver(() => {
-        if (!isDeclarativePendingMarker(instance.nextSibling)) {
+        if (
+          !isDeclarativePendingMarker(instance.nextSibling) ||
+          syncDeclarativelyErroredBoundary(instance)
+        ) {
           listener();
         }
       });
       observer.observe(parentNode, {childList: true});
+      // The error marker is written where the parser is, which is the body level
+      // and not necessarily the boundary's own parent.
+      const body = ownerDocument.body;
+      if (body !== null && body !== parentNode) {
+        observer.observe(body, {childList: true});
+      }
     }
   }
 }

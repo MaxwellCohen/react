@@ -9,6 +9,7 @@ const params = new URLSearchParams(location.search);
 const {App} = createPages(React, {
   boundaries: Number(params.get('n') || 300),
   cssMs: Number(params.get('cssMs') || 900),
+  order: params.get('order') || 'forwards',
 });
 window.__recoverable = [];
 window.__hydrateStartedAt = Math.round(performance.now());

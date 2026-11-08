@@ -53,6 +53,29 @@ const PROBE = `
     if (r.last && ts - r.last > r.maxGap) { r.maxGap = Math.round(ts - r.last); r.maxGapAt = Math.round(r.last); }
     r.last = ts; r.frames++; requestAnimationFrame(tick);
   })(0);
+  // Reveal cadence: how many separate DOM updates removed fallbacks, and in how many
+  // distinct animation frames (what the user can actually see as separate reveals).
+  window.__rev = {calls: 0, removed: 0, frames: 0, first: 0, last: 0};
+  var revPending = false;
+  new MutationObserver(function (muts) {
+    var n = 0;
+    muts.forEach(function (m) {
+      m.removedNodes.forEach(function (x) {
+        if (x.nodeType === 1 && x.classList.contains('fb')) n++;
+      });
+    });
+    if (n) {
+      var r = window.__rev;
+      r.calls++; r.removed += n; r.last = t(); if (!r.first) r.first = r.last;
+      revPending = true;
+    }
+  }).observe(document, {childList: true, subtree: true});
+  (function revTick() {
+    requestAnimationFrame(function () {
+      if (revPending) { window.__rev.frames++; revPending = false; }
+      revTick();
+    });
+  })();
   // When does the fallback go away, and is #styled already styled at that point?
   window.__fbGone = null;
   new MutationObserver(function () {
@@ -282,12 +305,82 @@ module.exports = function createPages(React, ctx) {
     ];
   }
 
+  // SuspenseList with staggered, out of order delays (needs the experimental build).
+  function List() {
+    const order = (ctx && ctx.order) || 'forwards';
+    const delays = [700, 200, 500, 100, 600, 300];
+    const SuspenseList = React.unstable_SuspenseList;
+    return [
+      h('h1', {key: 'h'}, 'List ' + order),
+      h(
+        SuspenseList,
+        {key: 'l', revealOrder: order},
+        delays.map((ms, i) =>
+          h(
+            Suspense,
+            {
+              key: i,
+              fallback: h('div', {className: 'card fb'}, 'Loading ' + i),
+            },
+            h(
+              Delay,
+              {id: 'l' + i, ms},
+              h(
+                'div',
+                {className: 'card', id: 'content-l' + i},
+                'Item ' + i,
+                h(Counter, {id: 'l' + i})
+              )
+            )
+          )
+        )
+      ),
+    ];
+  }
+
+  function Boom() {
+    // Throws on the server only, so the client can recover by client rendering.
+    if (isServer) {
+      throw new Error('boom from the server');
+    }
+    return h(
+      'div',
+      {id: 'content-error'},
+      'Client rendered ',
+      h(Counter, {id: 'error'})
+    );
+  }
+
+  // The boundary errors on the server after a delay; React client renders it.
+  function ErrorPage() {
+    return [
+      h('h1', {key: 'h'}, 'Server error'),
+      h(
+        Suspense,
+        {key: 'e', fallback: fallback('error')},
+        h(Delay, {id: 'error', ms: 300}, h(Boom))
+      ),
+      // A slow sibling keeps the document loading, like any real page would.
+      h(
+        Suspense,
+        {key: 's', fallback: fallback('slow')},
+        h(
+          Delay,
+          {id: 'slow', ms: 1500},
+          h('p', {id: 'content-slow'}, 'slow content')
+        )
+      ),
+    ];
+  }
+
   const PAGES = {
+    error: ErrorPage,
     basic: Basic,
     nested: Nested,
     css: Css,
     style: Style,
     heavy: Heavy,
+    list: List,
   };
 
   function App({page}) {

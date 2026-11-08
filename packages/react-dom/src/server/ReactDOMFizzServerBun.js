@@ -59,6 +59,9 @@ type Options = {
   // Experimental (enableFizzDeclarativePatching): stream boundaries with <template for>
   // instead of inline scripts. Only enable for browsers that support it.
   unstable_declarativePatching?: boolean,
+  // Batch window in ms for declarative patches (default 300, the Suspense reveal throttle;
+  // 0 only groups patches that complete in the same flush).
+  unstable_declarativeBatchMs?: number,
 };
 
 // TODO: Move to sub-classing ReadableStream.
@@ -133,6 +136,7 @@ function renderToReadableStream(
         onHeadersImpl,
         options ? options.maxHeadersLength : undefined,
         options ? options.unstable_declarativePatching : undefined,
+        options ? options.unstable_declarativeBatchMs : undefined,
       ),
       createRootFormatContext(options ? options.namespaceURI : undefined),
       options ? options.progressiveChunkSize : undefined,
