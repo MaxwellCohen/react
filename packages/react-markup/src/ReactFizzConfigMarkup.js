@@ -76,6 +76,7 @@ export {
   writeStartDeclarativePatch,
   writeEndDeclarativePatch,
   writeDeclarativeClientRenderedBoundary,
+  writeDeclarativePatchScript,
   writeHoistablesForBoundary,
   writePlaceholder,
   createRootFormatContext,

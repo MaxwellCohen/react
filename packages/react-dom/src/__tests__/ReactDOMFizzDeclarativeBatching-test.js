@@ -131,7 +131,7 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     });
     await act(async () => {
       ReactDOMFizzServer.renderToPipeableStream(element, {
-        unstable_declarativePatching: true,
+        unstable_declarativePatching: 'native-only',
         ...options,
       }).pipe(writable);
     });
@@ -509,7 +509,7 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
         <html>
           <body>{boundaries(['a', 'b'])}</body>
         </html>,
-        {unstable_declarativePatching: true},
+        {unstable_declarativePatching: 'native-only'},
       );
       abort = stream.abort;
       stream.pipe(writable);

@@ -62,7 +62,10 @@ type Options = {
   maxHeadersLength?: number,
   // Experimental (enableFizzDeclarativePatching): stream boundaries with <template for>
   // instead of inline scripts. Only enable for browsers that support it.
-  unstable_declarativePatching?: boolean,
+  // true streams patches that work in every browser (a small $RP script per group of
+  // patches fills in where the browser lacks <template for>). 'native-only' emits no
+  // scripts at all and needs a browser with native support.
+  unstable_declarativePatching?: boolean | 'native-only',
   // Batch window in ms for declarative patches (default 300, the Suspense reveal throttle;
   // 0 only groups patches that complete in the same flush).
   unstable_declarativeBatchMs?: number,

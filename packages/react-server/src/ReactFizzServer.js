@@ -74,6 +74,7 @@ import {
   writeStartDeclarativePatch,
   writeEndDeclarativePatch,
   writeDeclarativeClientRenderedBoundary,
+  writeDeclarativePatchScript,
   writeStartClientRenderedSuspenseBoundary,
   writeEndCompletedSuspenseBoundary,
   writeEndPendingSuspenseBoundary,
@@ -405,6 +406,7 @@ export opaque type Request = {
   declarativeShellWindow: boolean, // lastFlush is the shell's flush; no batch was written yet
   declarativeFirstFrameHeld: boolean, // something completed within the shell's first frame
   declarativeFlushScheduled: boolean,
+  declarativePatchedIds: Array<number>, // patches written but not yet followed by their $RP script
   +resumableState: ResumableState,
   +renderState: RenderState,
   +rootFormatContext: FormatContext,
@@ -590,6 +592,7 @@ function RequestInstance(
   this.declarativeShellWindow = false;
   this.declarativeFirstFrameHeld = false;
   this.declarativeFlushScheduled = false;
+  this.declarativePatchedIds = [];
   this.resumableState = resumableState;
   this.renderState = renderState;
   this.rootFormatContext = rootFormatContext;
@@ -6280,6 +6283,24 @@ function flushClientRenderedBoundary(
   }
 }
 
+// The script for a group of patches goes right after the group, so browsers that cannot
+// apply <template for> themselves apply all of it in one task, parents before children.
+function flushDeclarativePatchScript(
+  request: Request,
+  destination: Destination,
+): void {
+  const ids = request.declarativePatchedIds;
+  if (ids.length > 0) {
+    writeDeclarativePatchScript(
+      destination,
+      request.resumableState,
+      request.renderState,
+      ids,
+    );
+    ids.length = 0;
+  }
+}
+
 function flushDeclarativeClientRenderedBoundary(
   request: Request,
   destination: Destination,
@@ -6309,6 +6330,7 @@ function flushSegmentContainer(
     boundary.declarative
   ) {
     flushedDeclarativePatch = true;
+    request.declarativePatchedIds.push(segment.id);
     writeStartDeclarativePatch(
       destination,
       request.renderState,
@@ -6687,10 +6709,16 @@ function flushCompletedQueues(
         request.destination = null;
         i++;
         completedBoundaries.splice(0, i);
+        if (enableFizzDeclarativePatching) {
+          flushDeclarativePatchScript(request, destination);
+        }
         return;
       }
     }
     completedBoundaries.splice(0, i);
+    if (enableFizzDeclarativePatching) {
+      flushDeclarativePatchScript(request, destination);
+    }
 
     // Allow anything written so far to flush to the underlying sink before
     // we continue with lower priorities.
@@ -6734,10 +6762,16 @@ function flushCompletedQueues(
         request.destination = null;
         i++;
         largeBoundaries.splice(0, i);
+        if (enableFizzDeclarativePatching) {
+          flushDeclarativePatchScript(request, destination);
+        }
         return;
       }
     }
     largeBoundaries.splice(0, i);
+    if (enableFizzDeclarativePatching) {
+      flushDeclarativePatchScript(request, destination);
+    }
   } finally {
     flushingPartialBoundaries = false;
     if (enableFizzDeclarativePatching && request.declarativeBatchMs >= 0) {

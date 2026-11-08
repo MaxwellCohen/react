@@ -87,6 +87,7 @@ import {
   completeSegment as completeSegmentFunction,
   formReplaying as formReplayingRuntime,
   markShellTime,
+  patchDeclarativeBoundaries as patchDeclarativeBoundariesFunction,
 } from './fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings';
 
 import {getValueDescriptorExpectingObjectForWarning} from '../shared/ReactDOMResourceValidation';
@@ -136,6 +137,7 @@ const SentCompletedShellId /*             */ = 0b000100000;
 const SentMarkShellTime /*                */ = 0b001000000;
 const NeedUpgradeToViewTransitions /*     */ = 0b010000000;
 const SentUpgradeToViewTransitions /*     */ = 0b100000000;
+const SentPatchDeclarativeFunction /*     */ = 0b1000000000;
 
 type NonceOption =
   | string
@@ -233,6 +235,10 @@ export type RenderState = {
   // Opt-in: stream pending boundaries as <?start>/<?end> ranges and completions
   // as <template for>. Always false unless enableFizzDeclarativePatching.
   declarativePatching: boolean,
+  // Universal mode: also emit anchors, a tiny $RP script per patch group and the shared
+  // init script so that browsers without <template for> get the same result. False for
+  // 'native-only' (and when scripts are unavailable): no scripts at all.
+  declarativeScripts: boolean,
   // Server side stand-in for the client's reveal throttle ($RT + FALLBACK_THROTTLE_MS):
   // completed declarative boundaries are held and flushed together once per window.
   // 0 disables the hold (patches are still grouped per flush); -1 = not declarative.
@@ -405,7 +411,7 @@ export function createRenderState(
   importMap: ImportMap | void,
   onHeaders: void | ((headers: HeadersDescriptor) => void),
   maxHeadersLength: void | number,
-  declarativePatching?: boolean,
+  declarativePatching?: boolean | 'native-only',
   declarativeBatchMs?: number,
 ): RenderState {
   const nonceScript = typeof nonce === 'string' ? nonce : nonce && nonce.script;
@@ -565,9 +571,16 @@ export function createRenderState(
     hoistableState: null,
     stylesToHoist: false,
     declarativePatching:
-      enableFizzDeclarativePatching && declarativePatching === true,
+      enableFizzDeclarativePatching &&
+      (declarativePatching === true || declarativePatching === 'native-only'),
+    declarativeScripts:
+      enableFizzDeclarativePatching &&
+      declarativePatching === true &&
+      // The external runtime has no inline scripts to build on, so it stays native-only.
+      !(enableFizzExternalRuntime && externalRuntimeConfig !== undefined),
     declarativeBatchMs:
-      enableFizzDeclarativePatching && declarativePatching === true
+      enableFizzDeclarativePatching &&
+      (declarativePatching === true || declarativePatching === 'native-only')
         ? typeof declarativeBatchMs === 'number' && declarativeBatchMs >= 0
           ? declarativeBatchMs
           : DECLARATIVE_FALLBACK_THROTTLE_MS
@@ -4737,6 +4750,10 @@ export function writeStartPendingSuspenseBoundary(
 const startPendingDeclarativeBoundary1 = stringToPrecomputedChunk(
   '<!--$?--><?start name="',
 );
+// Universal mode puts <!--B:n--> in front of the boundary. $RP finds the boundary by it
+// after a browser applied a patch natively (the <?start> marker is gone then).
+const declarativeAnchorStart = stringToPrecomputedChunk('<!--');
+const declarativeAnchorEnd = stringToPrecomputedChunk('-->');
 const startPendingDeclarativeBoundary2 = stringToPrecomputedChunk('">');
 const endPendingDeclarativeBoundary =
   stringToPrecomputedChunk('<?end><!--/$-->');
@@ -4823,8 +4840,13 @@ export function supportsDeclarativePatching(
   if (!enableFizzDeclarativePatching || !renderState.declarativePatching) {
     return false;
   }
-  // <template> content is parsed in HTML context so the patch can't create SVG,
-  // MathML or table-only elements. Those boundaries keep using the script path.
+  if (renderState.declarativeScripts) {
+    // $RP parses patched nodes again in their parent's namespace, and <template> can hold
+    // table rows, so every context works.
+    return true;
+  }
+  // <template> content is parsed in HTML context so a script-free patch can't create
+  // SVG, MathML or table-only elements. Those boundaries keep using the script path.
   switch (formatContext.insertionMode) {
     case ROOT_HTML_MODE:
     case HTML_MODE:
@@ -4839,6 +4861,12 @@ export function writeStartPendingDeclarativeBoundary(
   renderState: RenderState,
   id: number,
 ): boolean {
+  if (renderState.declarativeScripts) {
+    writeChunk(destination, declarativeAnchorStart);
+    writeChunk(destination, renderState.boundaryPrefix);
+    writeChunk(destination, stringToChunk(id.toString(16)));
+    writeChunk(destination, declarativeAnchorEnd);
+  }
   writeChunk(destination, startPendingDeclarativeBoundary1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
@@ -5006,6 +5034,47 @@ export function writeDeclarativeClientRenderedBoundary(
     }
   }
   return writeChunkAndReturn(destination, clientRenderedSuspenseBoundaryError2);
+}
+
+const patchDeclarativeScriptCall = stringToPrecomputedChunk('$RP(');
+const patchDeclarativeScriptEnd = stringToPrecomputedChunk(')</script>');
+const patchDeclarativeFunction = stringToPrecomputedChunk(
+  patchDeclarativeBoundariesFunction,
+);
+const patchDeclarativeSeparator = stringToPrecomputedChunk(',');
+const patchDeclarativeQuote = stringToPrecomputedChunk('"');
+
+// One script per group of <template for> patches that were written together. The first
+// one carries the shared $RP definition. Nonce aware like every other inline script.
+export function writeDeclarativePatchScript(
+  destination: Destination,
+  resumableState: ResumableState,
+  renderState: RenderState,
+  ids: Array<number>,
+): boolean {
+  if (!renderState.declarativeScripts || ids.length === 0) {
+    return true;
+  }
+  writeChunk(destination, renderState.startInlineScript);
+  writeChunk(destination, endOfStartTag);
+  if (
+    (resumableState.instructions & SentPatchDeclarativeFunction) ===
+    NothingSent
+  ) {
+    resumableState.instructions |= SentPatchDeclarativeFunction;
+    writeChunk(destination, patchDeclarativeFunction);
+  }
+  writeChunk(destination, patchDeclarativeScriptCall);
+  for (let i = 0; i < ids.length; i++) {
+    if (i > 0) {
+      writeChunk(destination, patchDeclarativeSeparator);
+    }
+    writeChunk(destination, patchDeclarativeQuote);
+    writeChunk(destination, renderState.boundaryPrefix);
+    writeChunk(destination, stringToChunk(ids[i].toString(16)));
+    writeChunk(destination, patchDeclarativeQuote);
+  }
+  return writeChunkAndReturn(destination, patchDeclarativeScriptEnd);
 }
 
 export function writeEndDeclarativePatch(

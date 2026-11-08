@@ -6,11 +6,13 @@
 //   REACT_ENV=dev|prod PORT=3010 node declarative-server.js
 //
 // GET /?page=basic|nested|css|style|heavy|list&mode=decl|script&clientDelay=ms&cssMs=ms&n=boundaries
+//   polyfill=1 loads /polyfill.js (env POLYFILL_JS) in <head> (template-for-polyfill)
 //   mode=decl   -> unstable_declarativePatching: true (<?start>/<template for>);
 //                  batchMs=ms sets the server batch window (default 300, 0 = group only)
 //   mode=script -> default $RC script path
 // GET /client.js?delay=ms -> hydration bundle (optionally delayed)
 // GET /slow.css?ms=ms     -> stylesheet that arrives after `ms`
+const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const {createRequire} = require('module');
@@ -59,6 +61,15 @@ const server = http.createServer(async (req, res) => {
     res.end(clientBundle);
     return;
   }
+  if (url.pathname === '/polyfill.js') {
+    // POLYFILL_JS=<path to template-for-polyfill/dist/template-for-polyfill.js>
+    res.writeHead(200, {
+      'content-type': 'text/javascript',
+      'cache-control': 'no-store',
+    });
+    res.end(fs.readFileSync(process.env.POLYFILL_JS));
+    return;
+  }
   if (url.pathname === '/slow.css') {
     await sleep(Number(url.searchParams.get('ms') || 0));
     res.writeHead(200, {
@@ -88,6 +99,7 @@ const server = http.createServer(async (req, res) => {
     cssMs: Number(q.get('cssMs') || 900),
     boundaries: Number(q.get('n') || 300),
     order: q.get('order') || 'forwards',
+    polyfill: q.get('polyfill') === '1',
   };
   const {App} = createPages(React, ctx);
   const {pipe} = renderToPipeableStream(React.createElement(App, {page}), {

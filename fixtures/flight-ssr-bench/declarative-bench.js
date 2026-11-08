@@ -4,7 +4,13 @@
 // declarative-server.js (see INTEGRATION.md). Needs Chrome and playwright-core:
 //
 //   PLAYWRIGHT_CORE=<path to playwright-core> CHROME_PATH=<chrome binary> \
-//   node declarative-bench.js heavy|list|error [port=3011] [n=300] [runs=5] [cpuRate=1]
+//   BROWSER=chromium|firefox|webkit PLAYWRIGHT_BROWSERS_PATH=<dir with firefox/webkit> \
+//   node declarative-bench.js heavy|list|error|matrix [port=3011] [n=300] [runs=5] [cpuRate=1]
+//
+// BROWSER defaults to chromium (CHROME_PATH). heavy/list/error use Chromium-only
+// numbers (CDP metrics). matrix works in every browser: per scenario page it runs the
+// script path, declarative patching, and declarative patching with the template-for
+// polyfill (needs POLYFILL_JS on the server) and reports what the user ends up with.
 //
 // heavy: layouts, reveal updates/frames, FCP/LCP and bytes for `n` boundaries
 //        (script vs declarative with batchMs=0 vs the default 300 ms window).
@@ -13,10 +19,11 @@
 //        client rendered.
 const http = require('http');
 const zlib = require('zlib');
-const {chromium} = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
+const pw = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
 
 const [, , mode = 'heavy', port = '3011', n = '300', runs = '5', cpu = '1'] =
   process.argv;
+const browserName = process.env.BROWSER || 'chromium';
 const executablePath =
   process.env.CHROME_PATH ||
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -193,9 +200,115 @@ async function error(browser) {
   }
 }
 
+// Per scenario: when does the page settle (no fallback left, content present), do the
+// counters work (hydration), what errors were reported, which scripts did React ship.
+async function matrix(browser) {
+  const scenarios = [
+    ['basic', 'page=basic', 'a'],
+    ['nested', 'page=nested', 'deep'],
+    ['css', 'page=css', 'css'],
+    ['style', 'page=style', 'style'],
+    ['list together', 'page=list&order=together', 'l5'],
+    ['error', 'page=error', 'error'],
+    ['heavy n=100', 'page=heavy&n=100', 'i99'],
+  ];
+  const variants = [
+    ['script', 'mode=script'],
+    ['decl', 'mode=decl'],
+    ['decl+polyfill', 'mode=decl&polyfill=1'],
+  ];
+  const timeout = 6000;
+  console.log(`browser=${browserName}`);
+  for (const [name, q, last] of scenarios) {
+    for (const [label, v] of variants) {
+      const ctx = await browser.newContext({
+        viewport: {width: 1000, height: 800},
+      });
+      const page = await ctx.newPage();
+      const msgs = [];
+      page.on('console', m => {
+        if (m.type() === 'error') msgs.push('E:' + m.text().slice(0, 80));
+        else if (/polyfill/i.test(m.text()))
+          msgs.push('log:' + m.text().slice(0, 60));
+      });
+      page.on('pageerror', e =>
+        msgs.push('PAGEERROR:' + String(e).slice(0, 80))
+      );
+      await page.goto(`http://localhost:${port}/?${q}&${v}&clientDelay=0`, {
+        waitUntil: 'commit',
+      });
+      const start = Date.now();
+      let settled = null;
+      try {
+        await page.waitForFunction(
+          () =>
+            document.querySelectorAll('.fb').length === 0 &&
+            document.querySelectorAll('[id^=content]').length > 0,
+          null,
+          {timeout, polling: 25}
+        );
+        settled = await page.evaluate(() => Math.round(performance.now()));
+      } catch (e) {
+        settled = null;
+      }
+      void start;
+      await page.waitForTimeout(1500);
+      const r = await page.evaluate(last => {
+        const btn = document.getElementById('btn-' + last);
+        return {
+          fallbacksLeft: document.querySelectorAll('.fb').length,
+          contentCount: document.querySelectorAll('[id^=content]').length,
+          hasBtn: !!btn,
+          btnBefore: btn && btn.textContent,
+          recoverable: (window.__recoverable || []).map(m => m.slice(0, 60)),
+          rev: window.__rev,
+          rcScripts: [...document.scripts].filter(x =>
+            /\$R[CSX]/.test(x.textContent)
+          ).length,
+          templatesFor: document.querySelectorAll('template[for]').length,
+          markers: (() => {
+            const w = document.createTreeWalker(
+              document,
+              NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_PROCESSING_INSTRUCTION
+            );
+            let n = 0;
+            while (w.nextNode())
+              if (
+                /^\?(start|end)/.test(
+                  w.currentNode.nodeType === 7
+                    ? '?' + w.currentNode.target
+                    : w.currentNode.data
+                )
+              )
+                n++;
+            return n;
+          })(),
+        };
+      }, last);
+      let interactive = null;
+      if (r.hasBtn) {
+        await page.click('#btn-' + last, {timeout: 2000}).catch(() => {});
+        await page.waitForTimeout(150);
+        interactive = (await page.textContent('#btn-' + last)) !== r.btnBefore;
+      }
+      console.log(
+        `${name.padEnd(14)} ${label.padEnd(14)} settled=${settled === null ? 'NEVER(' + timeout + 'ms)' : settled + 'ms'} ` +
+          `reveals=${r.rev.first}..${r.rev.last}ms/${r.rev.calls}upd ` +
+          `fallbacksLeft=${r.fallbacksLeft} interactive=${interactive} rcScripts=${r.rcScripts} ` +
+          `templatesFor=${r.templatesFor} markersLeft=${r.markers} recoverable=${r.recoverable.length} ` +
+          `console=[${msgs.slice(0, 3).join(' | ')}]`
+      );
+      await ctx.close();
+    }
+  }
+}
+
 (async () => {
-  const browser = await chromium.launch({executablePath, headless: true});
-  await {heavy, list, error}[mode](browser);
+  const browser =
+    browserName === 'chromium'
+      ? await pw.chromium.launch({executablePath, headless: true})
+      : await pw[browserName].launch({headless: true});
+  await {heavy, list, error, matrix}[mode](browser);
   await browser.close();
 })().catch(e => {
   console.error(e);

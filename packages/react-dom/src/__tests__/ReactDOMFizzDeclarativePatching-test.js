@@ -167,7 +167,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
 
   it('emits <?start> ranges and <template for> patches without scripts', async () => {
     const r = await render(<App count={BOUNDARIES} />, {
-      unstable_declarativePatching: true,
+      unstable_declarativePatching: 'native-only',
     });
     const shell = r.shell();
     // The comment markers stay outside of the range so React keeps a stable node.
@@ -185,6 +185,20 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).not.toContain('<div hidden id="S:');
   });
 
+  it('adds anchors and a $RP script per patch group when true', async () => {
+    const r = await render(<App count={3} />, {
+      unstable_declarativePatching: true,
+    });
+    const shell = r.shell();
+    expect(occurrences(shell, '<!--B:')).toBe(3);
+    expect(shell).toContain('<!--B:0--><!--$?--><?start name="B:0">');
+    const out = await r.finish(allTexts(3));
+    expect(occurrences(out, '<template for="B:')).toBe(3);
+    expect(out).toContain('$RP=function');
+    expect(out).toContain('$RP("B:0"');
+    expect(out).not.toContain('$RC');
+  });
+
   it('is smaller than the script path for 250 boundaries', async () => {
     const scriptRun = await render(<App count={BOUNDARIES} />);
     const scriptOut = await scriptRun.finish(allTexts(BOUNDARIES));
@@ -198,7 +212,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     Stream = require('stream');
 
     const declRun = await render(<App count={BOUNDARIES} />, {
-      unstable_declarativePatching: true,
+      unstable_declarativePatching: 'native-only',
     });
     const declOut = await declRun.finish(allTexts(BOUNDARIES));
 
@@ -232,7 +246,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
 
     const declRun = await render(<App count={10} />, {
       nonce,
-      unstable_declarativePatching: true,
+      unstable_declarativePatching: 'native-only',
     });
     const declOut = await declRun.finish(allTexts(10));
     expect(declOut).not.toContain('nonce=');
@@ -252,7 +266,9 @@ describe('ReactDOMFizzServer declarative patching', () => {
       readText('svg');
       return <circle r="2" />;
     }
-    const r = await render(<SvgApp />, {unstable_declarativePatching: true});
+    const r = await render(<SvgApp />, {
+      unstable_declarativePatching: 'native-only',
+    });
     const out = await r.finish(['svg']);
     expect(out).not.toContain('<template for=');
     expect(out).toContain('<template id="B:0"></template>');
@@ -279,7 +295,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
           <Outer />
         </Suspense>
       </div>,
-      {unstable_declarativePatching: true},
+      {unstable_declarativePatching: 'native-only'},
     );
     const afterOuter = await r.finish(['outer']);
     // The outer patch carries a new range for the inner boundary to patch later.

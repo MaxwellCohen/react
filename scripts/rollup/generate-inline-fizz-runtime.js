@@ -38,6 +38,10 @@ const config = [
     exportName: 'completeSegment',
   },
   {
+    entry: 'ReactDOMFizzInlinePatchBoundary.js',
+    exportName: 'patchDeclarativeBoundaries',
+  },
+  {
     entry: 'ReactDOMFizzInlineFormReplaying.js',
     exportName: 'formReplaying',
   },
