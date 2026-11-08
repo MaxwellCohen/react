@@ -90,6 +90,18 @@ export const enableFlightWeakThenables = __EXPERIMENTAL__;
 // where it resolves via the manifest.
 export const enableFlightObjectReferences = __EXPERIMENTAL__;
 
+// Split the Flight reply encoder (encodeReply/processReply) out of the browser
+// client entry. When enabled, encodeReply lazily loads
+// 'react-server-dom-webpack/client.browser.reply' on first use (navigation or
+// server action) so it is not part of the initial-load bundle.
+export const enableFlightLazyClientParser = false;
+
+// Also defer typed array rows to a lazily loaded parser extension
+// ('react-server-dom-webpack/client.browser.parser'). Rows are buffered and
+// replayed once it loads. Measured: saves ~0.7KB min but the buffering code
+// costs more, so this is off. It is the groundwork for splitting streams.
+export const enableFlightLazyTypedArrays = false;
+
 export const enableTaint = __EXPERIMENTAL__;
 
 export const enableViewTransition: boolean = true;

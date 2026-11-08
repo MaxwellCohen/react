@@ -15,6 +15,8 @@
     "plugin.js",
     "client.js",
     "client.browser.js",
+    "client.browser.reply.js",
+    "client.browser.parser.js",
     "client.edge.js",
     "client.node.js",
     "server.js",
@@ -42,6 +44,8 @@
       "default": "./client.browser.js"
     },
     "./client.browser": "./client.browser.js",
+    "./client.browser.reply": "./client.browser.reply.js",
+    "./client.browser.parser": "./client.browser.parser.js",
     "./client.edge": "./client.edge.js",
     "./client.node": "./client.node.js",
     "./server": {

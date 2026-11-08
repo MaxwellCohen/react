@@ -14,6 +14,7 @@ import type {
   DebugChannelCallback,
   FindSourceMapURLCallback,
   Response as FlightResponse,
+  ParserExtensionLoader,
 } from 'react-client/src/ReactFlightClient';
 
 import type {ReactServerValue} from 'react-client/src/ReactFlightReplyClient';
@@ -31,6 +32,11 @@ import {
 } from 'react-client/src/ReactFlightClient';
 
 import {processReply} from 'react-client/src/ReactFlightReplyClient';
+
+import {
+  enableFlightLazyClientParser,
+  enableFlightLazyTypedArrays,
+} from 'shared/ReactFeatureFlags';
 
 export {
   createServerReference,
@@ -57,6 +63,7 @@ export type Options = {
   environmentName?: string,
   startTime?: number,
   endTime?: number,
+  unstable_loadParserExtension?: ParserExtensionLoader,
 };
 
 function createDebugCallbackFromWritableStream(
@@ -116,6 +123,9 @@ function createResponseFromOptions(options: void | Options) {
       : undefined,
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
+    enableFlightLazyTypedArrays && options
+      ? options.unstable_loadParserExtension
+      : undefined,
   );
   if (options && options.elidedRows) {
     attachElidedRows(response, options.elidedRows);
@@ -267,10 +277,34 @@ function createFromFetch<T>(
 
 function encodeReply(
   value: ReactServerValue,
-  options?: {temporaryReferences?: TemporaryReferenceSet, signal?: AbortSignal},
+  options?: {
+    temporaryReferences?: TemporaryReferenceSet,
+    signal?: AbortSignal,
+    unstable_loadReplyEncoder?: () => Promise<{
+      encodeReply: (
+        value: ReactServerValue,
+        options?: {
+          temporaryReferences?: TemporaryReferenceSet,
+          signal?: AbortSignal,
+        },
+      ) => Promise<string | URLSearchParams | FormData>,
+    }>,
+  },
 ): Promise<
   string | URLSearchParams | FormData,
 > /* We don't use URLSearchParams yet but maybe */ {
+  if (enableFlightLazyClientParser) {
+    // The reply encoder is loaded on first use so it stays out of the initial
+    // load. The framework supplies the loader (a literal import() in its own
+    // code so its bundler can split it).
+    const load = options && options.unstable_loadReplyEncoder;
+    if (!load) {
+      throw new Error(
+        'encodeReply() requires the unstable_loadReplyEncoder option when the Flight client is split.',
+      );
+    }
+    return load().then(m => m.encodeReply(value, options));
+  }
   return new Promise((resolve, reject) => {
     processReply(
       value,

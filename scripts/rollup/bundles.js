@@ -503,6 +503,28 @@ const bundles = [
   {
     bundleTypes: [NODE_DEV, NODE_PROD],
     moduleType: RENDERER,
+    entry:
+      'react-server-dom-webpack/src/client/react-flight-dom-client.browser.reply',
+    name: 'react-server-dom-webpack-client.browser.reply',
+    global: 'ReactServerDOMClientReply',
+    minifyWithProdErrorCodes: true,
+    wrapWithModuleBoundaries: false,
+    externals: ['react', 'react-dom'],
+  },
+  {
+    bundleTypes: [NODE_DEV, NODE_PROD],
+    moduleType: RENDERER,
+    entry:
+      'react-server-dom-webpack/src/client/react-flight-dom-client.browser.parser',
+    name: 'react-server-dom-webpack-client.browser.parser',
+    global: 'ReactServerDOMClientParser',
+    minifyWithProdErrorCodes: true,
+    wrapWithModuleBoundaries: false,
+    externals: ['react', 'react-dom'],
+  },
+  {
+    bundleTypes: [NODE_DEV, NODE_PROD],
+    moduleType: RENDERER,
     entry: 'react-server-dom-webpack/src/client/react-flight-dom-client.node',
     name: 'react-server-dom-webpack-client.node',
     global: 'ReactServerDOMClient',
