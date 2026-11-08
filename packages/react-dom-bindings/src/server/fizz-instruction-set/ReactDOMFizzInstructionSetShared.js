@@ -663,3 +663,107 @@ export function listenToFormSubmissionsForReplaying() {
     );
   });
 }
+
+const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+
+// Declarative patching ($RP). Called as $RP("B:0","B:1") by a script that follows a group
+// of <template for="B:n"> patches. Finds each boundary by its <!--B:n--> anchor (which
+// sits right before the boundary's <!--$?--> comment) and does whatever the browser did
+// not do itself:
+// - Without native support the template is still there: replace the fallback range
+//   with its content, unless the client already owns that DOM.
+// - With native support the template is already consumed. Both cases then fix up
+//   boundaries inside SVG/MathML, which a patch cannot create in the right namespace.
+// React's hydration notices the range markers disappearing (MutationObserver), so there
+// is nothing to notify here.
+export function patchDeclarativeBoundaries() {
+  const ids = {};
+  let remaining = 0;
+  for (let i = 0; i < arguments.length; i++) {
+    ids[arguments[i]] = 1;
+    remaining++;
+  }
+  // Templates the browser did not apply itself, by boundary id.
+  const templates = {};
+  const found = document.querySelectorAll('template[for]');
+  for (let i = 0; i < found.length; i++) {
+    templates[found[i].getAttribute('for')] = found[i];
+  }
+  const comments = document.createNodeIterator(document, 128);
+  let anchor;
+  while (remaining && (anchor = comments.nextNode())) {
+    const id = anchor.data;
+    if (ids[id] === 1) {
+      ids[id] = 2;
+      remaining--;
+      patchBoundary(anchor, templates[id]);
+    }
+  }
+}
+
+function patchBoundary(anchor, template) {
+  const start = anchor.nextSibling;
+  if (!start || start.nodeType !== COMMENT_NODE) {
+    return;
+  }
+  // The boundary ends at the matching <!--/$-->. Nested boundaries are counted.
+  let depth = 1;
+  let end = start.nextSibling;
+  for (; end; end = end.nextSibling) {
+    if (end.nodeType === COMMENT_NODE) {
+      const data = end.data;
+      if (data === SUSPENSE_END_DATA) {
+        if (--depth === 0) {
+          break;
+        }
+      } else if (
+        data === SUSPENSE_START_DATA ||
+        data === SUSPENSE_PENDING_START_DATA ||
+        data === SUSPENSE_FALLBACK_START_DATA ||
+        data === SUSPENSE_QUEUED_START_DATA
+      ) {
+        depth++;
+      }
+    }
+  }
+  if (!end) {
+    return;
+  }
+  let owned = false;
+  if (template) {
+    // No native support. DOM React already created for this range (a client render got
+    // there first) must survive, so then the template is only dropped.
+    for (let node = start.nextSibling; node !== end && !owned; ) {
+      const keys = Object.keys(node);
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0) {
+          owned = true;
+        }
+      }
+      node = node.nextSibling;
+    }
+    if (!owned) {
+      let node;
+      while ((node = start.nextSibling) !== end) {
+        node.parentNode.removeChild(node);
+      }
+      start.after(template.content);
+    }
+    template.parentNode.removeChild(template);
+  }
+  // Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
+  // parsed again in their parent's namespace (HTML integration points excluded).
+  const parent = start.parentNode;
+  if (
+    !owned &&
+    parent.namespaceURI !== XHTML_NAMESPACE &&
+    parent.localName !== 'foreignObject' &&
+    parent.localName !== 'desc' &&
+    parent.localName !== 'title'
+  ) {
+    for (let node = start.nextSibling, next; node !== end; node = next) {
+      next = node.nextSibling;
+      node.outerHTML = node.outerHTML;
+    }
+  }
+}

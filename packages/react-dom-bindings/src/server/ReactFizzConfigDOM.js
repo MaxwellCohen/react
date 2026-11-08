@@ -87,6 +87,7 @@ import {
   completeSegment as completeSegmentFunction,
   formReplaying as formReplayingRuntime,
   markShellTime,
+  patchDeclarativeBoundaries as patchDeclarativeBoundariesFunction,
 } from './fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings';
 
 import {getValueDescriptorExpectingObjectForWarning} from '../shared/ReactDOMResourceValidation';
@@ -136,6 +137,7 @@ const SentCompletedShellId /*             */ = 0b000100000;
 const SentMarkShellTime /*                */ = 0b001000000;
 const NeedUpgradeToViewTransitions /*     */ = 0b010000000;
 const SentUpgradeToViewTransitions /*     */ = 0b100000000;
+const SentPatchDeclarativeFunction /*     */ = 0b1000000000;
 
 type NonceOption =
   | string
@@ -565,7 +567,10 @@ export function createRenderState(
     hoistableState: null,
     stylesToHoist: false,
     declarativePatching:
-      enableFizzDeclarativePatching && declarativePatching === true,
+      enableFizzDeclarativePatching &&
+      declarativePatching === true &&
+      // The external runtime has no inline scripts to build on.
+      !(enableFizzExternalRuntime && externalRuntimeConfig !== undefined),
     declarativeBatchMs:
       enableFizzDeclarativePatching && declarativePatching === true
         ? typeof declarativeBatchMs === 'number' && declarativeBatchMs >= 0
@@ -4737,6 +4742,10 @@ export function writeStartPendingSuspenseBoundary(
 const startPendingDeclarativeBoundary1 = stringToPrecomputedChunk(
   '<!--$?--><?start name="',
 );
+// <!--B:n--> goes in front of the boundary. $RP finds the boundary by it
+// after a browser applied a patch natively (the <?start> marker is gone then).
+const declarativeAnchorStart = stringToPrecomputedChunk('<!--');
+const declarativeAnchorEnd = stringToPrecomputedChunk('-->');
 const startPendingDeclarativeBoundary2 = stringToPrecomputedChunk('">');
 const endPendingDeclarativeBoundary =
   stringToPrecomputedChunk('<?end><!--/$-->');
@@ -4762,7 +4771,6 @@ export function getDeclarativeBatchMs(renderState: RenderState): number {
 // `lastFlush` is the shell flush time while `inShellWindow`, else the last batch flush.
 // `firstFrameHeld` is set once a completion arrived during the first frame.
 export function isDeclarativeFirstFrame(
-  renderState: RenderState,
   now: number,
   shellFlushTime: number,
 ): boolean {
@@ -4816,22 +4824,10 @@ export function scheduleBatchFlush(callback: () => void, ms: number): void {
   setTimeout(callback, ms);
 }
 
-export function supportsDeclarativePatching(
-  renderState: RenderState,
-  formatContext: FormatContext,
-): boolean {
-  if (!enableFizzDeclarativePatching || !renderState.declarativePatching) {
-    return false;
-  }
-  // <template> content is parsed in HTML context so the patch can't create SVG,
-  // MathML or table-only elements. Those boundaries keep using the script path.
-  switch (formatContext.insertionMode) {
-    case ROOT_HTML_MODE:
-    case HTML_MODE:
-      return true;
-    default:
-      return false;
-  }
+export function supportsDeclarativePatching(renderState: RenderState): boolean {
+  // $RP parses patched nodes again in their parent's namespace, and <template> can hold
+  // table rows, so every context works.
+  return enableFizzDeclarativePatching && renderState.declarativePatching;
 }
 
 export function writeStartPendingDeclarativeBoundary(
@@ -4839,6 +4835,10 @@ export function writeStartPendingDeclarativeBoundary(
   renderState: RenderState,
   id: number,
 ): boolean {
+  writeChunk(destination, declarativeAnchorStart);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  writeChunk(destination, declarativeAnchorEnd);
   writeChunk(destination, startPendingDeclarativeBoundary1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
@@ -4847,7 +4847,6 @@ export function writeStartPendingDeclarativeBoundary(
 
 export function writeEndPendingDeclarativeBoundary(
   destination: Destination,
-  renderState: RenderState,
 ): boolean {
   return writeChunkAndReturn(destination, endPendingDeclarativeBoundary);
 }
@@ -4942,29 +4941,13 @@ export function writeStartDeclarativePatch(
   return true;
 }
 
-// There is no $RX script to flip a pending boundary to client rendered, and the
-// <?start> range can't be told to stop waiting, so an errored declarative boundary is
-// signalled by an inert marker that carries the same data-* error attributes as the
-// <template data-dgst> a shell-time client rendered boundary has. The client's
-// hydration observer picks it up by id; before hydration it changes nothing visible.
-const declarativeClientRenderedMarker1 = stringToPrecomputedChunk(
-  '<template data-rcr id="E:',
-);
-const declarativeClientRenderedMarker2 = stringToPrecomputedChunk('"');
-
-export function writeDeclarativeClientRenderedBoundary(
+function writeClientRenderedErrorAttributes(
   destination: Destination,
-  renderState: RenderState,
-  id: number,
   errorDigest: ?string,
   errorMessage: ?string,
   errorStack: ?string,
   errorComponentStack: ?string,
-): boolean {
-  writeChunk(destination, declarativeClientRenderedMarker1);
-  writeChunk(destination, renderState.boundaryPrefix);
-  writeChunk(destination, stringToChunk(id.toString(16)));
-  writeChunk(destination, declarativeClientRenderedMarker2);
+): void {
   if (errorDigest != null) {
     writeChunk(destination, clientRenderedSuspenseBoundaryError1A);
     writeChunk(destination, stringToChunk(escapeTextForBrowser(errorDigest)));
@@ -5005,7 +4988,80 @@ export function writeDeclarativeClientRenderedBoundary(
       );
     }
   }
+}
+
+// There is no $RX script to flip a pending boundary to client rendered, and the
+// <?start> range can't be told to stop waiting, so an errored declarative boundary is
+// signalled by an inert marker that carries the same data-* error attributes as the
+// <template data-dgst> a shell-time client rendered boundary has. The client's
+// hydration observer picks it up by id; before hydration it changes nothing visible.
+const declarativeClientRenderedMarker1 = stringToPrecomputedChunk(
+  '<template data-rcr id="E:',
+);
+const declarativeClientRenderedMarker2 = stringToPrecomputedChunk('"');
+
+export function writeDeclarativeClientRenderedBoundary(
+  destination: Destination,
+  renderState: RenderState,
+  id: number,
+  errorDigest: ?string,
+  errorMessage: ?string,
+  errorStack: ?string,
+  errorComponentStack: ?string,
+): boolean {
+  writeChunk(destination, declarativeClientRenderedMarker1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  writeChunk(destination, declarativeClientRenderedMarker2);
+  writeClientRenderedErrorAttributes(
+    destination,
+    errorDigest,
+    errorMessage,
+    errorStack,
+    errorComponentStack,
+  );
   return writeChunkAndReturn(destination, clientRenderedSuspenseBoundaryError2);
+}
+
+const patchDeclarativeScriptCall = stringToPrecomputedChunk('$RP(');
+const patchDeclarativeScriptEnd = stringToPrecomputedChunk(')</script>');
+const patchDeclarativeFunction = stringToPrecomputedChunk(
+  patchDeclarativeBoundariesFunction,
+);
+const patchDeclarativeSeparator = stringToPrecomputedChunk(',');
+const patchDeclarativeQuote = stringToPrecomputedChunk('"');
+
+// One script per group of <template for> patches that were written together. The first
+// one carries the shared $RP definition. Nonce aware like every other inline script.
+export function writeDeclarativePatchScript(
+  destination: Destination,
+  resumableState: ResumableState,
+  renderState: RenderState,
+  ids: Array<number>,
+): boolean {
+  if (ids.length === 0) {
+    return true;
+  }
+  writeChunk(destination, renderState.startInlineScript);
+  writeChunk(destination, endOfStartTag);
+  if (
+    (resumableState.instructions & SentPatchDeclarativeFunction) ===
+    NothingSent
+  ) {
+    resumableState.instructions |= SentPatchDeclarativeFunction;
+    writeChunk(destination, patchDeclarativeFunction);
+  }
+  writeChunk(destination, patchDeclarativeScriptCall);
+  for (let i = 0; i < ids.length; i++) {
+    if (i > 0) {
+      writeChunk(destination, patchDeclarativeSeparator);
+    }
+    writeChunk(destination, patchDeclarativeQuote);
+    writeChunk(destination, renderState.boundaryPrefix);
+    writeChunk(destination, stringToChunk(ids[i].toString(16)));
+    writeChunk(destination, patchDeclarativeQuote);
+  }
+  return writeChunkAndReturn(destination, patchDeclarativeScriptEnd);
 }
 
 export function writeEndDeclarativePatch(
@@ -5030,46 +5086,13 @@ export function writeStartClientRenderedSuspenseBoundary(
     startClientRenderedSuspenseBoundary,
   );
   writeChunk(destination, clientRenderedSuspenseBoundaryError1);
-  if (errorDigest != null) {
-    writeChunk(destination, clientRenderedSuspenseBoundaryError1A);
-    writeChunk(destination, stringToChunk(escapeTextForBrowser(errorDigest)));
-    writeChunk(
-      destination,
-      clientRenderedSuspenseBoundaryErrorAttrInterstitial,
-    );
-  }
-  if (__DEV__) {
-    if (errorMessage) {
-      writeChunk(destination, clientRenderedSuspenseBoundaryError1B);
-      writeChunk(
-        destination,
-        stringToChunk(escapeTextForBrowser(errorMessage)),
-      );
-      writeChunk(
-        destination,
-        clientRenderedSuspenseBoundaryErrorAttrInterstitial,
-      );
-    }
-    if (errorStack) {
-      writeChunk(destination, clientRenderedSuspenseBoundaryError1C);
-      writeChunk(destination, stringToChunk(escapeTextForBrowser(errorStack)));
-      writeChunk(
-        destination,
-        clientRenderedSuspenseBoundaryErrorAttrInterstitial,
-      );
-    }
-    if (errorComponentStack) {
-      writeChunk(destination, clientRenderedSuspenseBoundaryError1D);
-      writeChunk(
-        destination,
-        stringToChunk(escapeTextForBrowser(errorComponentStack)),
-      );
-      writeChunk(
-        destination,
-        clientRenderedSuspenseBoundaryErrorAttrInterstitial,
-      );
-    }
-  }
+  writeClientRenderedErrorAttributes(
+    destination,
+    errorDigest,
+    errorMessage,
+    errorStack,
+    errorComponentStack,
+  );
   result = writeChunkAndReturn(
     destination,
     clientRenderedSuspenseBoundaryError2,

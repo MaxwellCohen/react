@@ -10,6 +10,7 @@ const {App} = createPages(React, {
   boundaries: Number(params.get('n') || 300),
   cssMs: Number(params.get('cssMs') || 900),
   order: params.get('order') || 'forwards',
+  polyfill: params.get('polyfill') === '1',
 });
 window.__recoverable = [];
 window.__hydrateStartedAt = Math.round(performance.now());

@@ -84,7 +84,8 @@ type Options = {
   onHeaders?: (headers: HeadersDescriptor) => void,
   maxHeadersLength?: number,
   // Experimental (enableFizzDeclarativePatching): stream boundaries with <template for>
-  // instead of inline scripts. Only enable for browsers that support it.
+  // instead of inline scripts. A small $RP script per group of patches fills in where
+  // the browser lacks <template for>.
   unstable_declarativePatching?: boolean,
   // Batch window in ms for declarative patches (default 300, the Suspense reveal throttle;
   // 0 only groups patches that complete in the same flush).

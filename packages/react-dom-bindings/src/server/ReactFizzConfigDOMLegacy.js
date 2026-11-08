@@ -176,6 +176,7 @@ export {
   writeStartDeclarativePatch,
   writeEndDeclarativePatch,
   writeDeclarativeClientRenderedBoundary,
+  writeDeclarativePatchScript,
   writeHoistablesForBoundary,
   writePlaceholder,
   writeCompletedRoot,

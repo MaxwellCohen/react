@@ -219,7 +219,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     // Everything is inline in the one patch: no placeholders or segment instructions.
     expect(out).not.toContain('<template id="P:');
     expect(out).not.toContain('$RS');
-    expect(out).not.toContain('<script');
   });
 
   it('throttles from the first frame for completions that miss it, like $RT', async () => {

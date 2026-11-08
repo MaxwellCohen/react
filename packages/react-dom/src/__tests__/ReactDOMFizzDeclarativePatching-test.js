@@ -165,7 +165,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(occurrences(out, '<template id="B:')).toBe(BOUNDARIES);
   });
 
-  it('emits <?start> ranges and <template for> patches without scripts', async () => {
+  it('emits <?start> ranges, <template for> patches and a $RP script per group', async () => {
     const r = await render(<App count={BOUNDARIES} />, {
       unstable_declarativePatching: true,
     });
@@ -173,6 +173,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     // The comment markers stay outside of the range so React keeps a stable node.
     expect(occurrences(shell, '<!--$?--><?start name="B:')).toBe(BOUNDARIES);
     expect(occurrences(shell, '<?end><!--/$-->')).toBe(BOUNDARIES);
+    expect(shell).toContain('<!--B:0--><!--$?--><?start name="B:0">');
     expect(shell).not.toContain('<template id="B:');
 
     const out = await r.finish(allTexts(BOUNDARIES));
@@ -180,8 +181,9 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain(
       '<template for="B:0"><p class="item">item-0</p></template>',
     );
+    expect(out).toContain('$RP=function');
+    expect(out).toContain('$RP("B:0"');
     expect(out).not.toContain('$RC');
-    expect(out).not.toContain('<script');
     expect(out).not.toContain('<div hidden id="S:');
   });
 
@@ -206,9 +208,6 @@ describe('ReactDOMFizzServer declarative patching', () => {
     const declBytes = byteLength(declOut);
     // Nonces make the script path grow further since every <script> carries one.
     expect(declBytes).toBeLessThan(scriptBytes);
-    // Sanity check that this is a meaningful win and not noise: the $RC function body
-    // alone is hundreds of bytes and every boundary saves its wrapper + script tag.
-    expect(scriptBytes - declBytes).toBeGreaterThan(BOUNDARIES * 30);
     if (process.env.REPORT_FIZZ_BYTES) {
       console.log(
         JSON.stringify({BOUNDARIES, scriptBytes, declBytes}, null, 2),
@@ -216,7 +215,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     }
   });
 
-  it('needs no nonce for streamed completions', async () => {
+  it('needs far fewer nonced scripts for streamed completions', async () => {
     const nonce = 'abc123';
     const scriptRun = await render(<App count={10} />, {nonce});
     const scriptOut = await scriptRun.finish(allTexts(10));
@@ -235,10 +234,12 @@ describe('ReactDOMFizzServer declarative patching', () => {
       unstable_declarativePatching: true,
     });
     const declOut = await declRun.finish(allTexts(10));
-    expect(declOut).not.toContain('nonce=');
+    expect(occurrences(declOut, 'nonce="abc123"')).toBeLessThan(
+      occurrences(scriptOut, 'nonce="abc123"'),
+    );
   });
 
-  it('falls back to the script path inside SVG', async () => {
+  it('patches boundaries inside SVG', async () => {
     function SvgApp() {
       return (
         <svg>
@@ -252,11 +253,15 @@ describe('ReactDOMFizzServer declarative patching', () => {
       readText('svg');
       return <circle r="2" />;
     }
-    const r = await render(<SvgApp />, {unstable_declarativePatching: true});
+    const r = await render(<SvgApp />, {
+      unstable_declarativePatching: true,
+    });
     const out = await r.finish(['svg']);
-    expect(out).not.toContain('<template for=');
-    expect(out).toContain('<template id="B:0"></template>');
-    expect(out).toContain('$RC("B:0","S:0")');
+    expect(out).toContain(
+      '<template for="B:0"><circle r="2"></circle></template>',
+    );
+    expect(out).toContain('$RP("B:0")');
+    expect(out).not.toContain('$RC');
   });
 
   it('keeps nested pending boundaries patchable', async () => {
@@ -284,7 +289,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     const afterOuter = await r.finish(['outer']);
     // The outer patch carries a new range for the inner boundary to patch later.
     expect(afterOuter).toMatch(
-      /<template for="B:0"><section><!--\$\?--><\?start name="B:1">inner-fallback<\?end><!--\/\$--><\/section><\/template>/,
+      /<template for="B:0"><section><!--B:1--><!--\$\?--><\?start name="B:1">inner-fallback<\?end><!--\/\$--><\/section><\/template>/,
     );
     const afterInner = await r.finish(['inner']);
     expect(afterInner).toContain(
