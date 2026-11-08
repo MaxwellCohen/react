@@ -59,7 +59,11 @@ function run(autocannon, url, connections, amount) {
 
 async function main() {
   await build();
-  const {renderRSCNode, TableServer} = require('./build/rsc-bundle.js');
+  const {
+    renderRSCNode,
+    TableServer,
+    TableServerHost,
+  } = require('./build/rsc-bundle.js');
   const TableClient = require('./src/TableClient.js').default;
   const TablePlain = require('./src/TablePlain.js').default;
 
@@ -71,6 +75,24 @@ async function main() {
         ROWS,
         clientManifest,
         ssrManifest
+      ).pipe(res),
+    // Like-for-like with (c): same lean host-only table as a server component.
+    'd-server-host-flight-inlined': res =>
+      renderFlightFizzNode(
+        renderRSCNode,
+        TableServerHost,
+        ROWS,
+        clientManifest,
+        ssrManifest
+      ).pipe(res),
+    'e-server-host-elided': res =>
+      renderFlightFizzNode(
+        renderRSCNode,
+        TableServerHost,
+        ROWS,
+        clientManifest,
+        ssrManifest,
+        {elide: true}
       ).pipe(res),
     'b-client-no-flight': res => renderFizzNode(TableClient, ROWS).pipe(res),
     'c-plain-fizz': res => renderFizzNode(TablePlain, ROWS).pipe(res),

@@ -17,6 +17,7 @@ import type {ReactServerValue} from 'react-client/src/ReactFlightReplyClient';
 
 import {
   createResponse,
+  attachElidedRows,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -74,6 +75,8 @@ type EncodeFormActionCallback = <A>(
 ) => ReactCustomFormAction;
 
 export type Options = {
+  // Prototype (enableFlightHostElision): rows withheld by the server.
+  elidedRows?: {get(id: number): void | string, ...},
   nonce?: string,
   encodeFormAction?: EncodeFormActionCallback,
   temporaryReferences?: TemporaryReferenceSet,
@@ -95,7 +98,7 @@ function createResponseFromOptions(options?: Options) {
         }
       : undefined;
 
-  return createResponse(
+  const response = createResponse(
     null, // bundlerConfig
     null, // serverReferenceConfig
     null, // moduleLoading
@@ -119,6 +122,10 @@ function createResponseFromOptions(options?: Options) {
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
   );
+  if (options && options.elidedRows) {
+    attachElidedRows(response, options.elidedRows);
+  }
+  return response;
 }
 
 function startReadingFromStream(

@@ -5,10 +5,11 @@ import {
 import App from './App';
 import AppAsync from './AppAsync';
 
-export function renderRSCNode(clientManifest, Component, itemCount) {
+export function renderRSCNode(clientManifest, Component, itemCount, options) {
   return renderToPipeableStream(
     <Component itemCount={itemCount} />,
-    clientManifest
+    clientManifest,
+    options
   );
 }
 
@@ -22,3 +23,4 @@ export function renderRSCEdge(clientManifest, Component, itemCount) {
 export {App, AppAsync};
 
 export {default as TableServer} from './TableServer';
+export {default as TableServerHost} from './TableServerHost';

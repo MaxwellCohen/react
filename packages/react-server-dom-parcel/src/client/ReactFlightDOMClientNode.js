@@ -13,6 +13,7 @@ import type {Readable} from 'stream';
 
 import {
   createResponse,
+  attachElidedRows,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -48,6 +49,8 @@ type EncodeFormActionCallback = <A>(
 ) => ReactCustomFormAction;
 
 export type Options = {
+  // Prototype (enableFlightHostElision): rows withheld by the server.
+  elidedRows?: {get(id: number): void | string, ...},
   nonce?: string,
   encodeFormAction?: EncodeFormActionCallback,
   unstable_allowPartialStream?: boolean,
@@ -112,6 +115,9 @@ export function createFromNodeStream<T>(
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
   );
+  if (options && options.elidedRows) {
+    attachElidedRows(response, options.elidedRows);
+  }
 
   if (__DEV__ && options && options.debugChannel) {
     let streamEndedCount = 0;
