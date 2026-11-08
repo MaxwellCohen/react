@@ -47,6 +47,7 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
+  enableFlightHostElision,
 } from 'shared/ReactFeatureFlags';
 
 import {
@@ -390,6 +391,8 @@ type Response = {
   _encodeFormAction: void | EncodeFormActionCallback,
   _nonce: ?string,
   _chunks: Map<number, SomeChunk<any>>,
+  // enableFlightHostElision: rows the server withheld from the stream.
+  _elidedRows: null | ElidedRows,
   _stringDecoder: StringDecoder,
   _closed: boolean,
   _closedReason: mixed,
@@ -423,6 +426,19 @@ export type {WeakResponse as Response};
 
 function hasGCedResponse(weakResponse: WeakResponse): boolean {
   return __DEV__ && weakResponse.weak.deref() === undefined;
+}
+
+// The side channel for rows the server elided from the stream. Rows are
+// complete JSON strings, so they are never interleaved with stream bytes.
+export type ElidedRows = {get(id: number): void | string, ...};
+
+export function attachElidedRows(
+  weakResponse: WeakResponse,
+  rows: ElidedRows,
+): void {
+  if (enableFlightHostElision) {
+    unwrapWeakResponse(weakResponse)._elidedRows = rows;
+  }
 }
 
 function unwrapWeakResponse(weakResponse: WeakResponse): Response {
@@ -2676,6 +2692,71 @@ function getInferredFunctionApproximate(code: string): () => void {
   return function () {};
 }
 
+/**
+ * Elided host elements (enableFlightHostElision).
+ *
+ * The server replaced a static host subtree with "$J<rowId>:<tag>" and the row
+ * itself was dropped from the payload inlined in the HTML. We decode that to
+ * <ElidedHost tag>, which renders an element of the same tag with
+ * dangerouslySetInnerHTML + suppressHydrationWarning. That is the standard
+ * "static island" idiom: during hydration React matches the existing DOM node
+ * by tag/position, does not descend into or patch its children or attributes,
+ * and does not warn. No props are retained.
+ *
+ * Why a wrapper component type rather than a bare host element: on navigation
+ * the full payload has a real <tag> at this position. Because the component
+ * type differs React unmounts the stub and mounts fresh DOM. A same-type host
+ * element would instead diff against {dangerouslySetInnerHTML: {__html: ''}}
+ * and append the new children after the stale server HTML.
+ *
+ * This is only correct while hydrating server-rendered HTML. A stub that is
+ * client rendered instead (e.g. a boundary regenerated after a hydration
+ * mismatch) has no DOM to adopt and no content to render, so it throws rather
+ * than silently producing an empty element.
+ */
+function ElidedHost(props: {tag: string}): React$Node {
+  // True while hydrating (React reads the server snapshot), false in a plain
+  // client render.
+  const hydrating = React.useSyncExternalStore(
+    subscribeNever,
+    getFalse,
+    getTrue,
+  );
+  const [adopts] = React.useState(hydrating);
+  if (!adopts) {
+    // eslint-disable-next-line react-internal/prod-error-codes
+    throw new Error(
+      'Static content that the server left out of this payload is needed ' +
+        'on the client. This happens when a boundary is client rendered ' +
+        'after a hydration mismatch. Refetch the page to recover.',
+    );
+  }
+  return React.createElement(props.tag, {
+    suppressHydrationWarning: true,
+    dangerouslySetInnerHTML: {__html: ''},
+  });
+}
+
+function subscribeNever(): () => void {
+  return noopUnsubscribe;
+}
+function noopUnsubscribe(): void {}
+function getFalse(): boolean {
+  return false;
+}
+function getTrue(): boolean {
+  return true;
+}
+
+function createElidedHostElement(tag: string): React$Element<any> {
+  const element: any = React.createElement(ElidedHost, {tag});
+  if (__DEV__) {
+    // Elided elements lost their keys, don't warn about it in lists.
+    element._store.validated = 1;
+  }
+  return element;
+}
+
 function parseModelString(
   response: Response,
   parentObject: Object,
@@ -2705,6 +2786,36 @@ function parseModelString(
       case '$': {
         // This was an escaped string value.
         return value.slice(1);
+      }
+      case 'J': {
+        if (enableFlightHostElision) {
+          // Elided host element: "$J<rowId>:<tag>". See ElidedHost below.
+          const colon = value.indexOf(':');
+          const ref = value.slice(2, colon);
+          const id = parseInt(ref, 16);
+          const rows = response._elidedRows;
+          if (!response._chunks.has(id) && rows !== null) {
+            const json = rows.get(id);
+            if (json !== undefined) {
+              response._chunks.set(
+                id,
+                createResolvedModelChunk(response, json),
+              );
+            }
+          }
+          if (response._chunks.has(id)) {
+            // The server gave us the row (SSR): render the real element.
+            return getOutlinedModel(
+              response,
+              ref,
+              parentObject,
+              key,
+              createModel,
+            );
+          }
+          return createElidedHostElement(value.slice(colon + 1));
+        }
+        // Fallthrough
       }
       case 'L': {
         // Lazy node
@@ -3054,6 +3165,7 @@ function ResponseInstance(
   this._encodeFormAction = encodeFormAction;
   this._nonce = nonce;
   this._chunks = chunks;
+  this._elidedRows = null;
   // Preserve a leading U+FEFF instead of consuming it as an encoding signature.
   this._stringDecoder = createStringDecoder(true);
   this._closed = false;

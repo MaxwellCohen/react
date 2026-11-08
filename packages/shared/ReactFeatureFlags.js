@@ -114,6 +114,9 @@ export const enableDefaultTransitionIndicator = __EXPERIMENTAL__;
 
 export const enableOptimisticKey = __EXPERIMENTAL__;
 
+// Prototype: elide static host subtrees from the initial Flight payload.
+export const enableFlightHostElision: boolean = false;
+
 /**
  * Switches Fiber creation to a simple object instead of a constructor.
  */

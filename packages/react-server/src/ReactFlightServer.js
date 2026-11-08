@@ -17,6 +17,7 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
+  enableFlightHostElision,
 } from 'shared/ReactFeatureFlags';
 
 import {
@@ -620,6 +621,7 @@ export type Request = {
   writtenImportStringsSize: number,
   temporaryReferences: void | TemporaryReferenceSet,
   identifierPrefix: string,
+  onElidedRow: null | ((id: number, json: string) => void),
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
   onError: (error: mixed) => ?string,
@@ -696,6 +698,7 @@ function RequestInstance(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
+  onElidedRow: void | ((id: number, json: string) => void),
 ) {
   if (
     ReactSharedInternals.A !== null &&
@@ -747,6 +750,10 @@ function RequestInstance(
   this.writtenImportStringsSize = 0;
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
+  this.onElidedRow =
+    enableFlightHostElision && typeof onElidedRow === 'function'
+      ? onElidedRow
+      : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
   this.onError = onError === undefined ? defaultErrorHandler : onError;
@@ -832,6 +839,7 @@ export function createRequest(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
+  onElidedRow?: (id: number, json: string) => void,
 ): Request {
   if (__DEV__) {
     resetOwnerStackLimit();
@@ -851,6 +859,7 @@ export function createRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
+    onElidedRow,
   );
 }
 
@@ -885,6 +894,7 @@ export function createPrerenderRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
+    false,
   );
 }
 
@@ -2174,6 +2184,9 @@ function renderAsyncFragment(
   return serializeAsyncIterable(request, task, children, asyncIterator);
 }
 
+// Host elision (see tryElideHostElement): > 0 while serializing an elided row.
+let elisionDepth = 0;
+
 function renderClientElement(
   request: Request,
   task: Task,
@@ -2204,7 +2217,9 @@ function renderClientElement(
       // So that we can refer to it directly.
       outlineComponentInfo(request, debugOwner);
     }
-    if (task.debugStack !== null) {
+    // Elided subtrees don't ship per-element debug stacks, they would be the
+    // bulk of what is left in the payload (the rows can't be dropped with it).
+    if (task.debugStack !== null && elisionDepth === 0) {
       // Outline the debug stack so that we write to the completedDebugChunks instead.
       debugStack = filterStackTrace(
         request,
@@ -3654,6 +3669,144 @@ function serializeImportString(request: Request, value: string): string {
 
 let modelRoot: null | ReactClientValue = false;
 
+// --- Host elision (prototype, enableFlightHostElision) ---------------------
+// Host elements produced by Server Components whose whole subtree is static
+// (host elements, text, and primitive-only props; no client references,
+// Suspense, lazy, Promises or Server Components still to render) are not
+// serialized into the primary payload. We serialize the full element to JSON,
+// hand (id, json) to the request's onElidedRow callback, and replace it with
+// the placeholder "$J<id>:<tag>". The framework gives the rows to the Flight
+// client that feeds SSR (the `elidedRows` client option), so HTML contains the
+// content, while the main stream, which it can inline for the browser as is,
+// does not. A client without the row renders ElidedHost and adopts the DOM
+// (see ReactFlightClient's "$J" handling).
+// While > 0 we are serializing an elided subtree, so nested hosts are inlined
+// in that same row instead of being elided again.
+
+// Tags that are not rendered in place by Fizz (hoistables / document-level),
+// have special hydration or form handling, or switch the format context.
+const nonElidableTags = new Set([
+  'html',
+  'head',
+  'body',
+  'title',
+  'meta',
+  'link',
+  'style',
+  'script',
+  'base',
+  'noscript',
+  'template',
+  'svg',
+  'math',
+  'input',
+  'textarea',
+  'select',
+  'option',
+  'form',
+  'button',
+  'iframe',
+  'object',
+  'img',
+  'video',
+  'audio',
+  'source',
+  'track',
+  'dialog',
+  'details',
+]);
+
+function isStaticPropValue(value: mixed): boolean {
+  if (value === null || value === undefined) {
+    return true;
+  }
+  const t = typeof value;
+  if (t === 'string' || t === 'number' || t === 'boolean') {
+    return true;
+  }
+  if (t === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    // style / dangerouslySetInnerHTML: one level of primitives.
+    // $FlowFixMe[incompatible-use]
+    for (const k in value) {
+      const v = (value as any)[k];
+      const vt = typeof v;
+      if (v != null && vt !== 'string' && vt !== 'number' && vt !== 'boolean') {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+function isStaticHostNode(node: any): boolean {
+  if (node === null || node === undefined) {
+    return true;
+  }
+  const t = typeof node;
+  if (t === 'string' || t === 'number' || t === 'boolean') {
+    return true;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      if (!isStaticHostNode(node[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (t === 'object' && node.$$typeof === REACT_ELEMENT_TYPE) {
+    const type = node.type;
+    if (typeof type !== 'string' || nonElidableTags.has(type)) {
+      return false;
+    }
+    const props = node.props;
+    for (const k in props) {
+      if (k === 'children') {
+        continue;
+      }
+      if (k === 'ref' || !isStaticPropValue(props[k])) {
+        return false;
+      }
+    }
+    return isStaticHostNode(props.children);
+  }
+  return false;
+}
+
+function tryElideHostElement(
+  request: Request,
+  task: Task,
+  element: ReactElement,
+): null | string {
+  const onElidedRow = request.onElidedRow;
+  if (
+    onElidedRow === null ||
+    elisionDepth > 0 ||
+    typeof element.type !== 'string' ||
+    !isStaticHostNode(element)
+  ) {
+    return null;
+  }
+  const id = request.nextChunkId++;
+  const prevSize = serializedSize;
+  // The elided row is emitted whole; never defer pieces of it into new tasks.
+  serializedSize = -Infinity;
+  elisionDepth++;
+  let json: string;
+  try {
+    const resolved = resolveModel(request, task, {'': element}, '', element);
+    // $FlowFixMe[incompatible-type] stringify can return null for undefined but we never do
+    json = stringify(resolved);
+  } finally {
+    elisionDepth--;
+    serializedSize = prevSize;
+  }
+  // Not written to the stream: handed to the framework instead.
+  onElidedRow(id, json);
+  return '$J' + id.toString(16) + ':' + element.type;
+}
+
 function renderModel(
   request: Request,
   task: Task,
@@ -3800,6 +3953,12 @@ function renderModelDestructive(
   if (typeof value === 'object') {
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
+        if (enableFlightHostElision && request.onElidedRow !== null) {
+          const elided = tryElideHostElement(request, task, value as any);
+          if (elided !== null) {
+            return elided;
+          }
+        }
         let elementReference = null;
         const writtenObjects = request.writtenObjects;
         if (task.keyPath !== null || task.implicitSlot) {

@@ -65,6 +65,8 @@ export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTem
 export type {TemporaryReferenceSet};
 
 type Options = {
+  // Prototype (enableFlightHostElision): receive elided host rows.
+  onElidedRow?: (id: number, json: string) => void,
   debugChannel?: {readable?: ReadableStream, writable?: WritableStream, ...},
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -139,6 +141,7 @@ function renderToReadableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.onElidedRow : undefined,
   );
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);

@@ -150,6 +150,8 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
+  // Prototype (enableFlightHostElision): receive elided host rows.
+  onElidedRow?: (id: number, json: string) => void,
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -198,6 +200,7 @@ function renderToPipeableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.onElidedRow : undefined,
   );
   let hasStartedFlowing = false;
   startWork(request);
