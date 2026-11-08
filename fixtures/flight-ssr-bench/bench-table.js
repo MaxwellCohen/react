@@ -25,6 +25,8 @@ function arg(name, def) {
 }
 const ROWS = +arg('rows', 1000);
 const JSON_OUT = arg('json-out', null);
+const ONLY = arg('only', null);
+const NO_RPS = process.argv.includes('--no-rps');
 const PORT = 3002;
 
 function build() {
@@ -63,9 +65,17 @@ async function main() {
     renderRSCNode,
     TableServer,
     TableServerHost,
+    PageStyle,
+    PageJsonLd,
+    TableServerLean,
+    PageMixed,
+    TableServerPruned,
+    TableServerStatic,
+    TableServerStaticBody,
   } = require('./build/rsc-bundle.js');
   const TableClient = require('./src/TableClient.js').default;
   const TablePlain = require('./src/TablePlain.js').default;
+  const FizzSame = require('./src/FizzSame.js').default;
 
   const routes = {
     'a-server-flight-inlined': res =>
@@ -94,7 +104,45 @@ async function main() {
         ssrManifest,
         {elide: true}
       ).pipe(res),
+    // enableFlightHtmlFirst variants: plain flight vs elided (side channel).
+    ...Object.fromEntries(
+      Object.entries({
+        'f-style': PageStyle,
+        'g-jsonld': PageJsonLd,
+        'h-table-lean': TableServerLean,
+        'i-mixed': PageMixed,
+        'j-table-pruned': TableServerPruned,
+        'l-table-static': TableServerStatic,
+        'm-table-static-body': TableServerStaticBody,
+        'a2-table-clientref': TableServer,
+      }).flatMap(([k, C]) => [
+        [
+          k,
+          res =>
+            renderFlightFizzNode(
+              renderRSCNode,
+              C,
+              ROWS,
+              clientManifest,
+              ssrManifest
+            ).pipe(res),
+        ],
+        [
+          k + '-elided',
+          res =>
+            renderFlightFizzNode(
+              renderRSCNode,
+              C,
+              ROWS,
+              clientManifest,
+              ssrManifest,
+              {elide: true}
+            ).pipe(res),
+        ],
+      ])
+    ),
     'b-client-no-flight': res => renderFizzNode(TableClient, ROWS).pipe(res),
+    'k-fizz-same-markup': res => renderFizzNode(FizzSame, ROWS).pipe(res),
     'c-plain-fizz': res => renderFizzNode(TablePlain, ROWS).pipe(res),
   };
   const server = http.createServer((req, res) => {
@@ -112,6 +160,7 @@ async function main() {
   const out = [];
   console.log('rows=%d', ROWS);
   for (const name of Object.keys(routes)) {
+    if (ONLY && !ONLY.split(',').includes(name)) continue;
     const body = await get('/' + name);
     const html = body.toString('utf8');
     const scripts =
@@ -124,7 +173,7 @@ async function main() {
       flightInlineBytes: flightBytes,
       flightInlineGzip: zlib.gzipSync(scripts.join('')).length,
     };
-    for (const c of [1, 10]) {
+    for (const c of NO_RPS ? [] : [1, 10]) {
       await run(autocannon, 'http://localhost:' + PORT + '/' + name, c, 100);
       const d = await run(
         autocannon,
