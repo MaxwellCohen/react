@@ -58,10 +58,16 @@ function renderFlightFizzNode(
   const {renderToPipeableStream} = require('react-dom/server');
   const {createFromNodeStream} = require('react-server-dom-webpack/client');
 
+  // opts.elide: enableFlightHostElision. The server withholds static host
+  // rows from the stream; only the SSR consumer gets them (side channel).
+  const elidedRows = opts && opts.elide ? new Map() : null;
   const {pipe: rscPipe} = renderRSCNode(
     clientManifest,
     AppComponent,
-    itemCount
+    itemCount,
+    elidedRows
+      ? {onElidedRow: (id, json) => elidedRows.set(id, json)}
+      : undefined
   );
 
   let flightStream;
@@ -91,7 +97,11 @@ function renderFlightFizzNode(
   let cachedResult;
   function Root() {
     if (!cachedResult) {
-      cachedResult = createFromNodeStream(flightStream, ssrManifest);
+      cachedResult = createFromNodeStream(
+        flightStream,
+        ssrManifest,
+        elidedRows ? {elidedRows} : undefined
+      );
     }
     return React.use(cachedResult);
   }
