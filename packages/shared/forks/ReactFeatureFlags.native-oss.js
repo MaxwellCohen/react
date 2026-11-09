@@ -31,6 +31,7 @@ export const enableCPUSuspense: boolean = false;
 export const enableCreateEventHandleAPI: boolean = false;
 export const enableMoveBefore: boolean = true;
 export const enableFizzExternalRuntime: boolean = true;
+export const enableFizzDeclarativePatching: boolean = false;
 export const enableInfiniteRenderLoopDetection: boolean = false;
 export const enableInfiniteRenderLoopDetectionForceThrow: boolean = false;
 export const enableConditionalUseWarning: boolean = false;

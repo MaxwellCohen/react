@@ -250,6 +250,40 @@ const ReactNoopServer = ReactFizzServer({
     destination.stack.pop();
     return true;
   },
+  supportsDeclarativePatching(): boolean {
+    return false;
+  },
+  getDeclarativeBatchMs(): number {
+    return -1;
+  },
+  getDeclarativeHoldMs(): number {
+    return 0;
+  },
+  isDeclarativeFirstFrame(): boolean {
+    return false;
+  },
+  getBatchTime(): number {
+    return 0;
+  },
+  scheduleBatchFlush(): void {},
+  writeStartPendingDeclarativeBoundary(): boolean {
+    return true;
+  },
+  writeEndPendingDeclarativeBoundary(): boolean {
+    return true;
+  },
+  writeDeclarativeClientRenderedBoundary(): boolean {
+    return true;
+  },
+  writeDeclarativePatchScript(): boolean {
+    return true;
+  },
+  writeStartDeclarativePatch(): boolean {
+    return true;
+  },
+  writeEndDeclarativePatch(): boolean {
+    return true;
+  },
   writeEndClientRenderedSuspenseBoundary(destination: Destination): boolean {
     destination.stack.pop();
     return true;
