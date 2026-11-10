@@ -706,6 +706,21 @@ function patchBoundary(anchor, template) {
   if (!start || start.nodeType !== COMMENT_NODE) {
     return;
   }
+  if (template) {
+    // Only a boundary that is still pending, and whose range marker carries this
+    // anchor's name, may be replaced. An orphaned anchor (its boundary was removed)
+    // points at something else, so the template is dropped instead.
+    const marker = start.nextSibling;
+    if (
+      start.data !== SUSPENSE_PENDING_START_DATA ||
+      !marker ||
+      marker.nodeType !== COMMENT_NODE ||
+      marker.data !== '?start name="' + anchor.data + '"'
+    ) {
+      template.parentNode.removeChild(template);
+      return;
+    }
+  }
   // The boundary ends at the matching <!--/$-->. Nested boundaries are counted.
   let depth = 1;
   let end = start.nextSibling;

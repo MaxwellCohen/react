@@ -1236,10 +1236,36 @@ export function removeChildFromContainer(
   parentNode.removeChild(child);
 }
 
+// A declarative boundary is preceded by a <!--B:name--> anchor that the $RP fallback
+// finds it by. Once the boundary is gone the anchor must go too, or $RP would treat
+// whatever follows it as that boundary's range.
+function removeDeclarativeAnchor(
+  parentInstance: Instance,
+  hydrationInstance: SuspenseInstance | ActivityInstance,
+): void {
+  const marker = hydrationInstance.nextSibling;
+  const anchor = hydrationInstance.previousSibling;
+  if (
+    marker === null ||
+    anchor === null ||
+    anchor.nodeType !== COMMENT_NODE ||
+    !isDeclarativePendingMarker(marker)
+  ) {
+    return;
+  }
+  const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
+  if (match !== null && (anchor as any as Comment).data === match[1]) {
+    parentInstance.removeChild(anchor);
+  }
+}
+
 function clearHydrationBoundary(
   parentInstance: Instance,
   hydrationInstance: SuspenseInstance | ActivityInstance,
 ): void {
+  if (enableFizzDeclarativePatching) {
+    removeDeclarativeAnchor(parentInstance, hydrationInstance);
+  }
   let node: Node = hydrationInstance;
   // Delete all nodes within this suspense boundary.
   // There might be nested nodes so we need to keep track of how
@@ -4336,24 +4362,55 @@ function isDeclarativePendingMarker(node: null | Node): boolean {
 // the $RC runtime would have done.
 // The server signals an errored declarative boundary with <template data-rcr id="E:<name>">
 // (see writeDeclarativeClientRenderedBoundary). The name is in the pending range marker.
-function syncDeclarativelyErroredBoundary(instance: SuspenseInstance): boolean {
+function findDeclarativeErrorMarker(
+  instance: SuspenseInstance,
+): null | HTMLElement {
   const marker = instance.nextSibling;
   if (!isDeclarativePendingMarker(marker)) {
-    return false;
+    return null;
   }
   const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
   if (match === null) {
-    return false;
+    return null;
   }
-  const errorMarker = instance.ownerDocument.getElementById('E:' + match[1]);
-  if (errorMarker === null) {
-    return false;
-  }
-  instance._reactError = errorMarker;
-  instance.data = SUSPENSE_FALLBACK_START_DATA;
-  return true;
+  return instance.ownerDocument.getElementById('E:' + match[1]);
 }
 
+// True when the start marker is gone, which is how a <template for> patch is detected.
+function isDeclarativelyPatched(instance: SuspenseInstance): boolean {
+  const next = instance.nextSibling;
+  return !(
+    next === null || // The parser hasn't reached the next chunk yet.
+    isDeclarativePendingMarker(next) ||
+    // Script-patched boundaries keep a <template id> as the first node while pending.
+    (next.nodeType === ELEMENT_NODE &&
+      next.nodeName === 'TEMPLATE' &&
+      (next as any as HTMLElement).hasAttribute('id'))
+  );
+}
+
+// The state the boundary is in, taking declarative patches into account. This has no
+// side effects: nothing but the registration path below changes the comment's data.
+function getDeclarativeBoundaryData(instance: SuspenseInstance): string {
+  if (
+    !enableFizzDeclarativePatching ||
+    instance.data !== SUSPENSE_PENDING_START_DATA
+  ) {
+    return instance.data;
+  }
+  if (findDeclarativeErrorMarker(instance) !== null) {
+    return SUSPENSE_FALLBACK_START_DATA;
+  }
+  if (isDeclarativelyPatched(instance)) {
+    return SUSPENSE_START_DATA;
+  }
+  return instance.data;
+}
+
+// There is no script to flip `$?` to `$` when `<template for>` patches a boundary. The
+// start marker is only present while the boundary is still pending, so the observer
+// (and registration) notices it going away and does what $RC would have done. The
+// comment node itself is never replaced, so it is safe to flip it here.
 function syncDeclarativelyPatchedBoundary(instance: SuspenseInstance): void {
   if (!enableFizzDeclarativePatching) {
     return;
@@ -4361,38 +4418,31 @@ function syncDeclarativelyPatchedBoundary(instance: SuspenseInstance): void {
   if (instance.data !== SUSPENSE_PENDING_START_DATA) {
     return;
   }
-  if (syncDeclarativelyErroredBoundary(instance)) {
+  const errorMarker = findDeclarativeErrorMarker(instance);
+  if (errorMarker !== null) {
+    instance._reactError = errorMarker;
+    instance.data = SUSPENSE_FALLBACK_START_DATA;
     return;
   }
-  const next = instance.nextSibling;
-  if (
-    next === null || // The parser hasn't reached the next chunk yet.
-    isDeclarativePendingMarker(next) ||
-    // Script-patched boundaries keep a <template id> as the first node while pending.
-    (next.nodeType === ELEMENT_NODE &&
-      next.nodeName === 'TEMPLATE' &&
-      (next as any as HTMLElement).hasAttribute('id'))
-  ) {
-    return;
+  if (isDeclarativelyPatched(instance)) {
+    instance.data = SUSPENSE_START_DATA;
   }
-  instance.data = SUSPENSE_START_DATA;
 }
 
 export function isSuspenseInstancePending(instance: SuspenseInstance): boolean {
-  syncDeclarativelyPatchedBoundary(instance);
+  const data = getDeclarativeBoundaryData(instance);
   return (
-    instance.data === SUSPENSE_PENDING_START_DATA ||
-    instance.data === SUSPENSE_QUEUED_START_DATA
+    data === SUSPENSE_PENDING_START_DATA || data === SUSPENSE_QUEUED_START_DATA
   );
 }
 
 export function isSuspenseInstanceFallback(
   instance: SuspenseInstance,
 ): boolean {
-  syncDeclarativelyPatchedBoundary(instance);
+  const data = getDeclarativeBoundaryData(instance);
   return (
-    instance.data === SUSPENSE_FALLBACK_START_DATA ||
-    (instance.data === SUSPENSE_PENDING_START_DATA &&
+    data === SUSPENSE_FALLBACK_START_DATA ||
+    (data === SUSPENSE_PENDING_START_DATA &&
       instance.ownerDocument.readyState !== DOCUMENT_READY_STATE_LOADING)
   );
 }
@@ -4406,8 +4456,12 @@ export function getSuspenseInstanceFallbackErrorDetails(
   componentStack?: string,
 } {
   const errorSource =
-    enableFizzDeclarativePatching && instance._reactError !== undefined
-      ? instance._reactError
+    enableFizzDeclarativePatching &&
+    (instance._reactError !== undefined ||
+      findDeclarativeErrorMarker(instance) !== null)
+      ? instance._reactError !== undefined
+        ? instance._reactError
+        : findDeclarativeErrorMarker(instance)
       : instance.nextSibling;
   const dataset = errorSource && (errorSource as any as HTMLElement).dataset;
   let digest, message, stack, componentStack;
@@ -4482,8 +4536,9 @@ export function registerSuspenseInstanceRetry(
       observer = new MutationObserver(() => {
         if (
           !isDeclarativePendingMarker(instance.nextSibling) ||
-          syncDeclarativelyErroredBoundary(instance)
+          findDeclarativeErrorMarker(instance) !== null
         ) {
+          syncDeclarativelyPatchedBoundary(instance);
           listener();
         }
       });

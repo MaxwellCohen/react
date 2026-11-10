@@ -562,6 +562,26 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it('removes the anchor together with a deleted dehydrated boundary', async () => {
+    const {container} = await renderToContainer(2);
+    expect(container.innerHTML).toContain('<!--B:1-->');
+    const anchors = () =>
+      Array.from(container.querySelectorAll('*'))
+        .flatMap(el => Array.from(el.childNodes))
+        .filter(n => n.nodeType === 8 && /^B:/.test(n.data));
+    expect(anchors().length).toBe(2);
+    textCache = new Map();
+    allTexts(2).forEach(resolveText);
+    const errors = [];
+    await act(() => {
+      // The client has one boundary fewer, so the second dehydrated one is deleted.
+      ReactDOMClient.hydrateRoot(container, <App count={1} />, {
+        onRecoverableError: e => errors.push(e),
+      });
+    });
+    expect(anchors().map(n => n.data)).not.toContain('B:1');
+  });
+
   it('client renders an errored boundary as soon as its marker arrives', async () => {
     Object.defineProperty(document, 'readyState', {
       configurable: true,
