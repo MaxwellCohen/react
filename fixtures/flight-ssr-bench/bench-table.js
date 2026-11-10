@@ -69,9 +69,10 @@ async function main() {
     PageJsonLd,
     TableServerLean,
     PageMixed,
-    TableServerPruned,
     TableServerStatic,
     TableServerStaticBody,
+    PageAppBaseline,
+    PageAppHtmlFirst,
   } = require('./build/rsc-bundle.js');
   const TableClient = require('./src/TableClient.js').default;
   const TablePlain = require('./src/TablePlain.js').default;
@@ -111,7 +112,6 @@ async function main() {
         'g-jsonld': PageJsonLd,
         'h-table-lean': TableServerLean,
         'i-mixed': PageMixed,
-        'j-table-pruned': TableServerPruned,
         'l-table-static': TableServerStatic,
         'm-table-static-body': TableServerStaticBody,
         'a2-table-clientref': TableServer,
@@ -139,6 +139,31 @@ async function main() {
               {elide: true}
             ).pipe(res),
         ],
+      ])
+    ),
+    // Full page: inline CSS + JSON-LD, every 100th row interactive.
+    ...Object.fromEntries(
+      [
+        ['n-page-client-rows', PageAppBaseline, undefined],
+        ['n-page-client-rows-live', PageAppBaseline, {elide: true, live: true}],
+        ['o-page-server-rows', PageAppHtmlFirst, undefined],
+        ['o-page-server-rows-json', PageAppHtmlFirst, {elide: true}],
+        [
+          'o-page-server-rows-live',
+          PageAppHtmlFirst,
+          {elide: true, live: true},
+        ],
+      ].map(([k, C, opts]) => [
+        k,
+        res =>
+          renderFlightFizzNode(
+            renderRSCNode,
+            C,
+            ROWS,
+            clientManifest,
+            ssrManifest,
+            opts
+          ).pipe(res),
       ])
     ),
     'b-client-no-flight': res => renderFizzNode(TableClient, ROWS).pipe(res),

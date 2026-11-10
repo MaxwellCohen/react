@@ -3784,13 +3784,6 @@ function isStaticHostNode(node: any): boolean {
     }
     return true;
   }
-  if (enableFlightHtmlFirst && t === 'object' && node instanceof PrunedProp) {
-    // A client element the browser does not run (see PrunedProp) is static for
-    // the host region around it. An interactive client element is not, so that
-    // region keeps its host skeleton and only its static parts are elided: the
-    // client component is handed off to normal hydration with its props.
-    return node.tag !== '';
-  }
   if (t === 'object' && node.$$typeof === REACT_ELEMENT_TYPE) {
     const type = node.type;
     if (typeof type !== 'string') {
@@ -3843,24 +3836,42 @@ function tryElideHostElement(
     return '$J' + id.toString(16) + ':' + element.type;
   }
   const prevSize = serializedSize;
+  const prevKeyPath = task.keyPath;
+  const prevImplicitSlot = task.implicitSlot;
   // The elided row is emitted whole; never defer pieces of it into new tasks.
   serializedSize = -Infinity;
   elisionDepth++;
   let json: string;
   try {
-    const resolved = resolveModel(request, task, {'': element}, '', element);
+    const rendered = renderModelDestructive(
+      request,
+      task,
+      {'': element},
+      '',
+      element,
+    );
+    // The element consumed the key context of the Server Components around it.
+    // Its children must not see it again (an array child would be wrapped in
+    // a keyed Fragment forever), so reset it before resolving them, like a
+    // finished render does when it returns to its caller.
+    task.keyPath = null;
+    task.implicitSlot = false;
+    const resolved =
+      rendered !== null && typeof rendered === 'object'
+        ? resolveModelChildren(request, task, rendered)
+        : rendered;
     // $FlowFixMe[incompatible-type] stringify can return null for undefined but we never do
     json = stringify(resolved);
   } finally {
     elisionDepth--;
     serializedSize = prevSize;
+    task.keyPath = prevKeyPath;
+    task.implicitSlot = prevImplicitSlot;
   }
   // Not written to the stream: handed to the framework instead.
   onElidedRow(id, json);
   return '$J' + id.toString(16) + ':' + element.type;
 }
-
-const REACT_PRUNED_TYPE: symbol = Symbol.for('react.pruned');
 
 // A live row (onElidedValue) skips serialization, which is where taint is
 // enforced, so apply the same checks to the value before handing it out.
@@ -3882,8 +3893,6 @@ function assertNoTaint(value: any, seen: Set<any>): void {
   }
   if (value.$$typeof === REACT_ELEMENT_TYPE) {
     assertNoTaint(value.props, seen);
-  } else if (value.$$typeof === REACT_PRUNED_TYPE) {
-    assertNoTaint(value.value, seen);
   } else if (isArray(value)) {
     for (let i = 0; i < value.length; i++) {
       assertNoTaint(value[i], seen);
@@ -3893,72 +3902,6 @@ function assertNoTaint(value: any, seen: Set<any>): void {
       assertNoTaint(value[key], seen);
     }
   }
-}
-
-// enableFlightHtmlFirst: a prop value the browser does not need to hydrate
-// (the component renders the same without it). SSR gets the real value through
-// the elided row side channel; the stream says "$J<id>:" and the browser's
-// client decodes that to undefined. Other consumers (no side channel, e.g.
-// navigation) get the value inline. The value must be plain JSON-like data.
-// With a host `tag` the value is an element the browser does not have to run
-// at all (a stateless client component, say): the browser stub is an element
-// of that tag that adopts the server DOM, like an elided host element.
-function PrunedProp(this: any, value: mixed, tag: void | string) {
-  // Lets in-process consumers (onElidedValue) recognize and unwrap it.
-  this.$$typeof = REACT_PRUNED_TYPE;
-  this.value = value;
-  this.tag = tag === undefined ? '' : tag;
-}
-
-export function pruneProp(value: mixed, tag?: string): mixed {
-  // $FlowFixMe[incompatible-use]
-  return enableFlightHtmlFirst ? new PrunedProp(value, tag) : value;
-}
-
-function tryPruneProp(
-  request: Request,
-  task: Task,
-  pruned: any,
-): ReactJSONValue {
-  const onElidedRow = request.onElidedRow;
-  if (onElidedRow === null || elisionDepth > 0) {
-    return renderModelDestructive(
-      request,
-      task,
-      {'': pruned.value} as any,
-      '',
-      pruned.value as any,
-    );
-  }
-  const id = request.nextChunkId++;
-  const onElidedValue = request.onElidedValue;
-  if (onElidedValue !== null) {
-    if (enableTaint) {
-      assertNoTaint(pruned.value, new Set());
-    }
-    onElidedValue(id, pruned.value);
-    return '$J' + id.toString(16) + ':' + pruned.tag;
-  }
-  const prevSize = serializedSize;
-  serializedSize = -Infinity;
-  elisionDepth++;
-  let json: string;
-  try {
-    const resolved = resolveModel(
-      request,
-      task,
-      {'': pruned.value} as any,
-      '',
-      pruned.value as any,
-    );
-    // $FlowFixMe[incompatible-type] stringify can return null for undefined but we never do
-    json = stringify(resolved);
-  } finally {
-    elisionDepth--;
-    serializedSize = prevSize;
-  }
-  onElidedRow(id, json);
-  return '$J' + id.toString(16) + ':' + pruned.tag;
 }
 
 function renderModel(
@@ -4105,9 +4048,6 @@ function renderModelDestructive(
   }
 
   if (typeof value === 'object') {
-    if (enableFlightHtmlFirst && value instanceof PrunedProp) {
-      return tryPruneProp(request, task, value);
-    }
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
         if (enableFlightHostElision && request.onElidedRow !== null) {

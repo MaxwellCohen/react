@@ -29,7 +29,6 @@ export {
   PageJsonLd,
   TableServerLean,
   PageMixed,
-  TableServerPruned,
   TableServerStatic,
   TableServerStaticBody,
 } from './Pages';

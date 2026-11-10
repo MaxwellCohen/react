@@ -20,7 +20,6 @@ export {
   createClientReference,
   registerServerReference,
   createTemporaryReferenceSet,
-  unstable_pruneForBrowser,
   registerServerActions,
   loadServerAction,
 } from './ReactFlightDOMServerNode';

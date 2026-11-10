@@ -38,21 +38,23 @@ webpack(require('./webpack.config'), async err => {
         {elide, live}
       )
     );
-  const PageFizz = require('./src/PageApp.js').makePage(false);
+  const PageFizz = require('./src/PageApp.js').makePage(true);
   const variants = {
     'PageApp fizz (no RSC) floor': () =>
       nodeStreamToString(renderFizzNode(PageFizz, ROWS)),
-    'PageApp baseline flight': flight(b.PageAppBaseline, false),
-    'PageApp html-first': flight(b.PageAppHtmlFirst, true),
-    'PageApp html-first LIVE': flight(b.PageAppHtmlFirst, true, true),
+    'PageApp client rows, flight': flight(b.PageAppBaseline, false),
+    'PageApp client rows, elide LIVE': flight(b.PageAppBaseline, true, true),
+    'PageApp server rows, flight': flight(b.PageAppHtmlFirst, false),
+    'PageApp server rows, elide': flight(b.PageAppHtmlFirst, true),
+    'PageApp server rows, elide LIVE': flight(b.PageAppHtmlFirst, true, true),
     'fizz same markup (no RSC)': () =>
       nodeStreamToString(renderFizzNode(FizzSame, ROWS)),
     'lean rows': flight(b.TableServerLean, false),
     'lean rows, elide': flight(b.TableServerLean, true),
-    'static rows (prune tr), elide': flight(b.TableServerStatic, true),
-    'static tbody (prune tbody), elide': flight(b.TableServerStaticBody, true),
-    'static rows LIVE': flight(b.TableServerStatic, true, true),
-    'static tbody LIVE': flight(b.TableServerStaticBody, true, true),
+    'server rows, elide': flight(b.TableServerStatic, true),
+    'server tbody, elide': flight(b.TableServerStaticBody, true),
+    'server rows LIVE': flight(b.TableServerStatic, true, true),
+    'server tbody LIVE': flight(b.TableServerStaticBody, true, true),
   };
   const names = Object.keys(variants);
   const times = Object.fromEntries(names.map(n => [n, []]));

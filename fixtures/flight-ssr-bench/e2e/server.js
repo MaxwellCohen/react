@@ -29,7 +29,13 @@ async function start(port) {
   await build(require('./webpack.client.config'));
   const b = require('../build/rsc-bundle.js');
   const pages = {
+    // Client-component rows, nothing elided (flag-off behavior).
     baseline: b.PageAppBaseline,
+    // Client-component rows, CSS/JSON-LD elided, live hand-off.
+    'client-rows': b.PageAppBaseline,
+    // Server-component rows, nothing elided.
+    'server-rows-baseline': b.PageAppHtmlFirst,
+    // Server-component rows, elided (JSON rows / live rows).
     'html-first': b.PageAppHtmlFirst,
     'html-first-json': b.PageAppHtmlFirst,
   };
@@ -58,8 +64,8 @@ async function start(port) {
             clientManifest,
             ssrManifest,
             {
-              elide: kind !== 'baseline',
-              live: kind === 'html-first',
+              elide: kind !== 'baseline' && kind !== 'server-rows-baseline',
+              live: kind === 'html-first' || kind === 'client-rows',
             }
           )
         );

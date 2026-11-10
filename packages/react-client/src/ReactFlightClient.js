@@ -2821,10 +2821,6 @@ function parseModelString(
               createModel,
             );
           }
-          if (colon === value.length - 1) {
-            // Pruned prop (enableFlightHtmlFirst): the browser never gets it.
-            return undefined;
-          }
           return createElidedHostElement(value.slice(colon + 1));
         }
         // Fallthrough
