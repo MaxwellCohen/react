@@ -122,8 +122,6 @@ describe('ReactDOMFizzServer declarative patching', () => {
     let pipe;
     await act(async () => {
       pipe = ReactDOMFizzServer.renderToPipeableStream(element, {
-        // Most tests look at one completion at a time; the batch window has its own tests.
-        unstable_declarativeBatchMs: 0,
         ...options,
       }).pipe;
       pipe(writable);

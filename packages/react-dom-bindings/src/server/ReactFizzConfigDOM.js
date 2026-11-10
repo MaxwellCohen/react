@@ -235,10 +235,6 @@ export type RenderState = {
   // Opt-in: stream pending boundaries as <?start>/<?end> ranges and completions
   // as <template for>. Always false unless enableFizzDeclarativePatching.
   declarativePatching: boolean,
-  // Server side stand-in for the client's reveal throttle ($RT + FALLBACK_THROTTLE_MS):
-  // completed declarative boundaries are held and flushed together once per window.
-  // 0 disables the hold (patches are still grouped per flush); -1 = not declarative.
-  declarativeBatchMs: number,
 
   // We allow the legacy renderer to extend this object.
 
@@ -408,7 +404,6 @@ export function createRenderState(
   onHeaders: void | ((headers: HeadersDescriptor) => void),
   maxHeadersLength: void | number,
   declarativePatching?: boolean,
-  declarativeBatchMs?: number,
 ): RenderState {
   const nonceScript = typeof nonce === 'string' ? nonce : nonce && nonce.script;
   const inlineScriptWithNonce =
@@ -571,12 +566,6 @@ export function createRenderState(
       declarativePatching === true &&
       // The external runtime has no inline scripts to build on.
       !(enableFizzExternalRuntime && externalRuntimeConfig !== undefined),
-    declarativeBatchMs:
-      enableFizzDeclarativePatching && declarativePatching === true
-        ? typeof declarativeBatchMs === 'number' && declarativeBatchMs >= 0
-          ? declarativeBatchMs
-          : DECLARATIVE_FALLBACK_THROTTLE_MS
-        : -1,
   };
 
   if (bootstrapScripts !== undefined) {
@@ -4749,80 +4738,6 @@ const declarativeAnchorEnd = stringToPrecomputedChunk('-->');
 const startPendingDeclarativeBoundary2 = stringToPrecomputedChunk('">');
 const endPendingDeclarativeBoundary =
   stringToPrecomputedChunk('<?end><!--/$-->');
-
-// Must stay in sync with FALLBACK_THROTTLE_MS and TARGET_VANITY_METRIC in
-// fizz-instruction-set/ReactDOMFizzInstructionSetShared.js (checked by a test).
-export const DECLARATIVE_FALLBACK_THROTTLE_MS = 300;
-export const DECLARATIVE_TARGET_VANITY_METRIC = 2300;
-// The script path reveals what completed before the shell's first frame at that
-// frame; later completions wait for the throttle. This is our estimate of one frame.
-export const DECLARATIVE_FIRST_FRAME_MS = 16;
-
-export function getDeclarativeBatchMs(renderState: RenderState): number {
-  return enableFizzDeclarativePatching ? renderState.declarativeBatchMs : -1;
-}
-
-// How long completed declarative boundaries must still wait before they may flush.
-// Mirrors the script runtime: what completes before the shell's first frame is revealed
-// at that frame ($RV in requestAnimationFrame); after that a reveal is throttled to
-// FALLBACK_THROTTLE_MS after the previous one ($RT), except that a throttle which would
-// make us miss TARGET_VANITY_METRIC is shortened to end at it. `start` stands in for the
-// navigation start the client measures from (server time since the request began).
-// `lastFlush` is the shell flush time while `inShellWindow`, else the last batch flush.
-// `firstFrameHeld` is set once a completion arrived during the first frame.
-export function isDeclarativeFirstFrame(
-  now: number,
-  shellFlushTime: number,
-): boolean {
-  return now < shellFlushTime + DECLARATIVE_FIRST_FRAME_MS;
-}
-
-export function getDeclarativeHoldMs(
-  renderState: RenderState,
-  now: number,
-  lastFlush: number,
-  start: number,
-  inShellWindow: boolean,
-  firstFrameHeld: boolean,
-): number {
-  const batchMs = renderState.declarativeBatchMs;
-  if (batchMs <= 0 || lastFlush < 0) {
-    return 0;
-  }
-  let wait;
-  if (inShellWindow) {
-    const firstFrame = lastFlush + DECLARATIVE_FIRST_FRAME_MS;
-    if (now < firstFrame) {
-      return firstFrame - now;
-    }
-    if (firstFrameHeld) {
-      // Something completed within the first frame and was waiting for it: reveal now.
-      return 0;
-    }
-    wait = firstFrame + batchMs - now;
-  } else {
-    wait = lastFlush + batchMs - now;
-  }
-  const sinceStart = now - start;
-  if (
-    sinceStart < DECLARATIVE_TARGET_VANITY_METRIC &&
-    sinceStart > DECLARATIVE_TARGET_VANITY_METRIC - batchMs
-  ) {
-    wait = DECLARATIVE_TARGET_VANITY_METRIC - sinceStart;
-  }
-  return wait > 0 ? wait : 0;
-}
-
-export function getBatchTime(): number {
-  return typeof performance === 'object' &&
-    typeof performance.now === 'function'
-    ? performance.now()
-    : Date.now();
-}
-
-export function scheduleBatchFlush(callback: () => void, ms: number): void {
-  setTimeout(callback, ms);
-}
 
 export function supportsDeclarativePatching(
   resumableState: ResumableState,

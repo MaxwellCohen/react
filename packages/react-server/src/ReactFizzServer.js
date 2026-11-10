@@ -64,11 +64,6 @@ import {
   writeStartCompletedSuspenseBoundary,
   writeStartPendingSuspenseBoundary,
   supportsDeclarativePatching,
-  getDeclarativeBatchMs,
-  getDeclarativeHoldMs,
-  isDeclarativeFirstFrame,
-  getBatchTime,
-  scheduleBatchFlush,
   writeStartPendingDeclarativeBoundary,
   writeEndPendingDeclarativeBoundary,
   writeStartDeclarativePatch,
@@ -280,7 +275,6 @@ type SuspenseBoundary = {
   byteSize: number, // used to determine whether to inline children boundaries.
   defer: boolean, // never inline deferred boundaries
   declarative: boolean, // flushed as a <?start> range, completes with <template for>
-  rowUnblocked: boolean, // a held declarative boundary already released its SuspenseList row
   fallbackAbortableTasks: Set<Task>, // used to cancel task on the fallback if the boundary completes or gets canceled.
   contentState: HoistableState,
   fallbackState: HoistableState,
@@ -399,13 +393,6 @@ const RENDER_ENDED = 'The render ended.';
 export opaque type Request = {
   destination: null | Destination,
   flushScheduled: boolean,
-  // enableFizzDeclarativePatching batching (see holdDeclarativeBoundaries)
-  declarativeBatchMs: number, // -1 = off, 0 = group only
-  declarativeStart: number,
-  declarativeLastFlush: number, // -1 until the first flush that wrote content
-  declarativeShellWindow: boolean, // lastFlush is the shell's flush; no batch was written yet
-  declarativeFirstFrameHeld: boolean, // something completed within the shell's first frame
-  declarativeFlushScheduled: boolean,
   declarativePatchedIds: Array<number>, // patches written but not yet followed by their $RP script
   +resumableState: ResumableState,
   +renderState: RenderState,
@@ -581,17 +568,6 @@ function RequestInstance(
   const abortSet: Set<Task> = new Set();
   this.destination = null;
   this.flushScheduled = false;
-  this.declarativeBatchMs = enableFizzDeclarativePatching
-    ? getDeclarativeBatchMs(renderState)
-    : -1;
-  this.declarativeStart =
-    enableFizzDeclarativePatching && this.declarativeBatchMs >= 0
-      ? getBatchTime()
-      : 0;
-  this.declarativeLastFlush = -1;
-  this.declarativeShellWindow = false;
-  this.declarativeFirstFrameHeld = false;
-  this.declarativeFlushScheduled = false;
   this.declarativePatchedIds = [];
   this.resumableState = resumableState;
   this.renderState = renderState;
@@ -932,7 +908,6 @@ function createSuspenseBoundary(
     byteSize: 0,
     defer: defer,
     declarative: false,
-    rowUnblocked: false,
     fallbackAbortableTasks,
     errorDigest: null,
     contentState: createHoistableState(),
@@ -6031,8 +6006,6 @@ function flushSubtree(
 // Running count for how much bytes of boundaries have flushed inlined into the currently
 // flushing root or completed boundary.
 let flushedByteSize = 0;
-// Set when the current flush pass wrote a declarative patch (see declarativeLastFlush).
-let flushedDeclarativePatch = false;
 
 function writeStartPendingBoundary(
   request: Request,
@@ -6289,7 +6262,6 @@ function flushSegmentContainer(
     boundary !== null &&
     boundary.declarative
   ) {
-    flushedDeclarativePatch = true;
     request.declarativePatchedIds.push(segment.id);
     writeStartDeclarativePatch(
       destination,
@@ -6325,14 +6297,9 @@ function flushCompletedBoundary(
   completedSegments.length = 0;
 
   const row = boundary.row;
-  if (
-    row !== null &&
-    isEligibleForOutlining(request, boundary) &&
-    !boundary.rowUnblocked
-  ) {
+  if (row !== null && isEligibleForOutlining(request, boundary)) {
     // Once we have written the boundary, we can unblock the row and let future
     // rows be written. This may schedule new completed boundaries.
-    boundary.rowUnblocked = true;
     if (--row.pendingTasks === 0) {
       finishSuspenseListRow(request, row);
     }
@@ -6461,98 +6428,10 @@ function flushPartiallyCompletedSegment(
 let flushingPartialBoundaries = false;
 let flushingShell = false;
 
-// Declarative patching has no client runtime to batch reveals like completeBoundary()
-// does ($RB queue, rAF for the first paint, FALLBACK_THROTTLE_MS after that). The server
-// stands in for it: completed declarative boundaries wait in request.completedBoundaries
-// until the batch window opens, and then everything that is queued is written in a
-// single flush, in queue order (so a parent patch always precedes its nested patches
-// and SuspenseList rows keep their order). Returns true if `boundary` must be held.
-function shouldHoldDeclarative(request: Request): boolean {
-  if (
-    !enableFizzDeclarativePatching ||
-    request.declarativeBatchMs <= 0 ||
-    request.trackedPostpones !== null ||
-    request.aborted ||
-    request.fatalError !== null ||
-    request.status === CLOSING ||
-    request.status === CLOSED
-  ) {
-    return false;
-  }
-  const now = getBatchTime();
-  if (
-    request.declarativeShellWindow &&
-    isDeclarativeFirstFrame(now, request.declarativeLastFlush)
-  ) {
-    request.declarativeFirstFrameHeld = true;
-  }
-  const wait = getDeclarativeHoldMs(
-    request.renderState,
-    now,
-    request.declarativeLastFlush,
-    request.declarativeStart,
-    request.declarativeShellWindow,
-    request.declarativeFirstFrameHeld,
-  );
-  if (wait <= 0) {
-    return false;
-  }
-  scheduleDeclarativeFlush(request, wait);
-  return true;
-}
-
-function scheduleDeclarativeFlush(request: Request, ms: number): void {
-  if (request.declarativeFlushScheduled) {
-    return;
-  }
-  request.declarativeFlushScheduled = true;
-  scheduleBatchFlush(() => {
-    request.declarativeFlushScheduled = false;
-    const destination = request.destination;
-    if (destination !== null && request.status !== CLOSED) {
-      try {
-        flushCompletedQueues(request, destination);
-      } catch (error) {
-        const errorInfo: ThrownInfo = {};
-        logRecoverableError(request, error, errorInfo, null);
-        fatalError(request, error, errorInfo, null);
-      }
-    }
-  }, ms);
-}
-
-// Held boundaries stay queued, but their SuspenseList rows must not wait for the window:
-// the script path unblocks a row as soon as its boundary is written and lets the client
-// batch the reveal, so a forwards list would otherwise take one window per row. Order is
-// still guaranteed because everything that completes later queues behind these.
-function releaseHeldDeclarativeRows(
-  request: Request,
-  queue: Array<SuspenseBoundary>,
-  from: number,
-): void {
-  for (let j = from; j < queue.length; j++) {
-    const boundary = queue[j];
-    const row = boundary.row;
-    if (
-      row !== null &&
-      boundary.declarative &&
-      !boundary.rowUnblocked &&
-      isEligibleForOutlining(request, boundary)
-    ) {
-      boundary.rowUnblocked = true;
-      if (--row.pendingTasks === 0) {
-        finishSuspenseListRow(request, row);
-      }
-    }
-  }
-}
-
 function flushCompletedQueues(
   request: Request,
   destination: Destination,
 ): void {
-  flushedDeclarativePatch = false;
-  let flushedShell = false;
   beginWriting(destination);
   try {
     // The structure of this is to go through each queue one by one and write
@@ -6610,7 +6489,6 @@ function flushCompletedQueues(
       flushingShell = true;
       flushSegment(request, destination, completedRootSegment, null);
       flushingShell = false;
-      flushedShell = true;
       request.completedRootSegment = null;
       const isComplete =
         request.allPendingTasks === 0 &&
@@ -6657,15 +6535,6 @@ function flushCompletedQueues(
     const completedBoundaries = request.completedBoundaries;
     for (i = 0; i < completedBoundaries.length; i++) {
       const boundary = completedBoundaries[i];
-      if (
-        enableFizzDeclarativePatching &&
-        boundary.declarative &&
-        shouldHoldDeclarative(request)
-      ) {
-        // This and everything queued behind it waits for the batch window.
-        releaseHeldDeclarativeRows(request, completedBoundaries, i);
-        break;
-      }
       if (!flushCompletedBoundary(request, destination, boundary)) {
         request.destination = null;
         i++;
@@ -6708,14 +6577,6 @@ function flushCompletedQueues(
     const largeBoundaries = request.completedBoundaries;
     for (i = 0; i < largeBoundaries.length; i++) {
       const boundary = largeBoundaries[i];
-      if (
-        enableFizzDeclarativePatching &&
-        boundary.declarative &&
-        shouldHoldDeclarative(request)
-      ) {
-        releaseHeldDeclarativeRows(request, largeBoundaries, i);
-        break;
-      }
       if (!flushCompletedBoundary(request, destination, boundary)) {
         request.destination = null;
         i++;
@@ -6728,20 +6589,6 @@ function flushCompletedQueues(
     flushingPartialBoundaries = false;
     if (enableFizzDeclarativePatching) {
       flushDeclarativePatchScript(request, destination);
-    }
-    if (enableFizzDeclarativePatching && request.declarativeBatchMs >= 0) {
-      if (flushedDeclarativePatch) {
-        // A batch was written: the next window starts now.
-        request.declarativeLastFlush = getBatchTime();
-        request.declarativeShellWindow = false;
-        request.declarativeFirstFrameHeld = false;
-      } else if (flushedShell && request.declarativeLastFlush < 0) {
-        // Only the shell went out. Like the script path, whatever completes within the
-        // first frame is revealed at that frame; the throttle starts after it.
-        request.declarativeLastFlush = getBatchTime();
-        request.declarativeShellWindow = true;
-      }
-      flushedDeclarativePatch = false;
     }
     const postponedState = request.postponedState;
     if (postponedState !== null) {

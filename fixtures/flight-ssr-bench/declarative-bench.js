@@ -13,7 +13,7 @@
 // polyfill (needs POLYFILL_JS on the server) and reports what the user ends up with.
 //
 // heavy: layouts, reveal updates/frames, FCP/LCP and bytes for `n` boundaries
-//        (script vs declarative with batchMs=0 vs the default 300 ms window).
+//        (script vs declarative).
 // list:  SuspenseList forwards/together, script vs declarative: reveal times.
 // error: a boundary that errors on the server next to a slow boundary: when is it
 //        client rendered.
@@ -52,8 +52,7 @@ function bytes(query) {
 async function heavy(browser) {
   const variants = [
     ['script', 'mode=script'],
-    ['decl batch=0', 'mode=decl&batchMs=0'],
-    ['decl batch=300', 'mode=decl'],
+    ['decl', 'mode=decl'],
   ];
   const res = {};
   for (let round = 0; round < 2; round++) {

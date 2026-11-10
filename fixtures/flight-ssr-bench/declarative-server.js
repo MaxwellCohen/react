@@ -8,7 +8,6 @@
 // GET /?page=basic|nested|css|style|heavy|list&mode=decl|script&clientDelay=ms&cssMs=ms&n=boundaries
 //   polyfill=1 loads /polyfill.js (env POLYFILL_JS) in <head> (template-for-polyfill)
 //   mode=decl   -> unstable_declarativePatching: true (<?start>/<template for>);
-//                  batchMs=ms sets the server batch window (default 300, 0 = group only)
 //   mode=script -> default $RC script path
 // GET /client.js?delay=ms -> hydration bundle (optionally delayed)
 // GET /slow.css?ms=ms     -> stylesheet that arrives after `ms`
@@ -105,9 +104,6 @@ const server = http.createServer(async (req, res) => {
   const {pipe} = renderToPipeableStream(React.createElement(App, {page}), {
     bootstrapScripts: ['/client.js?delay=' + (q.get('clientDelay') || 0)],
     unstable_declarativePatching: mode === 'decl',
-    unstable_declarativeBatchMs: q.has('batchMs')
-      ? Number(q.get('batchMs'))
-      : undefined,
     onShellReady() {
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',

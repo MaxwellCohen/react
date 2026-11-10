@@ -81,11 +81,6 @@ export const writeEndPendingSuspenseBoundary =
   $$$config.writeEndPendingSuspenseBoundary;
 export const supportsDeclarativePatching =
   $$$config.supportsDeclarativePatching;
-export const getDeclarativeBatchMs = $$$config.getDeclarativeBatchMs;
-export const getDeclarativeHoldMs = $$$config.getDeclarativeHoldMs;
-export const isDeclarativeFirstFrame = $$$config.isDeclarativeFirstFrame;
-export const getBatchTime = $$$config.getBatchTime;
-export const scheduleBatchFlush = $$$config.scheduleBatchFlush;
 export const writeStartPendingDeclarativeBoundary =
   $$$config.writeStartPendingDeclarativeBoundary;
 export const writeEndPendingDeclarativeBoundary =

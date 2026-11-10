@@ -16,9 +16,9 @@ jest.mock('shared/ReactFeatureFlags', () => ({
   enableFizzDeclarativePatching: true,
 }));
 
-// Declarative patching has no client runtime to coordinate reveals, so the server holds
-// completed boundaries for a batch window and writes them together. These tests drive a
-// fake clock and capture the stream chunk by chunk to check grouping and ordering.
+// Completed boundaries are flushed on the next flush and the ones that complete together
+// share a patch group. These tests capture the stream chunk by chunk to check grouping
+// and ordering.
 
 let Stream;
 let React;
@@ -27,9 +27,6 @@ let Suspense;
 let SuspenseList;
 let act;
 let textCache;
-let now;
-let timers;
-let realSetTimeout;
 
 describe('ReactDOMFizzServer declarative patching batching', () => {
   beforeEach(() => {
@@ -43,35 +40,7 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     }
     act = require('internal-test-utils').act;
     textCache = new Map();
-
-    // Controlled clock and batch timers. Only timers with a delay are ours; the
-    // scheduler and act use setImmediate/MessageChannel or a zero delay.
-    now = 1000;
-    timers = [];
-    jest.spyOn(performance, 'now').mockImplementation(() => now);
-    realSetTimeout = global.setTimeout;
-    global.setTimeout = jest.fn((callback, ms, ...args) => {
-      if (typeof ms === 'number' && ms > 0 && ms <= 3000) {
-        timers.push({callback, at: now + ms});
-        return 0;
-      }
-      return realSetTimeout(callback, ms, ...args);
-    });
   });
-
-  afterEach(() => {
-    global.setTimeout = realSetTimeout;
-    jest.restoreAllMocks();
-  });
-
-  async function advance(ms) {
-    now += ms;
-    const due = timers.filter(t => t.at <= now);
-    timers = timers.filter(t => t.at > now);
-    await act(async () => {
-      due.forEach(t => t.callback());
-    });
-  }
 
   function resolveText(text) {
     const record = textCache.get(text);
@@ -156,35 +125,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
   const patchGroups = r =>
     r.chunks.map(c => patchIds(c)).filter(ids => ids.length > 0);
 
-  it('holds completions for the window and writes them as one group', async () => {
-    const r = await render(
-      <html>
-        <body>{boundaries(['a', 'b', 'c', 'd', 'e', 'f'])}</body>
-      </html>,
-    );
-    expect(patchGroups(r)).toEqual([]);
-
-    // Inside the first frame nothing is written yet; after it one group goes out.
-    await r.resolve('a', 'b');
-    await r.resolve('c');
-    expect(patchGroups(r)).toEqual([]);
-    await advance(16);
-    expect(patchGroups(r)).toEqual([['0', '1', '2']]);
-
-    // The next window opens FALLBACK_THROTTLE_MS (300) after that flush.
-    await r.resolve('d');
-    await advance(100);
-    await r.resolve('e', 'f');
-    await advance(100);
-    expect(patchGroups(r)).toEqual([['0', '1', '2']]);
-    await advance(100);
-    expect(patchGroups(r)).toEqual([
-      ['0', '1', '2'],
-      ['3', '4', '5'],
-    ]);
-    expect(r.text()).not.toContain('$RC');
-  });
-
   it('does not reveal a boundary that only completed partially', async () => {
     // The first piece of content completes after the fallback was flushed, while another
     // piece is still pending. The script path stages that in a hidden container; a patch
@@ -206,7 +146,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
           </Suspense>
         </body>
       </html>,
-      {unstable_declarativeBatchMs: 0},
     );
     await r.resolve('w');
     await r.resolve('a');
@@ -221,79 +160,16 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     expect(out).not.toContain('$RS');
   });
 
-  it('throttles from the first frame for completions that miss it, like $RT', async () => {
-    const r = await render(
-      <html>
-        <body>{boundaries(['a', 'b'])}</body>
-      </html>,
-    );
-    // The shell was written at t=1000. Its first frame is at about 1016. A completion at
-    // 1100 missed it, so it is revealed at 1016 + FALLBACK_THROTTLE_MS.
-    now = 1100;
-    await r.resolve('a');
-    await advance(200);
-    expect(patchGroups(r)).toEqual([]);
-    await advance(16);
-    expect(patchGroups(r)).toEqual([['0']]);
-  });
-
-  it('does not hold when the batch window is 0, but still groups a flush', async () => {
+  it('flushes a completed boundary on the next flush', async () => {
     const r = await render(
       <html>
         <body>{boundaries(['a', 'b', 'c'])}</body>
       </html>,
-      {unstable_declarativeBatchMs: 0},
     );
     await r.resolve('a');
     expect(patchGroups(r)).toEqual([['0']]);
     await r.resolve('b');
     expect(patchGroups(r)).toEqual([['0'], ['1']]);
-    expect(timers).toEqual([]);
-  });
-
-  it('shortens a throttle that would miss the vanity metric', async () => {
-    const r = await render(
-      <html>
-        <body>{boundaries(['a', 'b'])}</body>
-      </html>,
-    );
-    await r.resolve('a');
-    await advance(16);
-    expect(patchGroups(r)).toEqual([['0']]);
-    // 2100ms after the request started: the usual wait would end at 2316ms, the
-    // vanity metric target (2300ms) is earlier.
-    now = 1000 + 2100;
-    await r.resolve('b');
-    await advance(199);
-    expect(patchGroups(r)).toEqual([['0']]);
-    await advance(1);
-    expect(patchGroups(r)).toEqual([['0'], ['1']]);
-  });
-
-  it('keeps the reveal throttle constants in sync with the client runtime', () => {
-    const fs = require('fs');
-    const path = require('path');
-    const shared = fs.readFileSync(
-      path.join(
-        __dirname,
-        '../../../react-dom-bindings/src/server/fizz-instruction-set/ReactDOMFizzInstructionSetShared.js',
-      ),
-      'utf8',
-    );
-    const config = fs.readFileSync(
-      path.join(
-        __dirname,
-        '../../../react-dom-bindings/src/server/ReactFizzConfigDOM.js',
-      ),
-      'utf8',
-    );
-    const pick = (src, re) => +re.exec(src)[1];
-    expect(pick(config, /DECLARATIVE_FALLBACK_THROTTLE_MS = (\d+)/)).toBe(
-      pick(shared, /const FALLBACK_THROTTLE_MS = (\d+)/),
-    );
-    expect(pick(config, /DECLARATIVE_TARGET_VANITY_METRIC = (\d+)/)).toBe(
-      pick(shared, /const TARGET_VANITY_METRIC = (\d+)/),
-    );
   });
 
   it('writes a parent patch before the patches of boundaries nested in it', async () => {
@@ -318,13 +194,11 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     );
     // The inner boundary can only be revealed once the outer one is in the document.
     await r.resolve('outer');
-    await advance(16);
     expect(patchGroups(r)).toEqual([['0']]);
     // The outer patch carries the still pending inner boundary as a range.
     expect(r.text()).toMatch(/<template for="B:0">[^]*<\?start name="B:1">/);
 
     await r.resolve('inner');
-    await advance(300);
     expect(patchGroups(r)).toEqual([['0'], ['1']]);
     expect(r.text().indexOf('<template for="B:0">')).toBeLessThan(
       r.text().indexOf('<template for="B:1">'),
@@ -357,7 +231,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     );
     await r.resolve('inner');
     await r.resolve('outer');
-    await advance(16);
     const groups = patchGroups(r);
     // Both patches were written in the same flush, outer first.
     expect(groups).toEqual([['0', '1']]);
@@ -373,7 +246,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
           </SuspenseList>
         </body>
       </html>,
-      {unstable_declarativeBatchMs: 0},
     );
     // The row stays unrevealed until every boundary in it is done.
     await r.resolve('a');
@@ -384,25 +256,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     expect(r.text()).not.toContain('$RC');
     expect(r.text()).not.toContain('<template id="B:');
     expect(r.text().match(/<\?start/g).length).toBe(3);
-  });
-
-  // @gate enableSuspenseList
-  it('keeps "together" rows together when the batch window holds them', async () => {
-    const r = await render(
-      <html>
-        <body>
-          <SuspenseList revealOrder="together">
-            {boundaries(['a', 'b', 'c'])}
-          </SuspenseList>
-        </body>
-      </html>,
-    );
-    await r.resolve('a', 'b');
-    await advance(300);
-    expect(patchGroups(r)).toEqual([]);
-    await r.resolve('c');
-    await advance(300);
-    expect(patchGroups(r)).toEqual([['0', '1', '2']]);
   });
 
   // The ids of revealed boundaries, in the order the document is told to reveal them.
@@ -429,7 +282,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
         const seen = [];
         for (let i = 0; i < steps.length; i++) {
           await r.resolve(...steps[i]);
-          await advance(300);
           seen.push(revealedIds(r.text()));
         }
         return {seen, r};
@@ -443,13 +295,11 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
       // Same boundaries revealed in the same order after every step.
       expect(decl.seen).toEqual(script.seen);
       expect(decl.seen[2].length).toBe(3);
-      // A patch group per window, never one window per row.
-      expect(patchGroups(decl.r).length).toBeLessThanOrEqual(2);
     });
   });
 
   // @gate enableSuspenseList
-  it('keeps "forwards" rows waiting for earlier rows without spending a window each', async () => {
+  it('keeps "forwards" rows waiting for earlier rows', async () => {
     const r = await render(
       <html>
         <body>
@@ -460,14 +310,12 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
       </html>,
     );
     await r.resolve('c', 'b');
-    await advance(300);
     expect(patchGroups(r)).toEqual([]);
     await r.resolve('a');
-    await advance(300);
     expect(patchGroups(r)).toEqual([['0', '1', '2']]);
   });
 
-  it('signals an errored boundary right away, without a script and without holding', async () => {
+  it('signals an errored boundary right away, without a script', async () => {
     function Boom() {
       readText('boom');
       throw new Error('boom');
@@ -484,7 +332,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
       {onError: () => 'digest-1'},
     );
     await r.resolve('boom');
-    // No advance(): $RX is not throttled either.
     expect(r.text()).toContain(
       '<template data-rcr id="E:B:0" data-dgst="digest-1"',
     );
@@ -493,39 +340,6 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     // The fallback range is untouched and a later completion still patches normally.
     expect(r.text()).toContain('<?start name="B:0"><i>loading</i><?end>');
     await r.resolve('a');
-    await advance(300);
     expect(patchGroups(r)).toEqual([['1']]);
-  });
-
-  it('flushes held patches immediately on abort', async () => {
-    const writable = new Stream.PassThrough();
-    writable.setEncoding('utf8');
-    const chunks = [];
-    writable.on('data', chunk => chunks.push(chunk));
-    let abort;
-    await act(async () => {
-      const stream = ReactDOMFizzServer.renderToPipeableStream(
-        <html>
-          <body>{boundaries(['a', 'b'])}</body>
-        </html>,
-        {unstable_declarativePatching: true},
-      );
-      abort = stream.abort;
-      stream.pipe(writable);
-    });
-    await act(async () => {
-      resolveText('a');
-    });
-    await advance(16);
-    expect(chunks.join('')).toContain('<template for="B:0">');
-    await act(async () => {
-      resolveText('b');
-    });
-    expect(chunks.join('')).not.toContain('<template for="B:1">');
-    await act(async () => {
-      abort();
-    });
-    expect(chunks.join('')).toContain('<template for="B:1">');
-    expect(writable.writableEnded).toBe(true);
   });
 });
