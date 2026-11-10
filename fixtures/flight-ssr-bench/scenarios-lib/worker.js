@@ -106,7 +106,7 @@ async function init({files, clientMode}) {
   return {react: require('react').version};
 }
 
-async function render({id, size}) {
+async function render({id, size, recoverErrors}) {
   problems = [];
   const optIn = VARIANT !== 'off';
   const t = process.hrtime.bigint();
@@ -114,6 +114,7 @@ async function render({id, size}) {
     renderFlightFizzNode(bundle.renderRSCNode, roots[id], size, clientManifest, ssrManifest, {
       elide: optIn,
       live: optIn,
+      recoverErrors: !!recoverErrors,
     })
   );
   const ms = Number(process.hrtime.bigint() - t) / 1e6;

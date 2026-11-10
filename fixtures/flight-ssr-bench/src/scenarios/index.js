@@ -8,7 +8,7 @@ const path = require('path');
 const DIR = __dirname;
 const BENEFITS = ['high', 'low', 'none'];
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const STEPS = ['click', 'fill', 'expectText', 'expectCount'];
+const STEPS = ['click', 'fill', 'expectText', 'expectCount', 'navigate'];
 const FORBIDDEN = [
   [/Date\.now|new Date\(|performance\.now|Math\.random|crypto\.random/, 'non-deterministic API'],
   [/\bfetch\s*\(|XMLHttpRequest|WebSocket|require\(['"](https?|net|fs|child_process)['"]\)|from ['"](https?|net|fs|child_process|node:[a-z]+)['"]/, 'network/IO'],
@@ -105,6 +105,7 @@ function load(only) {
       sizes: mod.sizes || {smoke: 5, full: 50},
       interact: mod.interact || [],
       knownFailure: mod.knownFailure || null,
+      allowRecoverableErrors: !!mod.allowRecoverableErrors,
     });
   }
   if (errors.length) {

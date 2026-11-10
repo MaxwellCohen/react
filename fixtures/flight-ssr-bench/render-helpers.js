@@ -220,7 +220,7 @@ function renderFlightFizzNode(
     },
     onError(e) {
       console.error('Flight+Fizz Node error:', e);
-      output.destroy(e);
+      if (!(opts && opts.recoverErrors)) output.destroy(e);
     },
   });
 

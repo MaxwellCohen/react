@@ -25,8 +25,8 @@ const {serve, runPage, firstDiff} = require('./scenarios-lib/browser');
         const key = w.name + '/' + s.id;
         let snaps = {};
         try {
-          const r = await w.call('render', {id: s.id, size: s.size});
-          for (const p of r.problems) failures.push({check: 'console', message: '[server render] ' + p});
+          const r = await w.call('render', {id: s.id, size: s.size, recoverErrors: s.allowRecoverableErrors});
+          for (const p of r.problems.filter(p => !(s.allowRecoverableErrors && /Fizz Node error/.test(p)))) failures.push({check: 'console', message: '[server render] ' + p});
           if (!r.html.includes('</body></html>')) failures.push({check: 'render', message: 'HTML does not end with </body></html>'});
           pages[key] = r.html;
           const f = await w.call('flight', {id: s.id, size: s.size});

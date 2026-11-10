@@ -58,13 +58,16 @@ async function settle(page) {
   return prev;
 }
 
-async function runSteps(page, steps, size) {
+async function runSteps(page, steps, size, navUrl) {
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
     const where = 'interact[' + i + '] ' + JSON.stringify(s);
     const cnt = c => (c === 'size' ? size : c);
     try {
-      if (s.click) await page.locator(s.click).nth(s.nth || 0).click({timeout: 5000});
+      if (s.navigate) {
+        await page.evaluate(u => window.__navigate(u), navUrl);
+        await settle(page);
+      } else if (s.click) await page.locator(s.click).nth(s.nth || 0).click({timeout: 5000});
       else if (s.fill) await page.locator(s.fill).nth(s.nth || 0).fill(s.value, {timeout: 5000});
       else if (s.expectText) {
         const e = s.expectText;
@@ -125,7 +128,7 @@ async function runPage(browser, base, v, s) {
   const finish = async ({ctx, page, logs}, tag) => {
     const rec = await page.evaluate(() => window.__recoverable || []);
     for (const l of logs) fail('console', tag + ' ' + l);
-    for (const r of rec) fail('hydration', tag + ' recoverable error: ' + r);
+    if (!s.allowRecoverableErrors) for (const r of rec) fail('hydration', tag + ' recoverable error: ' + r);
     await ctx.close();
   };
   // Page A: hydrate, interact on the adopted DOM.
@@ -134,7 +137,7 @@ async function runPage(browser, base, v, s) {
     A = await open();
     snaps.hydrated = await settle(A.page);
     try {
-      await runSteps(A.page, s.interact, s.size);
+      await runSteps(A.page, s.interact, s.size, `/${v}/rsc/${s.id}`);
       snaps.interacted = await settle(A.page);
     } catch (e) {
       fail('interact', 'after hydration: ' + e.message);
@@ -154,7 +157,7 @@ async function runPage(browser, base, v, s) {
     snaps.navigated = await settle(B.page);
     if (snaps.navigated !== before) fail('navigation', 'DOM after full-Flight navigation differs from hydrated DOM: ' + firstDiff(before, snaps.navigated));
     try {
-      await runSteps(B.page, s.interact, s.size);
+      await runSteps(B.page, s.interact, s.size, `/${v}/rsc/${s.id}`);
       snaps.navInteracted = await settle(B.page);
     } catch (e) {
       fail('interact', 'after navigation: ' + e.message);

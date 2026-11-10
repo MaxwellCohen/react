@@ -23,7 +23,7 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
       const acc = Object.fromEntries(ctx.workers.map(w => [w.name, {times: [], lens: new Set()}]));
       const bytes = {};
       const run = async (w, record) => {
-        const r = await w.call('render', {id: s.id, size: s.size});
+        const r = await w.call('render', {id: s.id, size: s.size, recoverErrors: s.allowRecoverableErrors});
         if (r.problems.length) throw new Error(s.id + ' [' + w.name + '] server console output: ' + r.problems[0]);
         const buf = Buffer.from(r.html);
         acc[w.name].lens.add(buf.length);
