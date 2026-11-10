@@ -37,6 +37,7 @@ function registerClientModule(modulePath) {
 const srcDirs = [
   path.resolve(__dirname, 'src'),
   path.resolve(__dirname, 'src/components'),
+  path.resolve(__dirname, 'src/scenarios'),
 ];
 for (const dir of srcDirs) {
   if (!fs.existsSync(dir)) continue;
