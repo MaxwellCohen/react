@@ -88,4 +88,65 @@ describe('$RP runtime (polyfill path)', () => {
     window.$RP('B:a');
     expect(visible()).toBe('done');
   });
+
+  it('replaces the fallback range with the template content', () => {
+    setBody(
+      '<div id="a">' +
+        pending('B:a', 'fb-a') +
+        '</div><p>x</p><template for="B:a"><span>done</span></template>',
+    );
+    window.$RP('B:a');
+    expect(visible()).toBe('<div id="a"><span>done</span></div><p>x</p>');
+    // The range markers are gone with the fallback; the boundary comments stay.
+    expect(document.body.innerHTML).not.toContain('?start');
+    expect(document.body.innerHTML).not.toContain('?end');
+    expect(document.body.innerHTML).toContain('<!--$?-->');
+    expect(document.body.innerHTML).toContain('<!--/$-->');
+  });
+
+  it('patches a group of boundaries, parents before children', () => {
+    setBody(
+      pending('B:p', 'fb-p') +
+        '<template for="B:p">[' +
+        pending('B:c', 'fb-c') +
+        ']</template>' +
+        '<template for="B:c">child</template>',
+    );
+    window.$RP('B:p', 'B:c');
+    expect(visible()).toBe('[child]');
+    expect(document.querySelectorAll('template').length).toBe(0);
+  });
+
+  it('does not touch a range React already created DOM for', () => {
+    setBody(
+      pending('B:a', '<i id="client">client</i>') +
+        '<template for="B:a">server</template>',
+    );
+    // React hydrated or client rendered into the range before the template arrived.
+    document.getElementById('client').__reactFiber$test = {};
+    window.$RP('B:a');
+    expect(visible()).toBe('<i id="client">client</i>');
+    expect(document.querySelectorAll('template').length).toBe(0);
+  });
+
+  it('is a no-op when the browser already applied the patch', () => {
+    // Native support consumes the template and the markers.
+    setBody('<!--B:a--><!--$?-->done<!--/$-->');
+    const before = document.body.innerHTML;
+    window.$RP('B:a');
+    expect(document.body.innerHTML).toBe(before);
+  });
+
+  it('leaves SVG content in its parent namespace untouched', () => {
+    // SVG boundaries never use patches, so $RP must not reparse anything.
+    setBody(
+      '<svg>' +
+        pending('B:a', '<circle r="1"></circle>') +
+        '</svg><template for="B:a"><circle r="2"></circle></template>',
+    );
+    const svg = document.querySelector('svg');
+    window.$RP('B:a');
+    expect(document.querySelector('svg')).toBe(svg);
+    expect(visible()).toBe('<svg><circle r="2"></circle></svg>');
+  });
 });
