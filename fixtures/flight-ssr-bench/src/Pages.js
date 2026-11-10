@@ -1,8 +1,8 @@
 import {Suspense} from 'react';
-import {unstable_pruneForBrowser as prune} from 'react-server-dom-webpack/server';
 import TableRow from './components/TableRow';
 import TableServerHost from './TableServerHost';
 import TableRowLean from './components/TableRowLean';
+import TableRowServer from './components/TableRowServer';
 import Counter from './components/Counter';
 import {generateProducts} from './components/data';
 import {makeCss, makeJsonLd} from './blobs';
@@ -185,32 +185,8 @@ const tableColumns = [
   {key: 'rating', label: 'Rating'},
 ];
 
-// (iii-b) Same full-product props as TableServer, but nested data the row
-// does not render is pruned from the browser stream (SSR still gets it).
-export function TableServerPruned({itemCount}) {
-  const products = generateProducts(itemCount);
-  return (
-    <Doc head={null}>
-      <table className="product-table">
-        <tbody>
-          {products.map(p => {
-            const product = {};
-            for (const k in p) {
-              product[k] =
-                p[k] !== null && typeof p[k] === 'object' ? prune(p[k]) : p[k];
-            }
-            return (
-              <TableRow key={p.id} product={product} columns={tableColumns} />
-            );
-          })}
-        </tbody>
-      </table>
-    </Doc>
-  );
-}
-
-// (iii-c) Stateless client rows: the browser adopts the server DOM for each row
-// (stub <tr>), so neither props nor the component's JS are needed there.
+// (iii-c) Server-component rows: each <tr> is static server output, so the
+// browser adopts the server DOM (stub <tr>) and gets no props or JS for it.
 export function TableServerStatic({itemCount}) {
   const products = generateProducts(itemCount);
   return (
@@ -233,22 +209,19 @@ export function TableServerStatic({itemCount}) {
             </tr>
           </thead>
           <tbody>
-            {products.map(p =>
-              prune(
-                <TableRowLean
-                  key={p.id}
-                  name={p.name}
-                  category={p.category}
-                  sku={p.sku}
-                  price={p.price}
-                  stock={p.stock}
-                  status={p.status}
-                  rating={p.rating}
-                  reviewCount={p.reviewCount}
-                />,
-                'tr'
-              )
-            )}
+            {products.map(p => (
+              <TableRowServer
+                key={p.id}
+                name={p.name}
+                category={p.category}
+                sku={p.sku}
+                price={p.price}
+                stock={p.stock}
+                status={p.status}
+                rating={p.rating}
+                reviewCount={p.reviewCount}
+              />
+            ))}
           </tbody>
         </table>
       </div>
@@ -256,8 +229,7 @@ export function TableServerStatic({itemCount}) {
   );
 }
 
-// (iii-d) One elided row for the whole <tbody>. Stateless client rows: the browser adopts the server DOM for each row
-// (stub <tr>), so neither props nor the component's JS are needed there.
+// (iii-d) One elided row for the whole <tbody> of server-component rows.
 export function TableServerStaticBody({itemCount}) {
   const products = generateProducts(itemCount);
   return (
@@ -279,24 +251,21 @@ export function TableServerStaticBody({itemCount}) {
               ))}
             </tr>
           </thead>
-          {prune(
-            <tbody>
-              {products.map(p => (
-                <TableRowLean
-                  key={p.id}
-                  name={p.name}
-                  category={p.category}
-                  sku={p.sku}
-                  price={p.price}
-                  stock={p.stock}
-                  status={p.status}
-                  rating={p.rating}
-                  reviewCount={p.reviewCount}
-                />
-              ))}
-            </tbody>,
-            'tbody'
-          )}
+          <tbody>
+            {products.map(p => (
+              <TableRowServer
+                key={p.id}
+                name={p.name}
+                category={p.category}
+                sku={p.sku}
+                price={p.price}
+                stock={p.stock}
+                status={p.status}
+                rating={p.rating}
+                reviewCount={p.reviewCount}
+              />
+            ))}
+          </tbody>
         </table>
       </div>
     </Doc>

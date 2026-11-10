@@ -49,7 +49,6 @@ function renderFizzEdge(AppComponent, itemCount) {
 // nodes (no JSON). Client references in them are resolved with the same
 // manifest the server uses, which a framework has in hand in-process.
 const ELEMENT = Symbol.for('react.transitional.element');
-const PRUNED = Symbol.for('react.pruned');
 const CLIENT_REF = Symbol.for('react.client.reference');
 
 function makeLiveResolver(clientManifest) {
@@ -77,7 +76,6 @@ function makeLiveResolver(clientManifest) {
       }
       return out || node;
     }
-    if (node.$$typeof === PRUNED) return resolve(node.value);
     if (node.$$typeof === ELEMENT) {
       const type = node.type;
       const nextType =

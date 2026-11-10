@@ -73,7 +73,6 @@ import type {TemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemp
 import type {FileHandle} from 'react-server/src/ReactFlightReplyServer';
 
 export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemporaryReferences';
-export {pruneProp as unstable_pruneForBrowser} from 'react-server/src/ReactFlightServer';
 
 export type {TemporaryReferenceSet};
 

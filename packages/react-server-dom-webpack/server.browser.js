@@ -16,5 +16,4 @@ export {
   registerClientReference,
   createClientModuleProxy,
   createTemporaryReferenceSet,
-  unstable_pruneForBrowser,
 } from './src/server/react-flight-dom-server.browser';

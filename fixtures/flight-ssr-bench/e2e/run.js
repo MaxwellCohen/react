@@ -116,7 +116,13 @@ async function check(browser, kind) {
     executablePath: process.env.CHROME_PATH || undefined,
   });
   let failed = false;
-  for (const kind of ['baseline', 'html-first-json', 'html-first']) {
+  for (const kind of [
+    'baseline',
+    'client-rows',
+    'server-rows-baseline',
+    'html-first-json',
+    'html-first',
+  ]) {
     const runs = [];
     for (let i = 0; i < 9; i++) runs.push(await check(browser, kind));
     const r = runs[runs.length - 1];

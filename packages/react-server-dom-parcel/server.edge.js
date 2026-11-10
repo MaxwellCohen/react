@@ -16,7 +16,6 @@ export {
   createClientReference,
   registerServerReference,
   createTemporaryReferenceSet,
-  unstable_pruneForBrowser,
   registerServerActions,
   loadServerAction,
 } from './src/server/react-flight-dom-server.edge';

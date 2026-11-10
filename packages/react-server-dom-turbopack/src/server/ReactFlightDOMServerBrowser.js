@@ -55,7 +55,6 @@ import {
 import type {TemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemporaryReferences';
 
 export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTemporaryReferences';
-export {pruneProp as unstable_pruneForBrowser} from 'react-server/src/ReactFlightServer';
 
 export type {TemporaryReferenceSet};
 

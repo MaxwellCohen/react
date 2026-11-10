@@ -1,5 +1,6 @@
 import {Suspense} from 'react';
 import TableRowLean from './components/TableRowLean';
+import TableRowServer from './components/TableRowServer';
 import Counter from './components/Counter';
 import {generateProducts} from './components/data';
 import {makeCss, makeJsonLd} from './blobs';
@@ -8,11 +9,12 @@ const css = makeCss();
 const jsonLd = makeJsonLd();
 
 // Realistic page for the e2e + benchmark: inline CSS, JSON-LD, static chrome,
-// a large table of stateless client rows (skippable in the browser), and
-// interactive client components mixed in (every 100th row has a Counter).
-// makePage(null) passes everything as ordinary Flight (or plain Fizz);
-// makePage(prune) marks the stateless rows with prune().
-export function makePage(prune) {
+// a large table, and interactive client components mixed in (every 100th row
+// has a Counter). makePage(false): rows are client components (full props in
+// Flight, hydrated normally). makePage(true): rows are server components that
+// render plain <tr> host elements (static server output, elidable).
+export function makePage(serverRows) {
+  const Row = serverRows ? TableRowServer : TableRowLean;
   return function PageApp({itemCount}) {
     const products = generateProducts(itemCount);
     return (
@@ -39,7 +41,7 @@ export function makePage(prune) {
               <tbody>
                 {products.map((p, i) => {
                   const row = (
-                    <TableRowLean
+                    <Row
                       key={p.id}
                       name={p.name}
                       category={p.category}
@@ -60,7 +62,7 @@ export function makePage(prune) {
                       </tr>
                     );
                   }
-                  return prune ? prune(row, 'tr') : row;
+                  return row;
                 })}
               </tbody>
             </table>

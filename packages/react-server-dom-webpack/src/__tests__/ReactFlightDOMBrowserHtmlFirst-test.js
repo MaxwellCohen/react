@@ -349,73 +349,32 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     expect(button.textContent).toBe('late:1');
   });
 
-  it('prunes props the browser does not need, SSR still sees them', async () => {
-    const prune = ReactServerDOMServer.unstable_pruneForBrowser;
+  it('never elides client components: they keep their full props', async () => {
     const Row = clientExports(function Row({name, details}) {
-      // SSR renders the details; the browser never gets them and must not
-      // need them to hydrate (it only reads `name`).
       return (
         <li>
           {name}
-          <i hidden={details !== undefined} />
+          <i title={details.notes} />
         </li>
       );
     });
-    const details = {notes: 'secret-notes-'.repeat(100)};
-    const App = () => <Row name="a" details={prune(details)} />;
-    const elided = await flight(<App />, true);
-    const full = await flight(<App />, false);
-    expect(full.main).toContain('secret-notes-');
-    expect(elided.main).not.toContain('secret-notes-');
-    expect(elided.main).toContain('$J');
-    expect(Array.from(elided.rows.values()).join('')).toContain(
-      'secret-notes-',
-    );
-    // SSR consumer got the real value.
-    const response = consume(elided.main, elided.rows);
-    const row = await response;
-    expect(row.props.details).toEqual(details);
-    // Browser consumer gets undefined.
-    const browser = await consume(elided.main);
-    expect(browser.props.details).toBe(undefined);
-    expect(browser.props.name).toBe('a');
-  });
-
-  it('elides a stateless client element: browser adopts the DOM', async () => {
-    const prune = ReactServerDOMServer.unstable_pruneForBrowser;
-    const Item = clientExports(function Item({label}) {
-      return <li className="item">{label}</li>;
-    });
+    const details = {notes: 'client-notes-'.repeat(100)};
     const App = () => (
       <ul>
-        {['a', 'b', 'c'].map(l => prune(<Item key={l} label={l} />, 'li'))}
+        <Row name="a" details={details} />
       </ul>
     );
     const elided = await flight(<App />, true);
-    expect(elided.main).not.toContain('"label"');
-    expect(elided.rows.size).toBe(1);
-    const html = await ssr(elided);
-    expect(html).toBe(
-      '<ul><li class="item">a</li><li class="item">b</li><li class="item">c</li></ul>',
-    );
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    container.innerHTML = html;
-    const lis = Array.from(container.querySelectorAll('li'));
-    const response = consume(elided.main);
-    await response;
-    await act(() => {
-      ReactDOMClient.hydrateRoot(container, <Shell response={response} />);
-    });
-    expect(Array.from(container.querySelectorAll('li'))).toEqual(lis);
-    expect(container.innerHTML).toBe(html);
+    // The client element and its props stay in the stream (hydration needs
+    // them); the host skeleton around it is not static.
+    expect(elided.main).toContain('client-notes-');
+    expect(elided.main).toContain('"name"');
+    expect(elided.rows.size).toBe(0);
+    const browser = await consume(elided.main);
+    expect(browser.props.children.props.details).toEqual(details);
   });
 
-  it('hands off interactive client components inside static regions to hydration', async () => {
-    const prune = ReactServerDOMServer.unstable_pruneForBrowser;
-    const Item = clientExports(function Item({label}) {
-      return <li className="item">{label}</li>;
-    });
+  it('hands off client components inside static server regions to hydration', async () => {
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -428,14 +387,22 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     });
     const Static = () => (
       <ul>
-        {['a', 'b', 'c'].map(l => prune(<Item key={l} label={l} />, 'li'))}
+        {['a', 'b', 'c'].map(l => (
+          <li key={l} className="item">
+            {l}
+          </li>
+        ))}
       </ul>
     );
     const Mixed = () => (
       <ul>
-        {prune(<Item key="a" label="a" />, 'li')}
+        <li key="a" className="item">
+          a
+        </li>
         <Counter key="c" label="clicks" />
-        {prune(<Item key="b" label="b" />, 'li')}
+        <li key="b" className="item">
+          b
+        </li>
       </ul>
     );
 
@@ -475,14 +442,6 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
   });
 
   it('hands SSR live rows (no JSON) and renders identical HTML', async () => {
-    const prune = ReactServerDOMServer.unstable_pruneForBrowser;
-    const Item = clientExports(function Item({label}) {
-      return <li className="item">{label}</li>;
-    });
-    // What SSR renders for the client reference in a live row.
-    function RealItem({label}) {
-      return <li className="item">{label}</li>;
-    }
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -497,9 +456,9 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
       <section>
         <h1>{'static '.repeat(300)}</h1>
         <ul>
-          {prune(<Item key="a" label="a" />, 'li')}
+          <li key="a">a</li>
           <Counter key="c" label="clicks" />
-          {prune(<Item key="b" label="b" />, 'li')}
+          <li key="b">b</li>
         </ul>
       </section>
     );
@@ -509,40 +468,46 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+          onElidedRow: () => {},
           onElidedValue: (id, value) => live.set(id, value),
         }),
       ),
     );
-    // The rows are live values, never strings. The module row of the stubbed
-    // component stays out of the stream, so the browser doesn't preload it.
-    const moduleRows = text => (text.match(/^[0-9a-f]+:I\[/gm) || []).length;
-    expect(moduleRows(json.main)).toBe(2);
-    expect(moduleRows(main)).toBe(1);
+    // The rows are live values, never strings, and hold server output only.
     expect(live.size).toBe(json.rows.size);
+    expect(live.size).toBeGreaterThan(0);
     Array.from(live.values()).forEach(v => expect(typeof v).toBe('object'));
     expect(main).not.toContain('static static');
+    expect(main).toContain('"clicks"');
+    expect(await ssr({main, rows: live})).toBe(await ssr(json));
+  });
 
-    // The framework resolves client references in the live nodes (it has the
-    // manifest) and hands them to the SSR client.
-    function resolve(node) {
-      if (Array.isArray(node)) {
-        return node.map(resolve);
-      }
-      if (node && node.$$typeof === Symbol.for('react.pruned')) {
-        return resolve(node.value);
-      }
-      if (node && node.$$typeof === Symbol.for('react.transitional.element')) {
-        const type = node.type === Item ? RealItem : node.type;
-        return React.createElement(type, {
-          key: node.key,
-          ...node.props,
-          children: resolve(node.props.children),
-        });
-      }
-      return node;
-    }
-    const resolved = new Map(Array.from(live, ([id, v]) => [id, resolve(v)]));
-    expect(await ssr({main, rows: resolved})).toBe(await ssr(json));
+  it('elides keyed server components that render array children', async () => {
+    const Row = ({name}) => (
+      <tr className="r">
+        <td>
+          {name} <b>x</b>
+        </td>
+      </tr>
+    );
+    const Counter = clientExports(function Counter() {
+      return <tr />;
+    });
+    const App = () => (
+      <table>
+        <tbody>
+          {['a', 'b'].map(n => (
+            <Row key={n} name={n} />
+          ))}
+          <Counter />
+        </tbody>
+      </table>
+    );
+    const elided = await flight(<App />, true);
+    expect(elided.rows.size).toBe(2);
+    expect(Array.from(elided.rows.values())[0]).toContain('"a"');
+    const html = await ssr(elided);
+    expect(html).toContain('<tr class="r"><td>a<!-- --> <b>x</b></td></tr>');
   });
 
   // @gate enableTaint
@@ -573,19 +538,10 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     // The taint lives as long as this object does; keep it referenced.
     const lifetime = {};
     ReactServer.experimental_taintUniqueValue('no secrets', lifetime, secret);
-    const prune = ReactServerDOMServer.unstable_pruneForBrowser;
-    const Item = clientExports(function Item() {
-      return null;
-    });
     const check = async live => {
       const hostText = await run(<p>{secret}</p>, live);
       expect(hostText.errors.join()).toContain('no secrets');
       expect(Array.from(hostText.rows.values()).join()).not.toContain(secret);
-      const prunedProp = await run(
-        <Item data={prune({nested: [secret]})} />,
-        live,
-      );
-      expect(prunedProp.errors.join()).toContain('no secrets');
     };
     await check(false);
     await check(true);

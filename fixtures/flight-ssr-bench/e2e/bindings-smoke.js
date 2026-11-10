@@ -2,7 +2,7 @@
 
 // Smoke test for every server binding x entry (webpack, turbopack, parcel,
 // unbundled, esm; node, browser, edge): elided rows as JSON and as live values,
-// unstable_pruneForBrowser, and the inline fallback when no row callback is
+// and the inline fallback when no row callback is
 // given. Needs a build with the flags on (see the fixture README) that also
 // contains react and react-dom in build/node_modules.
 //   node e2e/bindings-smoke.js            (runs every combination)
@@ -37,7 +37,7 @@ if (process.argv.length < 4) {
   }
   process.exit(failed ? 1 : 0);
 }
-// Smoke-tests every server binding x entry: elided rows (JSON + live), prune, inline fallback.
+// Smoke-tests every server binding x entry: elided rows (JSON + live), inline fallback.
 const path = require('path');
 const B = path.resolve(__dirname, '../../../build/node_modules') + '/';
 const React = require(B + 'react');
@@ -81,18 +81,12 @@ let failed = false;
         failed = true;
         continue;
       }
-      if (typeof mod.unstable_pruneForBrowser !== 'function') {
-        results.push([pkg, entry, 'NO prune export']);
-        failed = true;
-        continue;
-      }
-      const prune = mod.unstable_pruneForBrowser;
       const model = () =>
         React.createElement(
           'section',
           null,
           React.createElement('p', {id: 'a'}, 'static text'),
-          React.createElement('div', {'data-x': prune({k: BIG})})
+          React.createElement('style', {dangerouslySetInnerHTML: {__html: BIG}})
         );
       const render = async opts => {
         const args =
@@ -119,14 +113,14 @@ let failed = false;
         const ok = [
           [
             'json rows',
-            rowsJ.size === 2 &&
+            rowsJ.size >= 1 &&
               mJ.includes('$J') &&
               !mJ.includes(BIG) &&
               [...rowsJ.values()].join().includes(BIG),
           ],
           [
             'live rows',
-            rowsL.size === 2 &&
+            rowsL.size >= 1 &&
               mL.includes('$J') &&
               !mL.includes(BIG) &&
               [...rowsL.values()].every(v => typeof v === 'object'),
