@@ -394,23 +394,6 @@ if (__DEV__) {
 // Allows us to keep track of what we've already written so we can refer back to it.
 // if passed externalRuntimeConfig and the enableFizzExternalRuntime feature flag
 // is set, the server will send instructions via data attributes (instead of inline scripts)
-// 16 base36 characters (about 80 bits). Returns null when the environment has
-// no CSPRNG; Math.random would defeat the purpose.
-function generateDeclarativeToken(): string | null {
-  if (
-    typeof crypto !== 'object' ||
-    typeof crypto.getRandomValues !== 'function'
-  ) {
-    return null;
-  }
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  let token = '';
-  for (let i = 0; i < bytes.length; i++) {
-    token += (bytes[i] % 36).toString(36);
-  }
-  return token;
-}
-
 export function createRenderState(
   resumableState: ResumableState,
   nonce:
@@ -443,20 +426,6 @@ export function createRenderState(
           '<style nonce="' + escapeTextForBrowser(nonceStyle) + '"',
         );
   const idPrefix = resumableState.idPrefix;
-
-  // Declarative patching is applied by the HTML parser, so a boundary name is an
-  // address anyone who can inject markup could target. Each request gets an
-  // unguessable token in its names. Without a CSPRNG we stay on the script path.
-  const declarativeToken =
-    enableFizzDeclarativePatching && declarativePatching === true
-      ? generateDeclarativeToken()
-      : null;
-  const useDeclarativePatching =
-    enableFizzDeclarativePatching &&
-    declarativePatching === true &&
-    declarativeToken !== null &&
-    // The external runtime has no inline scripts to build on.
-    !(enableFizzExternalRuntime && externalRuntimeConfig !== undefined);
 
   const bootstrapChunks: Array<Chunk | PrecomputedChunk> = [];
   let externalRuntimeScript: null | ExternalRuntimeScript = null;
@@ -546,13 +515,7 @@ export function createRenderState(
   const renderState: RenderState = {
     placeholderPrefix: stringToPrecomputedChunk(idPrefix + 'P:'),
     segmentPrefix: stringToPrecomputedChunk(idPrefix + 'S:'),
-    boundaryPrefix: stringToPrecomputedChunk(
-      idPrefix +
-        'B:' +
-        (useDeclarativePatching && declarativeToken !== null
-          ? declarativeToken + ':'
-          : ''),
-    ),
+    boundaryPrefix: stringToPrecomputedChunk(idPrefix + 'B:'),
     startInlineScript: inlineScriptWithNonce,
     startInlineStyle: inlineStyleWithNonce,
     preamble: createPreambleState(),
@@ -603,9 +566,13 @@ export function createRenderState(
     // like a module global for currently rendering boundary
     hoistableState: null,
     stylesToHoist: false,
-    declarativePatching: useDeclarativePatching,
+    declarativePatching:
+      enableFizzDeclarativePatching &&
+      declarativePatching === true &&
+      // The external runtime has no inline scripts to build on.
+      !(enableFizzExternalRuntime && externalRuntimeConfig !== undefined),
     declarativeBatchMs:
-      enableFizzDeclarativePatching && useDeclarativePatching
+      enableFizzDeclarativePatching && declarativePatching === true
         ? typeof declarativeBatchMs === 'number' && declarativeBatchMs >= 0
           ? declarativeBatchMs
           : DECLARATIVE_FALLBACK_THROTTLE_MS

@@ -31,10 +31,6 @@ let now;
 let timers;
 let realSetTimeout;
 
-// Boundary names carry an unguessable per-request token (B:<token>:<n>); the tests
-// match fixed names, so strip it.
-const withoutToken = str => str.replace(/B:[0-9a-z]{16}:/g, 'B:');
-
 describe('ReactDOMFizzServer declarative patching batching', () => {
   beforeEach(() => {
     jest.resetModules();
@@ -131,7 +127,7 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     writable.setEncoding('utf8');
     const chunks = [];
     writable.on('data', chunk => {
-      chunks.push(withoutToken(chunk));
+      chunks.push(chunk);
     });
     await act(async () => {
       ReactDOMFizzServer.renderToPipeableStream(element, {
@@ -505,7 +501,7 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     const writable = new Stream.PassThrough();
     writable.setEncoding('utf8');
     const chunks = [];
-    writable.on('data', chunk => chunks.push(withoutToken(chunk)));
+    writable.on('data', chunk => chunks.push(chunk));
     let abort;
     await act(async () => {
       const stream = ReactDOMFizzServer.renderToPipeableStream(
