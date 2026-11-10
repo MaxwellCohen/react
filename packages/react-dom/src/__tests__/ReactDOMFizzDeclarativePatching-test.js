@@ -31,6 +31,11 @@ let textCache;
 
 const BOUNDARIES = 250;
 
+// Boundary names carry an unguessable per-request token (B:<token>:<n>). Most tests
+// look at the markup with the token removed so they can match fixed names.
+const TOKEN_PATTERN = /B:[0-9a-z]{16}:/g;
+const withoutToken = str => str.replace(TOKEN_PATTERN, 'B:');
+
 describe('ReactDOMFizzServer declarative patching', () => {
   beforeEach(() => {
     jest.resetModules();
@@ -129,7 +134,8 @@ describe('ReactDOMFizzServer declarative patching', () => {
       pipe(writable);
     });
     return {
-      shell: () => out,
+      shell: () => withoutToken(out),
+      raw: () => out,
       async finish(texts) {
         await act(async () => {
           texts.forEach(resolveText);
@@ -137,7 +143,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
         await act(async () => {
           // Let the stream drain.
         });
-        return out;
+        return withoutToken(out);
       },
     };
   }
@@ -185,6 +191,55 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain('$RP("B:0"');
     expect(out).not.toContain('$RC');
     expect(out).not.toContain('<div hidden id="S:');
+  });
+
+  it('uses an unguessable per-request token in boundary names', async () => {
+    const attack =
+      '<template for="B:0">evil</template><!--B:0--><template data-rcr id="E:B:0"></template>';
+    function Attacked() {
+      return (
+        <div>
+          <div dangerouslySetInnerHTML={{__html: attack}} />
+          <Suspense fallback="loading">
+            <Item i={0} />
+          </Suspense>
+        </div>
+      );
+    }
+    const r = await render(<Attacked />, {unstable_declarativePatching: true});
+    await r.finish(['item-0']);
+    const raw = r.raw();
+
+    const names = [];
+    raw.replace(/<\?start name="([^"]*)"/g, (m, name) => names.push(name));
+    expect(names.length).toBe(1);
+    expect(names[0]).toMatch(/^B:[0-9a-z]{16}:0$/);
+    // Every name the server used for the boundary carries the same token.
+    expect(raw).toContain('<!--' + names[0] + '--><!--$?--><?start name="');
+    expect(raw).toContain('<template for="' + names[0] + '">');
+    expect(raw).toContain('$RP("' + names[0] + '")');
+    // The attacker's guess is in the document, but it is not any real name.
+    expect(raw).toContain('<template for="B:0">evil</template>');
+    expect(names).not.toContain('B:0');
+    expect(raw).not.toContain('name="B:0"');
+    expect(raw).not.toContain('$RP("B:0")');
+
+    // A second request gets a different token.
+    jest.resetModules();
+    textCache = new Map();
+    React = require('react');
+    ReactDOMFizzServer = require('react-dom/server');
+    Suspense = React.Suspense;
+    act = require('internal-test-utils').act;
+    Stream = require('stream');
+    const r2 = await render(<App count={1} />, {
+      unstable_declarativePatching: true,
+    });
+    const names2 = [];
+    r2.raw().replace(/<\?start name="([^"]*)"/g, (m, name) =>
+      names2.push(name),
+    );
+    expect(names2[0]).not.toBe(names[0]);
   });
 
   it('is smaller than the script path for 250 boundaries', async () => {
