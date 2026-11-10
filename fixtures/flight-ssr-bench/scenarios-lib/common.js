@@ -8,9 +8,10 @@ const FIXTURE = path.resolve(__dirname, '..');
 const VARIANTS_DIR = path.join(FIXTURE, '.variants');
 const ALL_VARIANTS = ['off', 'elision', 'elision-dedupe', 'all'];
 const PKGS = ['react', 'react-dom', 'react-server-dom-webpack', 'scheduler'];
+const BROWSERS = ['chromium', 'firefox', 'webkit'];
 
 function parseArgs(argv, defaults) {
-  const o = Object.assign({only: [], size: 'smoke', builds: process.env.SCENARIO_BUILDS || '', variants: ALL_VARIANTS}, defaults);
+  const o = Object.assign({only: [], size: 'smoke', builds: process.env.SCENARIO_BUILDS || '', variants: ALL_VARIANTS, browser: 'chromium'}, defaults);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => argv[++i];
@@ -18,10 +19,12 @@ function parseArgs(argv, defaults) {
     else if (a === '--size') o.size = val();
     else if (a === '--builds') o.builds = val();
     else if (a === '--variants') o.variants = val().split(',').filter(Boolean);
+    else if (a === '--browser') o.browser = val();
     else if (a === '--n') o.n = +val();
     else throw new Error('Unknown argument ' + a);
   }
   if (!['smoke', 'full'].includes(o.size)) throw new Error('--size must be smoke|full');
+  if (!BROWSERS.includes(o.browser)) throw new Error('--browser must be ' + BROWSERS.join('|'));
   if (!o.builds) throw new Error('Pass --builds <dir> or set SCENARIO_BUILDS (dir containing off/ elision/ elision-dedupe/ all/, each a build/oss-experimental)');
   o.builds = path.resolve(o.builds);
   for (const v of o.variants) if (!ALL_VARIANTS.includes(v)) throw new Error('Unknown variant ' + v);

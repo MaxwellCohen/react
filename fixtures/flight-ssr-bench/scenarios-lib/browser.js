@@ -1,9 +1,16 @@
 'use strict';
 
-// Real-Chromium runner: serves pre-rendered pages per variant and drives them.
+// Real-browser runner: serves pre-rendered pages per variant and drives them.
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const playwright = require('playwright');
+
+// Launches the browser named by --browser (chromium by default). CHROME_PATH
+// stays an override for a local Chromium build; it does not apply to firefox/webkit.
+function launchBrowser(name) {
+  return playwright[name].launch({executablePath: name === 'chromium' ? process.env.CHROME_PATH || undefined : undefined});
+}
 
 function serve(pages, flights, dirs) {
   const server = http.createServer((req, res) => {
@@ -170,4 +177,4 @@ async function runPage(browser, base, v, s) {
   return {snaps, failures};
 }
 
-module.exports = {serve, runPage, firstDiff};
+module.exports = {serve, runPage, firstDiff, launchBrowser};

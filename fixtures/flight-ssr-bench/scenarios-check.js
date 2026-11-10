@@ -1,15 +1,14 @@
 'use strict';
 
 // Correctness matrix: every scenario x build variant, rendered in-process
-// (Flight -> Fizz with the HTML-FIRST.md opt-in), hydrated in real Chromium.
-// Usage: SCENARIO_BUILDS=<dir> node scenarios-check.js [--only a,b] [--size smoke|full] [--builds dir]
+// (Flight -> Fizz with the HTML-FIRST.md opt-in), hydrated in a real browser.
+// Usage: SCENARIO_BUILDS=<dir> node scenarios-check.js [--only a,b] [--size smoke|full] [--builds dir] [--browser chromium|firefox|webkit]
 const {parseArgs} = require('./scenarios-lib/common');
 const {boot} = require('./scenarios-lib/boot');
-const {serve, runPage, firstDiff} = require('./scenarios-lib/browser');
+const {serve, runPage, firstDiff, launchBrowser} = require('./scenarios-lib/browser');
 
 (async () => {
   const opts = parseArgs(process.argv.slice(2));
-  const {chromium} = require('playwright');
   const ctx = await boot(opts, {client: true});
   const pages = {};
   const flights = {};
@@ -17,7 +16,8 @@ const {serve, runPage, firstDiff} = require('./scenarios-lib/browser');
   const refs = {}; // scenario -> off snapshots
   const server = await serve(pages, flights, Object.fromEntries(ctx.workers.map(w => [w.name, ctx.dirs[w.name]])));
   const base = 'http://127.0.0.1:' + server.address().port;
-  const browser = await chromium.launch({executablePath: process.env.CHROME_PATH || undefined});
+  const browser = await launchBrowser(opts.browser);
+  const browserVersion = browser.version();
   try {
     for (const s of ctx.scenarios) {
       for (const w of ctx.workers) {
@@ -83,7 +83,7 @@ const {serve, runPage, firstDiff} = require('./scenarios-lib/browser');
     console.log((status === 'PASS' ? 'PASS' : status) + '  ' + s.id + '  (' + rs.map(r => r.variant + (r.failures.length ? ':x' : ':ok')).join(' ') + ')');
     for (const l of lines) console.log(l);
   }
-  console.log('\n' + ctx.scenarios.length + ' scenario(s) x ' + ctx.workers.length + ' variant(s), size=' + opts.size + ', DOM env: real Chromium (playwright), builds=' + opts.builds);
+  console.log('\n' + ctx.scenarios.length + ' scenario(s) x ' + ctx.workers.length + ' variant(s), size=' + opts.size + ', DOM env: real ' + opts.browser + ' ' + browserVersion + ' (playwright), builds=' + opts.builds);
   process.exit(unexpected ? 1 : 0);
 })().catch(e => {
   console.error(process.env.DEBUG ? e : e.message);

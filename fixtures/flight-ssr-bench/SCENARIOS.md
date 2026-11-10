@@ -1,7 +1,7 @@
 # Scenario corpus: authoring contract
 
 A scenario is one SERVER-component page. The harness renders it with every React build variant
-(`off`, `elision`, `elision-dedupe`, `all`), hydrates it in real Chromium, and compares it with the flags-off result.
+(`off`, `elision`, `elision-dedupe`, `all`), hydrates it in a real browser (Chromium by default), and compares it with the flags-off result.
 Feature under test: HTML-first Flight, see [HTML-FIRST.md](./HTML-FIRST.md). Do not edit anything outside `src/scenarios/`.
 
 ## Validate one scenario (the only command you need)
@@ -12,7 +12,7 @@ SCENARIO_BUILDS=<builds dir> yarn scenarios:check --only <your-id> --size smoke
 
 `<builds dir>` contains `off/ elision/ elision-dedupe/ all/` (each a `build/oss-experimental`). Exit 0 and `PASS <id>` = done.
 Whole matrix: `yarn scenarios:check --size smoke` and `yarn scenarios:metrics --size smoke` (writes `results/`, git-ignored).
-Flags: `--only a,b`, `--size smoke|full`, `--builds <dir>`, `--variants off,all` (off is always included), `--n <renders>` (metrics).
+Flags: `--only a,b`, `--size smoke|full`, `--builds <dir>`, `--variants off,all` (off is always included), `--browser chromium|firefox|webkit` (default chromium), `--n <renders>` (metrics).
 
 ## Files (flat, all in `src/scenarios/`)
 
