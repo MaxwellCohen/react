@@ -68,7 +68,7 @@ pruning version, and which numbers moved and why. Summary:
 CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Flight (they need their props to hydrate).
 
 ## Correctness
-- Scenario corpus (`yarn scenarios:check --size full --variants off,all --browser chromium|firefox|webkit`): hydrated + interacted DOM vs flags-off, plus SPA navigation with full Flight (`onElidedRow: false`). At tip `c31090aa6e`, Chromium is **40/41** — `head-hoistables` fails a strict DOM-string compare because zero-optin registry SSR does not flush Flight `:HL` preload *hints* into Fizz the same way the explicit side-channel path does. Visible content, unique preload hrefs, metas, styles, and interactivity still match; unique resources are intact. Prefer fixing the `:HL` flush over marking `knownFailure`.
+- Scenario corpus (`yarn scenarios:check --size full --variants off,all --browser chromium|firefox|webkit`): hydrated + interacted DOM vs flags-off, plus SPA navigation with full Flight (`onElidedRow: false`). Chromium is **41/41** — registry SSR applies Flight `:HL` preload hints into Fizz (pinned `currentRequest` across suspended work + duplicate hint forward) matching flags-off / side-channel.
 - Real browser (`yarn e2e`): hydration adopts the **same DOM nodes** (1000/1000 rows, `<style>`, JSON-LD), zero console warnings, zero recoverable errors, interactive counters (top-level and mid-table) work, client navigation fetches full Flight and **adopts** existing DOM.
 - jest (`ReactFlightDOMBrowserHtmlFirst-test`, HostElision suites): leakage, resources/executable scripts not elided, whole-document + Suspense hydration, client components keep full props, interactive hand-off, live rows, keyed array-children rows, taint on live rows, adopt on full-payload navigation.
 - Every binding x entry: `node fixtures/flight-ssr-bench/e2e/bindings-smoke.js` (JSON rows, live rows, inline fallback) for webpack, turbopack, parcel, unbundled, esm.
@@ -82,9 +82,9 @@ CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Fli
 - Wired into webpack / edge / browser / Node (and turbopack, parcel, unbundled, esm) server bindings. Prefer webpack Flow types for `onElidedRow?: false | …`; other packages share the runtime but may still type the callback without `false`.
 
 ## Not in scope / next
-Eliding client components (needs an author or build-time guarantee that the component does nothing in the browser, deliberately not part of this PR); collapsing runs of server-rendered sibling rows into one elided row (each server row is its own `$J` ref today); flushing `:HL` resource hints into Fizz under the zero-optin registry path the same way the explicit side channel does (see `head-hoistables` corpus note above).
+Eliding client components (needs an author or build-time guarantee that the component does nothing in the browser, deliberately not part of this PR); collapsing runs of server-rendered sibling rows into one elided row (each server row is its own `$J` ref today).
 
 ## Known limits
-- Corpus browsers: Chromium re-verified at tip; Firefox/WebKit were green on earlier tips — re-run after the `:HL` fix. The fixture mixes a production RSC bundle with a dev client in dev mode, so its key warnings are fixture noise (the baseline emits them too).
+- Corpus browsers: Chromium re-verified at tip (**41/41** including `head-hoistables`); Firefox/WebKit were green on earlier tips — re-run after the `:HL` fix. The fixture mixes a production RSC bundle with a dev client in dev mode, so its key warnings are fixture noise (the baseline emits them too).
 - 3 `ReactFlightDOMNode-test` Buffer-pool tests fail on the stack base as well (Node 26). `ReactFlightAsyncDebugInfo-test` ("can track async file reads") failed intermittently on the base and on this branch.
-- Framework host-page throughput (~3× on a Waku host-row page) was measured on an older tip (`6ed2e62d21`, multi-flag + explicit opt-in). Re-measure against this tip + zero-optin before quoting as current.
+- Framework host-page throughput: tip + zero-optin Waku (`3ae8a1410b` / `908ab031`) is **≈1.02×** vs stock (within noise) — host rows / CSS / JSON-LD are not elided under Waku’s elements-map after host-position scoping. The older ~3× (`6ed2e62d21`, multi-flag + explicit opt-in) does not reproduce; do not quote it as current.
