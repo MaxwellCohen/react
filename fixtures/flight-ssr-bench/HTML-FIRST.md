@@ -1,8 +1,8 @@
 # [Flight] HTML-first initial load: don't re-ship static server output (`enableFlightHtmlFirst`)
 
-Single flag (`enableFlightHtmlFirst`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default; when on, in-process Flight→SSR elides automatically (internal registry, no framework callbacks). Explicit `onElidedRow` / `onElidedValue` remain for custom sinks; pass `onElidedRow: false` to keep full hosts in the stream.
+Single flag (`enableFlightHtmlFirst`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default; when on, in-process Flight→SSR elides automatically (internal registry, no framework callbacks). Explicit `onElidedRow` / `onElidedValue` remain for custom / out-of-process sinks; pass `onElidedRow: false` (required) on SPA navigation / RSC refetch to keep full hosts in the stream.
 
-**Scope: server-component output only.** Client components are never elided, pruned or stubbed: they keep their full props in Flight and hydrate normally.
+**Scope: static Server Component host output in host position.** That includes Suspense children and Client Component `children` (layouts / slots). Client components themselves are never elided: they keep full props in Flight and hydrate normally. Non-`children` props (e.g. `panels`, `fallback`) stay in the payload.
 
 ## Problem
 An RSC page's first response carries the same content twice: Fizz HTML for the
@@ -12,28 +12,49 @@ host elements) the second copy is dead weight, and it is also work for the
 server (serialize, tee, parse).
 
 ## What this adds (all behind `enableFlightHtmlFirst`)
-1. **Elide `<style>` and data-block `<script>`** that a Server Component emits directly as host elements
-   (`type=application/ld+json|json`, no src/async; `<style>` without precedence+href).
-   Big strings inside an elided row stay in that row, never in the main stream.
-2. **`onElidedValue(id, value)`**: in-process SSR takes the live host-element node instead of JSON:
-   no stringify on the server, no parse in the client. Rows only ever hold server-component output
-   (host elements and text), never client elements, and the live path applies the same taint checks as JSON rows.
-3. Fix: elided rows of keyed Server Components with array children no longer recurse forever
+1. **Elide static host subtrees in host position** — direct host children of host
+   elements, Suspense children, and Client Component `children` only, when every
+   node in the region is static (primitive props, no `ref`). Tags that need client
+   identity (`form`, `input`, `img`, `svg`, `title`, `link`, `meta`, …) are never
+   elided; `<style>` without precedence+href and JSON/ld+json data `<script>` blocks
+   may be. Big strings inside an elided row stay in that row, never in the main stream.
+2. **Zero opt-in for in-process SSR:** with the flag on and no callbacks, Flight
+   stores elided rows in a `globalThis` registry, emits a `:Q<id>` row, and the
+   first in-process `createFrom*` claims them for SSR. The browser isolate has an
+   empty registry and adopts HTML stubs (same-tag hosts).
+3. **`onElidedValue(id, value)` / `onElidedRow(id, json)`:** overrides for
+   out-of-process or custom sinks (live node vs JSON). Same taint checks as the
+   JSON path.
+4. Fix: elided rows of keyed Server Components with array children no longer recurse forever
    (the key context is consumed by the row root, like a finished render does).
 
 A host region is elided only if everything in it is static host output. A region that contains a client
 component keeps its host skeleton and the client component keeps its props; only its static
-host siblings are elided.
+host siblings / `children` slots are elided when they qualify.
 
 Initial-load: with the flag on, Flight auto-elides into an internal registry keyed by a
 `:Q…` row in the stream; the first in-process `createFrom*` claims it for SSR, later
 consumers (browser) get stubs and adopt HTML. Frameworks may still pass
-`onElidedRow`/`onElidedValue` for out-of-process sinks. Pass `onElidedRow: false` on a
-navigation/refetch if you want a full Flight payload while the flag is compiled in.
-Elided stubs are same-tag hosts, so navigation **adopts** the existing DOM (react-dom
-hydrates children into the static island instead of remounting) when the tag matches.
+`onElidedRow`/`onElidedValue` for out-of-process sinks. **Pass `onElidedRow: false` on
+navigation/refetch** while the flag is compiled in — otherwise the response carries
+stubs with no HTML to adopt. Elided stubs are same-tag hosts, so navigation **adopts**
+the existing DOM (react-dom hydrates children into the static island instead of remounting)
+when the tag matches.
 
-## Results (real Chromium, 1000-row page: inline CSS 244KB + JSON-LD 143KB + static chrome + 1000 table rows, every 100th row an interactive Counter)
+## Results
+### 41-scenario corpus (tip `c31090aa6e`, flag off vs on, full size)
+Sum across pages (whole-document gzip/brotli; Flight = inlined `<script>` payload bytes):
+
+| Metric | Stock (flag off) | Flag on | Change |
+|---|---:|---:|---:|
+| Gzip download | 1,023,912 | 586,660 | **−42.7%** |
+| Raw HTML | 14,555,816 | 7,245,676 | **−50.2%** |
+| Inlined Flight | 9,280,856 | 1,978,106 | **−78.7%** |
+| Brotli | 479,431 | 286,512 | **−40.2%** |
+
+See [SCENARIOS.md](./SCENARIOS.md) and `yarn scenarios:metrics`. Aggregate savings are dominated by a few heavy pages; median per-page gzip change is smaller. Some pages show little or no gzip win (`all-client`, non-`children` props like `tabs-panels-prop`, or gzip-worse cases like `repeated-long-strings`).
+
+### 1000-row page (historical Chromium table)
 See [BENCH-RESULTS-server-only.md](./BENCH-RESULTS-server-only.md) for the full tables, before/after against the
 pruning version, and which numbers moved and why. Summary:
 
@@ -47,20 +68,23 @@ pruning version, and which numbers moved and why. Summary:
 CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Flight (they need their props to hydrate).
 
 ## Correctness
-- Real browser (`yarn e2e`): hydration adopts the **same DOM nodes** (1000/1000 rows, `<style>`, JSON-LD), zero console warnings, zero recoverable errors, interactive counters (top-level and mid-table) work, client navigation fetches full content and replaces the stubs.
-- jest (`ReactFlightDOMBrowserHtmlFirst-test`, 9 tests): leakage, resources/executable scripts not elided, whole-document + Suspense hydration, client components keep full props, interactive hand-off, live rows, keyed array-children rows, taint on live rows.
+- Scenario corpus (`yarn scenarios:check --size full --variants off,all --browser chromium|firefox|webkit`): hydrated + interacted DOM vs flags-off, plus SPA navigation with full Flight (`onElidedRow: false`). At tip `c31090aa6e`, Chromium is **40/41** — `head-hoistables` fails a strict DOM-string compare because zero-optin registry SSR does not flush Flight `:HL` preload *hints* into Fizz the same way the explicit side-channel path does. Visible content, unique preload hrefs, metas, styles, and interactivity still match; unique resources are intact. Prefer fixing the `:HL` flush over marking `knownFailure`.
+- Real browser (`yarn e2e`): hydration adopts the **same DOM nodes** (1000/1000 rows, `<style>`, JSON-LD), zero console warnings, zero recoverable errors, interactive counters (top-level and mid-table) work, client navigation fetches full Flight and **adopts** existing DOM.
+- jest (`ReactFlightDOMBrowserHtmlFirst-test`, HostElision suites): leakage, resources/executable scripts not elided, whole-document + Suspense hydration, client components keep full props, interactive hand-off, live rows, keyed array-children rows, taint on live rows, adopt on full-payload navigation.
 - Every binding x entry: `node fixtures/flight-ssr-bench/e2e/bindings-smoke.js` (JSON rows, live rows, inline fallback) for webpack, turbopack, parcel, unbundled, esm.
 
 ## Contract (what a framework has to know)
 - **Zero opt-in (in-process):** ship a React build with the flag on. `renderToReadableStream` → tee → `createFrom*` → Fizz works with no `onElidedRow` / `elidedRows`. The stream carries a `:Q<id>` row; SSR claims the registry; the browser isolate has an empty registry and adopts HTML.
-- `onElidedValue` / `onElidedRow` remain for out-of-process or custom sinks. `onElidedRow: false` disables elision for that request.
-- Stubs adopt server DOM. If a boundary is client-rendered instead (e.g. regenerated after a hydration mismatch), the stub throws a clear error so the app's error boundary can refetch, rather than rendering blank content. (`onElidedContentMissing` is still framework-specific.)
+- **SPA navigation / refetch must pass `onElidedRow: false`** (or `onElidedValue: false`) so the response is a full Flight payload. Without that, stubs have no HTML to adopt.
+- `onElidedValue` / `onElidedRow` remain for out-of-process or custom sinks.
+- Stubs adopt server DOM. If a boundary is client-rendered instead (e.g. deferred mount, regenerated after a hydration mismatch), call `onElidedContentMissing` to recover (typically refetch). Without that callback, the stub suspends and reports an uncaught error rather than rendering blank content.
 - Large strings passed as client props are ordinary Flight strings. To keep CSS/JSON-LD out of Flight, render it from a Server Component as a direct `<style>` / `<script type="application/ld+json">`.
-- Wired into webpack / edge / browser server bindings (and Node pipeable + readable). Other bundler packages share `RequestInstance` auto-collect.
+- Wired into webpack / edge / browser / Node (and turbopack, parcel, unbundled, esm) server bindings. Prefer webpack Flow types for `onElidedRow?: false | …`; other packages share the runtime but may still type the callback without `false`.
 
 ## Not in scope / next
-Eliding client components (needs an author or build-time guarantee that the component does nothing in the browser, deliberately not part of this PR); collapsing runs of server-rendered sibling rows into one elided row (each server row is its own `$J` ref today); routing more rows through live handoff for Suspense-streamed content.
+Eliding client components (needs an author or build-time guarantee that the component does nothing in the browser, deliberately not part of this PR); collapsing runs of server-rendered sibling rows into one elided row (each server row is its own `$J` ref today); flushing `:HL` resource hints into Fizz under the zero-optin registry path the same way the explicit side channel does (see `head-hoistables` corpus note above).
 
 ## Known limits
-- Chromium only (Firefox/WebKit not run). The fixture mixes a production RSC bundle with a dev client in dev mode, so its key warnings are fixture noise (the baseline emits them too).
+- Corpus browsers: Chromium re-verified at tip; Firefox/WebKit were green on earlier tips — re-run after the `:HL` fix. The fixture mixes a production RSC bundle with a dev client in dev mode, so its key warnings are fixture noise (the baseline emits them too).
 - 3 `ReactFlightDOMNode-test` Buffer-pool tests fail on the stack base as well (Node 26). `ReactFlightAsyncDebugInfo-test` ("can track async file reads") failed intermittently on the base and on this branch.
+- Framework host-page throughput (~3× on a Waku host-row page) was measured on an older tip (`6ed2e62d21`, multi-flag + explicit opt-in). Re-measure against this tip + zero-optin before quoting as current.

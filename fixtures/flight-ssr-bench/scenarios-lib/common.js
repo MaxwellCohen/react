@@ -6,7 +6,7 @@ const {fork} = require('child_process');
 
 const FIXTURE = path.resolve(__dirname, '..');
 const VARIANTS_DIR = path.join(FIXTURE, '.variants');
-const ALL_VARIANTS = ['off', 'elision', 'elision-dedupe', 'all'];
+const ALL_VARIANTS = ['off', 'all'];
 const PKGS = ['react', 'react-dom', 'react-server-dom-webpack', 'scheduler'];
 const BROWSERS = ['chromium', 'firefox', 'webkit'];
 
@@ -25,7 +25,7 @@ function parseArgs(argv, defaults) {
   }
   if (!['smoke', 'full'].includes(o.size)) throw new Error('--size must be smoke|full');
   if (!BROWSERS.includes(o.browser)) throw new Error('--browser must be ' + BROWSERS.join('|'));
-  if (!o.builds) throw new Error('Pass --builds <dir> or set SCENARIO_BUILDS (dir containing off/ elision/ elision-dedupe/ all/, each a build/oss-experimental)');
+  if (!o.builds) throw new Error('Pass --builds <dir> or set SCENARIO_BUILDS (dir containing off/ all/, each a build/oss-experimental)');
   o.builds = path.resolve(o.builds);
   for (const v of o.variants) if (!ALL_VARIANTS.includes(v)) throw new Error('Unknown variant ' + v);
   if (!o.variants.includes('off')) o.variants = ['off'].concat(o.variants);

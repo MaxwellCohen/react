@@ -1,7 +1,7 @@
 # Scenario corpus: authoring contract
 
 A scenario is one SERVER-component page. The harness renders it with every React build variant
-(`off`, `elision`, `elision-dedupe`, `all`), hydrates it in a real browser (Chromium by default), and compares it with the flags-off result.
+(`off`, `all`), hydrates it in a real browser (Chromium by default), and compares it with the flags-off result.
 Feature under test: HTML-first Flight, see [HTML-FIRST.md](./HTML-FIRST.md). Do not edit anything outside `src/scenarios/`.
 
 ## Validate one scenario (the only command you need)
@@ -10,7 +10,7 @@ Feature under test: HTML-first Flight, see [HTML-FIRST.md](./HTML-FIRST.md). Do 
 SCENARIO_BUILDS=<builds dir> yarn scenarios:check --only <your-id> --size smoke
 ```
 
-`<builds dir>` contains `off/ elision/ elision-dedupe/ all/` (each a `build/oss-experimental`). Exit 0 and `PASS <id>` = done.
+`<builds dir>` contains `off/` and `all/` (each a `build/oss-experimental`). Exit 0 and `PASS <id>` = done.
 Whole matrix: `yarn scenarios:check --size smoke` and `yarn scenarios:metrics --size smoke` (writes `results/`, git-ignored).
 Flags: `--only a,b`, `--size smoke|full`, `--builds <dir>`, `--variants off,all` (off is always included), `--browser chromium|firefox|webkit` (default chromium), `--n <renders>` (metrics).
 
@@ -62,10 +62,10 @@ Client component: `'use client'; import {useState} from 'react'; export default 
 3. No network or IO (`fetch`, `http`, `fs`, ...). Async server components may `await` a `setTimeout` (fixed delay) to stagger Suspense.
 4. No new dependencies: only `react` and relative imports. No CSS/asset imports; inline CSS via `<style dangerouslySetInnerHTML>`.
 5. Smoke size must render in well under a second; full size is what `scenarios:metrics --size full` measures.
-6. `interact` must be size-independent except via `'size'`, and every step must hold on all four variants (it also runs after a full-Flight navigation).
+6. `interact` must be size-independent except via `'size'`, and every step must hold on every variant under test (it also runs after a full-Flight navigation).
 7. Cover one idea per scenario; if it genuinely breaks flags-on, keep it (see knownFailure), do not weaken it.
 8. Normalization used when comparing DOMs: scripts (except JSON data blocks) and comments dropped, text nodes merged, React's
-   `<template id="_R_...">` marker dropped. Everything else must be identical to the flags-off DOM.
+   `<template id="_R_...">` marker dropped, style attribute spacing / zero-length units (`0px`→`0`) canonicalized, and attributes sorted by name. Everything else must be identical to the flags-off DOM.
 
 ## What the check asserts (per scenario x variant)
 
