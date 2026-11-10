@@ -114,9 +114,10 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
   // `elidedRows` is only given to the consumer that renders HTML (SSR). The
   // browser consumer doesn't get them and adopts the server DOM instead.
-  function consume(rsc, elidedRows) {
+  function consume(rsc, elidedRows, extraOptions) {
     return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
       elidedRows,
+      ...extraOptions,
     });
   }
 
@@ -309,12 +310,14 @@ describe('ReactFlightDOMBrowser host elision', () => {
   }
 
   // Hydrates `html` with the (row-less) browser payload `main`.
-  async function hydrate(main, html, extraOptions) {
+  // `flightOptions` go to createFromReadableStream (e.g. onElidedContentMissing).
+  // `rootOptions` go to hydrateRoot.
+  async function hydrate(main, html, flightOptions, rootOptions) {
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
     const errors = [];
-    const response = consume(main);
+    const response = consume(main, undefined, flightOptions);
     await response;
     let root;
     await act(() => {
@@ -325,11 +328,20 @@ describe('ReactFlightDOMBrowser host elision', () => {
           onUncaughtError: e => errors.push('uncaught: ' + e.message),
           onCaughtError: e => errors.push('caught: ' + e.message),
           onRecoverableError: e => errors.push('recoverable: ' + e.message),
-          ...extraOptions,
+          ...rootOptions,
         },
       );
     });
     return {container, errors, root};
+  }
+
+  // Framework recovery: replace the tree with a full, non-elided payload.
+  async function renderFullPayload(root, app) {
+    const full = await flight(app, false);
+    expect(full.main).not.toContain('$J');
+    const response = consume(full.main);
+    await response;
+    await act(() => root.render(<Shell response={response} />));
   }
 
   it('does not elide host elements passed as props to a client component', async () => {
@@ -380,7 +392,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelector('ul').textContent).toBe('zyx');
   });
 
-  it('keeps keyed static children of a client list so a reorder is reflected', async () => {
+  it('elides keyed static children of a client list; reorder moves adopted DOM', async () => {
     const List = clientExports(function List({children}) {
       const [rev, setRev] = React.useState(false);
       const items = React.Children.toArray(children);
@@ -399,15 +411,17 @@ describe('ReactFlightDOMBrowser host elision', () => {
       </List>
     );
     const f = await flight(<App />);
-    expect(f.rows.size).toBe(0);
+    expect(f.rows.size).toBeGreaterThan(0);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:li:x"/);
     const html = await ssr(f);
     const {container, errors} = await hydrate(f.main, html);
+    expect(container.querySelector('ul').textContent).toBe('xyz');
     await act(() => container.querySelector('button').click());
     expect(errors).toEqual([]);
     expect(container.querySelector('ul').textContent).toBe('zyx');
   });
 
-  it('does not elide server children of a client panel that hides then shows them', async () => {
+  it('elides client-panel children and recovers when they mount without server DOM', async () => {
     const Panel = clientExports(function Panel({children}) {
       const [open, setOpen] = React.useState(false);
       return (
@@ -423,12 +437,20 @@ describe('ReactFlightDOMBrowser host elision', () => {
       </Panel>
     );
     const f = await flight(<App />);
-    expect(f.rows.size).toBe(0);
+    expect(f.rows.size).toBeGreaterThan(0);
+    expect(f.main).not.toContain('modal-body');
     const html = await ssr(f);
-    const {container, errors} = await hydrate(f.main, html);
+    const missing = jest.fn();
+    const {container, errors, root} = await hydrate(f.main, html, {
+      onElidedContentMissing: () => {
+        missing();
+      },
+    });
     expect(container.textContent).not.toContain('modal-body');
     await act(() => container.querySelector('button').click());
-    expect(errors).toEqual([]);
+    expect(missing).toHaveBeenCalled();
+    await renderFullPayload(root, <App />);
+    expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
     expect(container.textContent).toContain('modal-body');
   });
 
@@ -483,7 +505,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toContain('loading...');
   });
 
-  it('does not elide children of a client-only wrapper', async () => {
+  it('elides client-only-wrapper children and recovers after mount', async () => {
     const ClientOnly = clientExports(function ClientOnly({children}) {
       const [mounted, setMounted] = React.useState(false);
       React.useEffect(() => setMounted(true), []);
@@ -497,10 +519,19 @@ describe('ReactFlightDOMBrowser host elision', () => {
       </div>
     );
     const f = await flight(<App />);
-    expect(f.rows.size).toBe(0);
+    expect(f.rows.size).toBeGreaterThan(0);
+    expect(f.main).not.toContain('client-only-content');
     const html = await ssr(f);
-    const {container, errors} = await hydrate(f.main, html);
-    expect(errors).toEqual([]);
+    const missing = jest.fn();
+    const {container, errors, root} = await hydrate(f.main, html, {
+      onElidedContentMissing: () => {
+        missing();
+      },
+    });
+    // useEffect opens the children; stubs recover.
+    expect(missing).toHaveBeenCalled();
+    await renderFullPayload(root, <App />);
+    expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
     expect(container.textContent).toContain('client-only-content');
   });
 
@@ -526,7 +557,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(error && error.message).toContain('Missing elided row');
   });
 
-  it('elides only static host elements in host position', async () => {
+  it('elides host-position static hosts including client children, not other props', async () => {
     const Client = clientExports(function Client({children, fallback}) {
       return (
         <div>
@@ -565,24 +596,20 @@ describe('ReactFlightDOMBrowser host elision', () => {
     );
     const f = await flight(<App />);
     const elided = rowsText(f.rows);
-    // Elided: server component output and static host children of a host
-    // element or a Suspense boundary that stays in the payload.
+    // Elided: server output, host children, Suspense children, and client children.
     expect(elided).toContain('server-row-text');
     expect(elided).toContain('host-child-text');
     expect(elided).toContain('suspense-content-text');
+    expect(elided).toContain('client-child-text');
     expect(f.main).not.toContain('host-child-text');
     expect(f.main).not.toContain('suspense-content-text');
-    // Kept: anything inside the props or children of a client component, and
-    // a Suspense fallback.
-    ['client-prop-text', 'client-child-text', 'suspense-fallback-text'].forEach(
-      kept => {
-        expect(elided).not.toContain(kept);
-        expect(f.main).toContain(kept);
-      },
-    );
-    // The server component output next to them still is.
+    expect(f.main).not.toContain('client-child-text');
+    // Kept: non-children client props, and Suspense fallbacks.
+    ['client-prop-text', 'suspense-fallback-text'].forEach(kept => {
+      expect(elided).not.toContain(kept);
+      expect(f.main).toContain(kept);
+    });
     expect(f.main).toMatch(/\$J[0-9a-f]+:table/);
-    // Hydrates without mismatches.
     const html = await ssr(f);
     const {errors} = await hydrate(f.main, html);
     expect(errors).toEqual([]);
@@ -758,16 +785,6 @@ describe('ReactFlightDOMBrowser host elision', () => {
         );
       });
       return {container, errors, root};
-    }
-
-    // What a framework does in onElidedContentMissing: render the full,
-    // non-elided payload (the one it fetches for navigations).
-    async function renderFullPayload(root, app) {
-      const full = await flight(app, false);
-      expect(full.main).not.toContain('$J');
-      const response = consume(full.main);
-      await response;
-      await act(() => root.render(<Shell response={response} />));
     }
 
     function makeStreamingApp() {

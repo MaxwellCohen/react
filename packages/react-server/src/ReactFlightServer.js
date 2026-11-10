@@ -2206,14 +2206,13 @@ function renderAsyncFragment(
 let elisionDepth = 0;
 
 // Host elision is only safe for a static host element that React renders in
-// place and hydrates in place: output of a Server Component, or the children
-// of such a host element or of a Suspense boundary. True while resolving such
-// a position. It is cleared in the props of anything else (Client Components,
-// Activity, ...) and in every prop except `children` (e.g. a Suspense
-// `fallback`), since those may be shown later, moved, or rendered outside of
-// hydration. A boundary's children are hydrated from the HTML that Fizz
-// streamed for it; if the boundary client-renders instead, ElidedHost recovers
-// (see onElidedContentMissing in the client).
+// place and hydrates in place: output of a Server Component, children of a
+// host element or Suspense boundary, or `children` of a Client Component
+// (composition slots / layout providers). True while resolving such a
+// position. Cleared for every non-`children` prop (e.g. Suspense `fallback`,
+// a Tabs `panels` prop) and for non-composition wrappers (Activity, ...).
+// When a client later mounts an elided child without server DOM (modal,
+// ClientOnly), ElidedHost recovers via onElidedContentMissing.
 let hostPosition = true;
 // The props object of the element tuple that is being resolved, and whether its
 // `children` are in host position.
@@ -3144,10 +3143,13 @@ function resolveElementTuple(
     for (let i = 0; i < rendered.length; i++) {
       if (i === 3) {
         elementProps = rendered[3];
+        // children of host tags, Suspense, and Client Components stay in host
+        // position. Other props never do (see resolveModelChildren).
         elementChildrenInHostPosition =
           prevHostPosition &&
           (typeof rendered[1] === 'string' ||
-            rendered[1] === REACT_SUSPENSE_TYPE);
+            rendered[1] === REACT_SUSPENSE_TYPE ||
+            isClientReference(rendered[1]));
       }
       resolved[i] = resolveModel(request, task, rendered, '' + i, rendered[i]);
     }
