@@ -6038,10 +6038,14 @@ function writeStartPendingBoundary(
   request: Request,
   destination: Destination,
   boundary: SuspenseBoundary,
+  fallbackSegment: Segment,
 ): boolean {
   const declarative =
     enableFizzDeclarativePatching &&
-    supportsDeclarativePatching(request.renderState);
+    supportsDeclarativePatching(
+      request.renderState,
+      fallbackSegment.parentFormatContext,
+    );
   boundary.declarative = declarative;
   const id = boundary.rootSegmentID;
   return declarative
@@ -6131,7 +6135,7 @@ function flushSegment(
     }
 
     // This boundary is still loading. Emit a pending suspense boundary wrapper.
-    writeStartPendingBoundary(request, destination, boundary);
+    writeStartPendingBoundary(request, destination, boundary, segment);
 
     if (hoistableState) {
       hoistHoistables(hoistableState, boundary.fallbackState);
@@ -6163,7 +6167,7 @@ function flushSegment(
 
     request.completedBoundaries.push(boundary);
     // Emit a pending rendered suspense boundary wrapper.
-    writeStartPendingBoundary(request, destination, boundary);
+    writeStartPendingBoundary(request, destination, boundary, segment);
 
     // While we are going to flush the fallback we are going to follow it up with
     // the completed boundary immediately so we make the choice to omit fallback

@@ -294,29 +294,42 @@ describe('ReactDOMFizzServer declarative patching', () => {
     );
   });
 
-  it('patches boundaries inside SVG', async () => {
-    function SvgApp() {
-      return (
+  it('uses the script path for boundaries inside SVG and MathML', async () => {
+    function Circle() {
+      readText('svg');
+      return <circle r="2" />;
+    }
+    function Mi() {
+      readText('math');
+      return <mi>x</mi>;
+    }
+    const r = await render(
+      <div>
         <svg>
           <Suspense fallback={<circle r="1" />}>
             <Circle />
           </Suspense>
         </svg>
-      );
-    }
-    function Circle() {
-      readText('svg');
-      return <circle r="2" />;
-    }
-    const r = await render(<SvgApp />, {
-      unstable_declarativePatching: true,
-    });
-    const out = await r.finish(['svg']);
-    expect(out).toContain(
-      '<template for="B:0"><circle r="2"></circle></template>',
+        <math>
+          <Suspense fallback={<mi>y</mi>}>
+            <Mi />
+          </Suspense>
+        </math>
+        <Suspense fallback="html">
+          <Item i={0} />
+        </Suspense>
+      </div>,
+      {unstable_declarativePatching: true},
     );
-    expect(out).toContain('$RP("B:0")');
-    expect(out).not.toContain('$RC');
+    const out = await r.finish(['svg', 'math', 'item-0']);
+    // Only the HTML boundary is declarative. Template content is HTML, so SVG and
+    // MathML content would end up in the wrong namespace.
+    expect(occurrences(out, '<template for=')).toBe(1);
+    expect(occurrences(out, '<?start')).toBe(1);
+    expect(out).toContain('<template for="B:2"><p class="item">');
+    expect(out).toContain('$RC("B:0"');
+    expect(out).toContain('$RC("B:1"');
+    expect(out).not.toContain('outerHTML');
   });
 
   it('keeps nested pending boundaries patchable', async () => {

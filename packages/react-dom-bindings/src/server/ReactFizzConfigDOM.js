@@ -4856,10 +4856,20 @@ export function scheduleBatchFlush(callback: () => void, ms: number): void {
   setTimeout(callback, ms);
 }
 
-export function supportsDeclarativePatching(renderState: RenderState): boolean {
-  // $RP parses patched nodes again in their parent's namespace, and <template> can hold
-  // table rows, so every context works.
-  return enableFizzDeclarativePatching && renderState.declarativePatching;
+export function supportsDeclarativePatching(
+  renderState: RenderState,
+  formatContext: FormatContext,
+): boolean {
+  if (!enableFizzDeclarativePatching || !renderState.declarativePatching) {
+    return false;
+  }
+  // Template content is parsed as HTML. Nodes patched into SVG or MathML would end up in
+  // the wrong namespace and need a serialize-and-reparse repair, so those boundaries
+  // use the classic $RC path. The format context is known when the fallback flushes.
+  return (
+    formatContext.insertionMode !== SVG_MODE &&
+    formatContext.insertionMode !== MATHML_MODE
+  );
 }
 
 export function writeStartPendingDeclarativeBoundary(
