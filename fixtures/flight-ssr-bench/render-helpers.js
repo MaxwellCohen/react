@@ -219,6 +219,7 @@ function renderFlightFizzNode(
       }
     },
     onError(e) {
+      if (e && /^This rendered a large document/.test(e.message)) return; // advisory, not a failure
       console.error('Flight+Fizz Node error:', e);
       if (!(opts && opts.recoverErrors)) output.destroy(e);
     },
