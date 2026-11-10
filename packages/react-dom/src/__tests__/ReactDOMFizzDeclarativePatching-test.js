@@ -332,6 +332,27 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).not.toContain('outerHTML');
   });
 
+  // @gate enableViewTransition
+  it('uses the script path for boundaries inside a ViewTransition', async () => {
+    const ViewTransition = React.ViewTransition;
+    const r = await render(
+      <div>
+        <ViewTransition>
+          <div>
+            <Suspense fallback="inside">
+              <Item i={0} />
+            </Suspense>
+          </div>
+        </ViewTransition>
+      </div>,
+      {unstable_declarativePatching: true},
+    );
+    const out = await r.finish(['item-0']);
+    expect(occurrences(out, '<template for=')).toBe(0);
+    expect(occurrences(out, '<?start')).toBe(0);
+    expect(out).toContain('$RC("B:0"');
+  });
+
   it('keeps nested pending boundaries patchable', async () => {
     function Outer() {
       readText('outer');

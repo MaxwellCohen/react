@@ -6043,6 +6043,7 @@ function writeStartPendingBoundary(
   const declarative =
     enableFizzDeclarativePatching &&
     supportsDeclarativePatching(
+      request.resumableState,
       request.renderState,
       fallbackSegment.parentFormatContext,
     );

@@ -4857,6 +4857,7 @@ export function scheduleBatchFlush(callback: () => void, ms: number): void {
 }
 
 export function supportsDeclarativePatching(
+  resumableState: ResumableState,
   renderState: RenderState,
   formatContext: FormatContext,
 ): boolean {
@@ -4866,10 +4867,26 @@ export function supportsDeclarativePatching(
   // Template content is parsed as HTML. Nodes patched into SVG or MathML would end up in
   // the wrong namespace and need a serialize-and-reparse repair, so those boundaries
   // use the classic $RC path. The format context is known when the fallback flushes.
-  return (
-    formatContext.insertionMode !== SVG_MODE &&
-    formatContext.insertionMode !== MATHML_MODE
-  );
+  if (
+    formatContext.insertionMode === SVG_MODE ||
+    formatContext.insertionMode === MATHML_MODE
+  ) {
+    return false;
+  }
+  // A native patch cannot be wrapped in startViewTransition like $RC reveals are. Use
+  // $RC when the boundary sits inside a ViewTransition, or when ViewTransitions have
+  // already been rendered in this request (those flag NeedUpgradeToViewTransitions).
+  // A ViewTransition inside content that has not rendered yet is not visible here.
+  if (
+    enableViewTransition &&
+    (formatContext.viewTransition !== null ||
+      (formatContext.tagScope & UPDATE_SCOPE) !== 0 ||
+      (resumableState.instructions & NeedUpgradeToViewTransitions) !==
+        NothingSent)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function writeStartPendingDeclarativeBoundary(
