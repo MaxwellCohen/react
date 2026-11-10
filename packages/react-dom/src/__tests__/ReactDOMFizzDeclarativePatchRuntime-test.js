@@ -153,26 +153,94 @@ describe('$RP runtime (polyfill path)', () => {
 
   it('reparses after native DPU already applied into SVG', () => {
     // Native support consumed the template; $RP still fixes the namespace.
-    setBody(
-      '<svg><!--B:a--><!--$?--><circle r="2"></circle><!--/$--></svg>',
-    );
+    setBody('<svg><!--B:a--><!--$?--><circle r="2"></circle><!--/$--></svg>');
     window.$RP('B:a');
     const circle = document.querySelector('circle');
     expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
   });
 
-  it('wraps the script-path swap in startViewTransition when available', () => {
-    let ran = false;
+  it('patches synchronously by default even when startViewTransition exists', () => {
+    let calls = 0;
     document.startViewTransition = cb => {
-      ran = true;
+      calls++;
+      cb();
+      return {finished: Promise.resolve()};
+    };
+    setBody(pending('B:a', 'fb') + '<template for="B:a">done</template>');
+    window.$RP('B:a');
+    expect(calls).toBe(0);
+    expect(visible()).toBe('done');
+  });
+
+  it('wraps a whole group in one startViewTransition when flagged', () => {
+    let calls = 0;
+    document.startViewTransition = cb => {
+      calls++;
       cb();
       return {finished: Promise.resolve()};
     };
     setBody(
-      pending('B:a', 'fb') + '<template for="B:a">done</template>',
+      pending('B:a', 'fa') +
+        pending('B:b', 'fb') +
+        '<template for="B:a">A</template><template for="B:b">B</template>',
     );
+    window.$RP(1, 'B:a', 'B:b');
+    expect(calls).toBe(1);
+    expect(visible()).toBe('AB');
+    expect(document.querySelectorAll('template').length).toBe(0);
+  });
+
+  describe('with an async startViewTransition', () => {
+    let queue;
+    beforeEach(() => {
+      queue = [];
+      document.startViewTransition = cb => {
+        queue.push(cb);
+        return {finished: Promise.resolve()};
+      };
+    });
+
+    function fixture() {
+      setBody(
+        pending('B:p', 'fb-p') +
+          '<template for="B:p">[' +
+          pending('B:c', 'fb-c') +
+          ']</template>' +
+          '<template for="B:c">child</template>',
+      );
+    }
+
+    it('patches a parent and child group once the callback runs', () => {
+      fixture();
+      window.$RP(1, 'B:p', 'B:c');
+      expect(queue.length).toBe(1);
+      queue.shift()();
+      expect(visible()).toBe('[child]');
+      expect(document.querySelectorAll('template').length).toBe(0);
+    });
+
+    it('patches consecutive groups correctly when callbacks run in order', () => {
+      fixture();
+      window.$RP(1, 'B:p');
+      window.$RP(1, 'B:c');
+      expect(queue.length).toBe(2);
+      queue.shift()();
+      queue.shift()();
+      expect(visible()).toBe('[child]');
+      expect(document.querySelectorAll('template').length).toBe(0);
+    });
+  });
+
+  it('does not reparse nodes React already owns on the native path', () => {
+    setBody(
+      '<svg><!--B:a--><!--$?--><circle id="c1" r="2"></circle><circle id="c2" r="3"></circle><!--/$--></svg>',
+    );
+    const c1 = document.getElementById('c1');
+    const c2 = document.getElementById('c2');
+    c1.__reactFiber$abc = {};
+    c2.__reactFiber$abc = {};
     window.$RP('B:a');
-    expect(ran).toBe(true);
-    expect(visible()).toBe('done');
+    expect(document.getElementById('c1')).toBe(c1);
+    expect(document.getElementById('c2')).toBe(c2);
   });
 });

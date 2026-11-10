@@ -671,17 +671,34 @@ const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 // sits right before the boundary's <!--$?--> comment) and does whatever the browser did
 // not do itself:
 // - Without native support the template is still there: replace the fallback range
-//   with its content, unless the client already owns that DOM. When View Transitions
-//   are available the swap is wrapped in startViewTransition (native DPU cannot be).
+//   with its content, unless the client already owns that DOM.
 // - With native support the template is already consumed. Both cases then fix up
 //   boundaries inside SVG/MathML, which a patch cannot create in the right namespace.
+// A leading 1, $RP(1,"B:0"), means the page uses View Transitions. Then a group that
+// still has templates to apply is applied inside one startViewTransition. A patch the
+// browser applied natively cannot be put in a transition.
 // React's hydration notices the range markers disappearing (MutationObserver), so there
 // is nothing to notify here.
 export function patchDeclarativeBoundaries() {
+  const args = arguments;
+  if (
+    args[0] === 1 &&
+    document.querySelector('template[for]') &&
+    typeof document['startViewTransition'] === 'function'
+  ) {
+    // The callback runs later. Everything, including looking up the templates, happens
+    // inside it so that groups are still applied in order, parents before children.
+    document['startViewTransition'](() => patchDeclarativeGroup(args));
+  } else {
+    patchDeclarativeGroup(args);
+  }
+}
+
+function patchDeclarativeGroup(args) {
   const ids = {};
   let remaining = 0;
-  for (let i = 0; i < arguments.length; i++) {
-    ids[arguments[i]] = 1;
+  for (let i = args[0] === 1 ? 1 : 0; i < args.length; i++) {
+    ids[args[i]] = 1;
     remaining++;
   }
   // Templates the browser did not apply itself, by boundary id.
@@ -745,59 +762,43 @@ function patchBoundary(anchor, template) {
   if (!end) {
     return;
   }
+  // DOM React already owns in this range (a client render got there first, or it
+  // hydrated a natively applied patch) must survive untouched.
   let owned = false;
-  if (template) {
-    // No native support. DOM React already created for this range (a client render got
-    // there first) must survive, so then the template is only dropped.
-    for (let node = start.nextSibling; node !== end && !owned; ) {
-      const keys = Object.keys(node);
-      for (let i = 0; i < keys.length; i++) {
-        if (keys[i].indexOf('__reactFiber$') === 0) {
-          owned = true;
-        }
+  for (let node = start.nextSibling; node !== end && !owned; ) {
+    const keys = Object.keys(node);
+    for (let i = 0; i < keys.length; i++) {
+      if (keys[i].indexOf('__reactFiber$') === 0) {
+        owned = true;
       }
-      node = node.nextSibling;
     }
+    node = node.nextSibling;
   }
-
-  const apply = () => {
-    if (template) {
-      if (!owned) {
-        let node;
-        while ((node = start.nextSibling) !== end) {
-          node.parentNode.removeChild(node);
-        }
-        start.after(template.content);
+  if (template) {
+    if (!owned) {
+      let node;
+      while ((node = start.nextSibling) !== end) {
+        node.parentNode.removeChild(node);
       }
-      template.parentNode.removeChild(template);
+      start.after(template.content);
     }
-    // Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
-    // parsed again in their parent's namespace (HTML integration points excluded).
-    // Needed even when native DPU already applied the template.
-    const parent = start.parentNode;
-    if (
-      !owned &&
-      parent &&
-      parent.namespaceURI !== XHTML_NAMESPACE &&
-      parent.localName !== 'foreignObject' &&
-      parent.localName !== 'desc' &&
-      parent.localName !== 'title'
-    ) {
-      for (let node = start.nextSibling, next; node !== end; node = next) {
-        next = node.nextSibling;
-        node.outerHTML = node.outerHTML;
-      }
-    }
-  };
-
-  // Native DPU cannot enter startViewTransition; the script path can.
+    template.parentNode.removeChild(template);
+  }
+  // Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
+  // parsed again in their parent's namespace (HTML integration points excluded).
+  // Needed even when native DPU already applied the template.
+  const parent = start.parentNode;
   if (
-    template &&
     !owned &&
-    typeof document['startViewTransition'] === 'function'
+    parent &&
+    parent.namespaceURI !== XHTML_NAMESPACE &&
+    parent.localName !== 'foreignObject' &&
+    parent.localName !== 'desc' &&
+    parent.localName !== 'title'
   ) {
-    document['startViewTransition'](apply);
-  } else {
-    apply();
+    for (let node = start.nextSibling, next; node !== end; node = next) {
+      next = node.nextSibling;
+      node.outerHTML = node.outerHTML;
+    }
   }
 }

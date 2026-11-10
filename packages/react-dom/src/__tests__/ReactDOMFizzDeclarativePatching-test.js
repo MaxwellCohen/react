@@ -179,9 +179,11 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain(
       '<template for="B:0"><p class="item">item-0</p></template>',
     );
-    expect(out).toContain('$RP=function');
     expect(out).toContain('$RP("B:0"');
-    // Bootstrap may define $RC for mixed classic completions; no $RC() calls.
+    // The declarative runtime is the only one inlined: no $RC or $RB bootstrap.
+    expect(occurrences(out, '$RP=')).toBe(1);
+    expect(out).not.toContain('$RC=');
+    expect(out).not.toContain('$RB=');
     expect(out).not.toContain('$RC(');
     expect(out).not.toContain('<div hidden id="S:');
   });
@@ -238,7 +240,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     );
   });
 
-  it('uses the script path for boundaries inside SVG and MathML', async () => {
+  it('keeps boundaries inside SVG and MathML on <template for>', async () => {
     function Circle() {
       readText('svg');
       return <circle r="2" />;
@@ -275,12 +277,14 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain('<template for="B:1"><mi>x</mi></template>');
     expect(out).toContain('<template for="B:2"><p class="item">');
     expect(out).toContain('$RP(');
+    expect(out).toContain('$RP("B:0"');
+    expect(out).not.toContain('$RP(1,');
     expect(out).not.toContain('$RC(');
     expect(out).toContain('outerHTML');
   });
 
   // @gate enableViewTransition
-  it('uses the script path for boundaries inside a ViewTransition', async () => {
+  it('keeps boundaries inside a ViewTransition on <template for>', async () => {
     const ViewTransition = React.ViewTransition;
     const r = await render(
       <div>
@@ -295,10 +299,13 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['item-0']);
-    // Stay on declarative markers; $RP wraps the swap in startViewTransition.
+    // Stay on declarative markers; the leading 1 asks $RP to wrap the group in a
+    // view transition.
     expect(occurrences(out, '<template for=')).toBe(1);
     expect(occurrences(out, '<?start')).toBe(1);
-    expect(out).toContain('$RP(');
+    expect(out).toContain('$RP(1,"B:0")');
+    expect(out).not.toContain('$RV=');
+    expect(out).not.toContain('$RC=');
     expect(out).not.toContain('$RC(');
     expect(out).toContain('startViewTransition');
   });
@@ -360,9 +367,47 @@ describe('ReactDOMFizzServer declarative patching', () => {
     // The link goes in front of the template, not inside it. Chrome stalls the parser at
     // a body stylesheet, so the patch is only applied once the CSS has loaded.
     expect(out).toContain(
-      '<link rel="stylesheet" href="foo.css" data-precedence="default" blocking="render"><template for="B:0"><div>',
+      '<link rel="stylesheet" href="foo.css" data-precedence="default" blocking="render"/><template for="B:0"><div>',
     );
     expect(out).not.toContain('$RR');
+  });
+
+  it('keeps all stylesheet props on the render-blocking link', async () => {
+    function Styled() {
+      readText('styled');
+      return (
+        <div>
+          <link
+            rel="stylesheet"
+            href="foo.css"
+            precedence="default"
+            crossOrigin="anonymous"
+            integrity="sha384-abc"
+            media="print"
+          />
+          styled
+        </div>
+      );
+    }
+    const r = await render(
+      <html>
+        <body>
+          <Suspense fallback="loading">
+            <Styled />
+          </Suspense>
+        </body>
+      </html>,
+      {unstable_declarativePatching: true},
+    );
+    const out = await r.finish(['styled']);
+    const match = out.match(/(<link [^>]*>)<template for="B:0">/);
+    expect(match).not.toBe(null);
+    const link = match[1];
+    expect(link).toContain('crossorigin="anonymous"');
+    expect(link).toContain('integrity="sha384-abc"');
+    expect(link).toContain('media="print"');
+    expect(link).toContain('data-precedence="default"');
+    expect(link).toContain('blocking="render"');
   });
 
   // The helpers below simulate what a parser with <template for> support does, since

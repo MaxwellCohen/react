@@ -1839,6 +1839,14 @@ function replaySuspenseBoundary(
   resumedBoundary.parentFlushed = true;
   // We restore the same id of this boundary as was used during prerender.
   resumedBoundary.rootSegmentID = id;
+  // The prerender wrote this boundary's pending markers with the same opt-in.
+  resumedBoundary.declarative =
+    enableFizzDeclarativePatching &&
+    supportsDeclarativePatching(
+      request.resumableState,
+      request.renderState,
+      task.formatContext,
+    );
 
   const fallbackKeyPath: KeyNode = [
     keyPath[0],
@@ -4857,6 +4865,13 @@ function abortRemainingSuspenseBoundary(
   resumedBoundary.parentFlushed = true;
   // We restore the same id of this boundary as was used during prerender.
   resumedBoundary.rootSegmentID = rootSegmentID;
+  resumedBoundary.declarative =
+    enableFizzDeclarativePatching &&
+    supportsDeclarativePatching(
+      request.resumableState,
+      request.renderState,
+      request.rootFormatContext,
+    );
 
   resumedBoundary.status = CLIENT_RENDERED;
   encodeErrorForBoundary(

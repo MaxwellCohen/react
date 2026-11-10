@@ -4527,13 +4527,13 @@ export function registerSuspenseInstanceRetry(
     const parentNode = instance.parentNode;
     if (
       enableFizzDeclarativePatching &&
-      parentNode !== null &&
+      parentNode != null &&
       isDeclarativePendingMarker(instance.nextSibling) &&
       typeof MutationObserver === 'function'
     ) {
       // Nothing calls _reactRetry for <template for> patches, so watch the siblings
       // for the marker disappearing instead of waiting for DOMContentLoaded.
-      observer = new MutationObserver(() => {
+      const patchObserver = (observer = new MutationObserver(() => {
         if (
           !isDeclarativePendingMarker(instance.nextSibling) ||
           findDeclarativeErrorMarker(instance) !== null
@@ -4541,13 +4541,13 @@ export function registerSuspenseInstanceRetry(
           syncDeclarativelyPatchedBoundary(instance);
           listener();
         }
-      });
-      observer.observe(parentNode, {childList: true});
+      }));
+      patchObserver.observe(parentNode, {childList: true});
       // The error marker is written where the parser is, which is the body level
       // and not necessarily the boundary's own parent.
       const body = ownerDocument.body;
       if (body !== null && body !== parentNode) {
-        observer.observe(body, {childList: true});
+        patchObserver.observe(body, {childList: true});
       }
     }
   }

@@ -84,6 +84,7 @@ export type RenderState = {
     style: string | void,
   },
   stylesToHoist: boolean,
+  declarativePatching: boolean,
   // This is an extra field for the legacy renderer
   generateStaticMarkup: boolean,
 };
@@ -128,6 +129,7 @@ export function createRenderState(
     preloads: renderState.preloads,
     nonce: renderState.nonce,
     stylesToHoist: renderState.stylesToHoist,
+    declarativePatching: false,
 
     // This is an extra field for the legacy renderer
     generateStaticMarkup,

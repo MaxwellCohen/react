@@ -570,8 +570,7 @@ export function createRenderState(
 
   // Persist the opt-in on resumable state so prerender → resume keeps the same wire.
   if (enableFizzDeclarativePatching) {
-    resumableState.declarativePatching =
-      enableFizzDeclarativePatching && declarativePatching === true;
+    resumableState.declarativePatching = declarativePatching === true;
   }
 
   if (bootstrapScripts !== undefined) {
@@ -4752,13 +4751,9 @@ export function supportsDeclarativePatching(
   renderState: RenderState,
   formatContext: FormatContext,
 ): boolean {
-  // SVG/MathML and ViewTransition cases stay on <template for> + $RP. The script
-  // reparses foreign-namespace nodes (outerHTML) and wraps script-path swaps in
-  // startViewTransition. Native DPU still cannot enter startViewTransition.
-  // resumableState / formatContext are retained for call-site stability and so
-  // ViewTransition requests can still set NeedUpgradeToViewTransitions elsewhere.
-  void resumableState;
-  void formatContext;
+  // Every boundary of an opted-in request is declarative, including the ones inside
+  // SVG/MathML (the $RP script reparses those in the right namespace) and inside a
+  // ViewTransition. resumableState and formatContext are unused for now.
   return enableFizzDeclarativePatching && renderState.declarativePatching;
 }
 
@@ -4789,13 +4784,6 @@ const endDeclarativePatch = stringToPrecomputedChunk('</template>');
 const declarativeStyleOpen1 = stringToPrecomputedChunk(' data-precedence="');
 const declarativeStyleOpen2 = stringToPrecomputedChunk('" data-href="');
 const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
-const declarativeLinkOpen = stringToPrecomputedChunk(
-  '<link rel="stylesheet" href="',
-);
-const declarativeLinkPrecedence = stringToPrecomputedChunk(
-  '" data-precedence="',
-);
-const declarativeLinkEnd = stringToPrecomputedChunk('" blocking="render">');
 
 export function writeStartDeclarativePatch(
   destination: Destination,
@@ -4816,25 +4804,15 @@ export function writeStartDeclarativePatch(
       // Already in the shell, or already emitted by an earlier boundary.
       return;
     }
-    const props = resource.props;
-    const href = props.href;
-    const precedence = props['data-precedence'];
-    if (__DEV__) {
-      checkAttributeStringCoercion(href, 'href');
+    // Same attributes as a stylesheet in the shell (crossorigin, integrity, media…).
+    pushLinkImpl(stylesheetFlushingQueue, {
+      ...resource.props,
+      blocking: 'render',
+    });
+    for (let i = 0; i < stylesheetFlushingQueue.length; i++) {
+      writeChunk(destination, stylesheetFlushingQueue[i]);
     }
-    const coercedHref = sanitizeURL('' + (href as any));
-    if (__DEV__) {
-      checkAttributeStringCoercion(precedence, 'precedence');
-    }
-    const coercedPrecedence = '' + (precedence as any);
-    writeChunk(destination, declarativeLinkOpen);
-    writeChunk(destination, stringToChunk(escapeTextForBrowser(coercedHref)));
-    writeChunk(destination, declarativeLinkPrecedence);
-    writeChunk(
-      destination,
-      stringToChunk(escapeTextForBrowser(coercedPrecedence)),
-    );
-    writeChunk(destination, declarativeLinkEnd);
+    stylesheetFlushingQueue.length = 0;
     resource.state = LATE;
   });
 
@@ -4961,6 +4939,7 @@ const patchDeclarativeFunction = stringToPrecomputedChunk(
   patchDeclarativeBoundariesFunction,
 );
 const patchDeclarativeSeparator = stringToPrecomputedChunk(',');
+const patchDeclarativeViewTransitionFlag = stringToPrecomputedChunk('1,');
 const patchDeclarativeQuote = stringToPrecomputedChunk('"');
 // External / data streaming format: observed by ReactDOMServerExternalRuntime.
 const patchDeclarativeDataStart = stringToPrecomputedChunk(
@@ -4969,9 +4948,8 @@ const patchDeclarativeDataStart = stringToPrecomputedChunk(
 const patchDeclarativeDataEnd = dataElementQuotedEnd;
 
 // One script (or data instruction) per group of <template for> patches. The first
-// inline script carries shared runtimes. $RB/$RV/$RC ship in the same <script> as
-// $RP so mixed classic completions do not open a second bootstrap tag. With the
-// external runtime, $RP lives in that bundle and completions use data-rpi.
+// inline script also defines $RP. With the external runtime, $RP lives in that bundle
+// and groups are announced with a data-rpi instruction instead.
 export function writeDeclarativePatchScript(
   destination: Destination,
   resumableState: ResumableState,
@@ -4981,10 +4959,6 @@ export function writeDeclarativePatchScript(
   if (ids.length === 0) {
     return true;
   }
-  const requiresViewTransitions =
-    enableViewTransition &&
-    (resumableState.instructions & NeedUpgradeToViewTransitions) !==
-      NothingSent;
   const scriptFormat =
     !enableFizzExternalRuntime ||
     resumableState.streamingFormat === ScriptStreamingFormat;
@@ -4992,32 +4966,21 @@ export function writeDeclarativePatchScript(
     writeChunk(destination, renderState.startInlineScript);
     writeChunk(destination, endOfStartTag);
     if (
-      (resumableState.instructions & SentCompleteBoundaryFunction) ===
-      NothingSent
-    ) {
-      // Later $RC() share $RB/$RV with this bootstrap.
-      resumableState.instructions |= SentCompleteBoundaryFunction;
-      writeChunk(destination, completeBoundaryScriptFunctionOnly);
-    }
-    if (
       (resumableState.instructions & SentPatchDeclarativeFunction) ===
       NothingSent
     ) {
       resumableState.instructions |= SentPatchDeclarativeFunction;
       writeChunk(destination, patchDeclarativeFunction);
     }
+    writeChunk(destination, patchDeclarativeScriptCall);
     if (
-      requiresViewTransitions &&
-      (resumableState.instructions & SentUpgradeToViewTransitions) ===
+      enableViewTransition &&
+      (resumableState.instructions & NeedUpgradeToViewTransitions) !==
         NothingSent
     ) {
-      resumableState.instructions |= SentUpgradeToViewTransitions;
-      writeChunk(
-        destination,
-        completeBoundaryUpgradeToViewTransitionsInstruction,
-      );
+      // Tells $RP to apply this group inside a View Transition where it can.
+      writeChunk(destination, patchDeclarativeViewTransitionFlag);
     }
-    writeChunk(destination, patchDeclarativeScriptCall);
     for (let i = 0; i < ids.length; i++) {
       if (i > 0) {
         writeChunk(destination, patchDeclarativeSeparator);
