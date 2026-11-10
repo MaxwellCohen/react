@@ -277,7 +277,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
   // Zero framework opt-in: flag on, no onElidedRow / elidedRows. The server
   // registers rows internally; the first createFrom* claims them for SSR.
-  async function renderAppZeroOptIn(count) {
+  // `flightOpts` is undefined (auto registry) or {onElidedRow: false} (SPA nav).
+  async function renderSharedApp(count, flightOpts) {
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -316,6 +317,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
         ReactServerDOMServer.renderToReadableStream(
           <App size={count} />,
           webpackMap,
+          flightOpts,
         ),
       ),
     );
@@ -324,7 +326,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
   it('SSRs and hydrates with no onElidedRow or elidedRows (internal registry)', async () => {
     const ROWS = 50;
-    const main = await renderAppZeroOptIn(ROWS);
+    const main = await renderSharedApp(ROWS);
     expect(main).toContain(':Q');
     expect(main).toContain('$J');
     expect(main).not.toContain('name-49');
@@ -356,8 +358,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
   });
 
   it('isolates concurrent zero-opt-in requests', async () => {
-    const a = await renderAppZeroOptIn(3);
-    const b = await renderAppZeroOptIn(7);
+    const a = await renderSharedApp(3);
+    const b = await renderSharedApp(7);
     expect(a).toMatch(/:Q[0-9a-f]+\n/);
     expect(b).toMatch(/:Q[0-9a-f]+\n/);
     const idA = a.match(/:Q([0-9a-f]+)\n/)[1];
@@ -370,6 +372,82 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(htmlA).not.toContain('name-6');
     expect(htmlB).toContain('name-6');
     expect(htmlB.match(/name-\d+/g).length).toBe(7);
+  });
+
+  it('SPA navigation uses onElidedRow: false for a full payload that adopts DOM', async () => {
+    const ROWS = 20;
+    const Counter = clientExports(function Counter({label}) {
+      const [n, setN] = React.useState(0);
+      return (
+        <button onClick={() => setN(n + 1)}>
+          {label}:{n}
+        </button>
+      );
+    });
+    function Table({size}) {
+      return (
+        <table className="data">
+          <tbody>
+            {Array.from({length: size}, (_, i) => (
+              <tr key={i}>
+                <td>{'name-' + i}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    function App({size}) {
+      return (
+        <main>
+          <h1>Report</h1>
+          <Counter label="clicks" />
+          <Table size={size} />
+        </main>
+      );
+    }
+    async function renderOnce(opts) {
+      return serverAct(async () =>
+        readAll(
+          ReactServerDOMServer.renderToReadableStream(
+            <App size={ROWS} />,
+            webpackMap,
+            opts,
+          ),
+        ),
+      );
+    }
+
+    const main = await renderOnce(undefined);
+    const html = await ssr({main, rows: undefined});
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const table = container.querySelector('table');
+    const button = container.querySelector('button');
+    const response = consume(main, undefined);
+    await response;
+    let root;
+    await act(() => {
+      root = ReactDOMClient.hydrateRoot(
+        container,
+        <Shell response={response} />,
+      );
+    });
+    expect(container.querySelectorAll('tr').length).toBe(ROWS);
+
+    // Same module identity, full Flight (what /rsc navigation must emit).
+    const nextMain = await renderOnce({onElidedRow: false});
+    expect(nextMain).not.toContain('$J');
+    expect(nextMain).not.toContain(':Q');
+    const nextResponse = consume(nextMain);
+    await nextResponse;
+    await act(() => {
+      root.render(<Shell response={nextResponse} />);
+    });
+    expect(container.querySelectorAll('tr').length).toBe(ROWS);
+    expect(container.querySelector('table')).toBe(table);
+    expect(container.querySelector('button')).toBe(button);
   });
 
   // Returns {main, rows}: rendered with or without elision.

@@ -2,9 +2,9 @@
 
 // Smoke test for every server binding x entry (webpack, turbopack, parcel,
 // unbundled, esm; node, browser, edge): elided rows as JSON and as live values,
-// and the inline fallback when no row callback is
-// given. Needs a build with the flags on (see the fixture README) that also
-// contains react and react-dom in build/node_modules.
+// zero-opt-in (no callbacks → internal registry), and explicit off
+// (onElidedRow: false). Needs a build with the flags on (see the fixture
+// README) that also contains react and react-dom in build/node_modules.
 //   node e2e/bindings-smoke.js            (runs every combination)
 //   node --conditions react-server e2e/bindings-smoke.js <pkg> <entry>   (one)
 // One combination per process: React supports one RSC renderer per process.
@@ -109,7 +109,8 @@ let failed = false;
           rowsL = new Map();
         const mJ = await render({onElidedRow: (id, j) => rowsJ.set(id, j)});
         const mL = await render({onElidedValue: (id, v) => rowsL.set(id, v)});
-        const mN = await render({});
+        const mAuto = await render({});
+        const mOff = await render({onElidedRow: false});
         const ok = [
           [
             'json rows',
@@ -125,7 +126,13 @@ let failed = false;
               !mL.includes(BIG) &&
               [...rowsL.values()].every(v => typeof v === 'object'),
           ],
-          ['inline fallback', !mN.includes('$J') && mN.includes(BIG)],
+          [
+            'zero opt-in',
+            mAuto.includes('$J') &&
+              mAuto.includes(':Q') &&
+              !mAuto.includes(BIG),
+          ],
+          ['explicit off', !mOff.includes('$J') && mOff.includes(BIG)],
         ];
         const bad = ok.filter(x => !x[1]).map(x => x[0]);
         results.push([pkg, entry, bad.length ? 'FAIL ' + bad.join(',') : 'ok']);

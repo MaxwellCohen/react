@@ -108,10 +108,10 @@ function renderFlightFizzNode(
   const {renderToPipeableStream} = require('react-dom/server');
   const {createFromNodeStream} = require('react-server-dom-webpack/client');
 
-  // opts.elide: enableFlightHtmlFirst. Withholds static host rows from the
-  // stream. opts.sideChannel === false uses React's internal registry
-  // (zero framework opt-in); otherwise the framework Map is the sink.
-  const useSideChannel = opts && opts.elide && opts.sideChannel !== false;
+  // opts.elide: enableFlightHtmlFirst. Default is zero framework opt-in
+  // (React's internal registry). Pass opts.sideChannel: true to use an
+  // explicit Map (JSON or live) for out-of-process / legacy demos.
+  const useSideChannel = opts && opts.elide && opts.sideChannel === true;
   const elidedRows = useSideChannel ? new Map() : null;
   const {pipe: rscPipe} = renderRSCNode(
     clientManifest,

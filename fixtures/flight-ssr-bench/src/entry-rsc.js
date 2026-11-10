@@ -13,10 +13,11 @@ export function renderRSCNode(clientManifest, Component, itemCount, options) {
   );
 }
 
-export function renderRSCEdge(clientManifest, Component, itemCount) {
+export function renderRSCEdge(clientManifest, Component, itemCount, options) {
   return renderToReadableStream(
     <Component itemCount={itemCount} />,
-    clientManifest
+    clientManifest,
+    options
   );
 }
 

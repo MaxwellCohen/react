@@ -112,8 +112,9 @@ async function render({id, size, recoverErrors}) {
   const t = process.hrtime.bigint();
   const html = await nodeStreamToString(
     renderFlightFizzNode(bundle.renderRSCNode, roots[id], size, clientManifest, ssrManifest, {
+      // Zero opt-in: flag-on variants omit onElidedRow/elidedRows; React's
+      // internal registry feeds SSR. No framework side channel.
       elide: optIn,
-      live: optIn,
       recoverErrors: !!recoverErrors,
     })
   );
@@ -122,6 +123,8 @@ async function render({id, size, recoverErrors}) {
 }
 
 // Full (non-elided) Flight payload: what a client navigation / refetch receives.
+// Must pass onElidedRow: false — with the flag on, omitting options would
+// auto-elide, and the browser has no HTML to adopt for those stubs.
 function flight({id, size}) {
   problems = [];
   return new Promise((resolve, reject) => {
@@ -130,7 +133,9 @@ function flight({id, size}) {
     out.on('data', c => chunks.push(c));
     out.on('end', () => resolve({flight: Buffer.concat(chunks).toString('utf8'), problems: problems.splice(0)}));
     out.on('error', reject);
-    bundle.renderRSCNode(clientManifest, roots[id], size).pipe(out);
+    bundle
+      .renderRSCNode(clientManifest, roots[id], size, {onElidedRow: false})
+      .pipe(out);
   });
 }
 
