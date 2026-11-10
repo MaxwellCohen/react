@@ -1246,8 +1246,8 @@ function removeDeclarativeAnchor(
   const marker = hydrationInstance.nextSibling;
   const anchor = hydrationInstance.previousSibling;
   if (
-    marker === null ||
-    anchor === null ||
+    marker == null ||
+    anchor == null ||
     anchor.nodeType !== COMMENT_NODE ||
     !isDeclarativePendingMarker(marker)
   ) {
@@ -4343,8 +4343,8 @@ const PROCESSING_INSTRUCTION_NODE = 7;
 // Declarative patching leaves `<!--$?--><?start name="B:n">fallback<?end><!--/$-->`. In
 // browsers with support the markers are ProcessingInstruction nodes. Elsewhere they parse
 // as bogus comments with data `?start name="B:n"`.
-function isDeclarativePendingMarker(node: null | Node): boolean {
-  if (node === null) {
+function isDeclarativePendingMarker(node: ?Node): boolean {
+  if (node == null) {
     return false;
   }
   if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
@@ -4380,7 +4380,7 @@ function findDeclarativeErrorMarker(
 function isDeclarativelyPatched(instance: SuspenseInstance): boolean {
   const next = instance.nextSibling;
   return !(
-    next === null || // The parser hasn't reached the next chunk yet.
+    next == null || // The parser hasn't reached the next chunk yet.
     isDeclarativePendingMarker(next) ||
     // Script-patched boundaries keep a <template id> as the first node while pending.
     (next.nodeType === ELEMENT_NODE &&

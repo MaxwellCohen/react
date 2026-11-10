@@ -397,12 +397,13 @@ if (__DEV__) {
 // 16 base36 characters (about 80 bits). Returns null when the environment has
 // no CSPRNG; Math.random would defeat the purpose.
 function generateDeclarativeToken(): string | null {
-  const webCrypto =
-    typeof crypto === 'object' && crypto !== null ? crypto : null;
-  if (webCrypto === null || typeof webCrypto.getRandomValues !== 'function') {
+  if (
+    typeof crypto !== 'object' ||
+    typeof crypto.getRandomValues !== 'function'
+  ) {
     return null;
   }
-  const bytes = webCrypto.getRandomValues(new Uint8Array(16));
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
   let token = '';
   for (let i = 0; i < bytes.length; i++) {
     token += (bytes[i] % 36).toString(36);
