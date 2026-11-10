@@ -50,9 +50,11 @@ function serialize() {
   comments.forEach(n => n.remove());
   c.normalize();
   // Fresh client-created nodes serialize style/attrs differently than
-  // server-written HTML (e.g. "margin-top: 8px" vs "margin-top:8px", and
-  // data-*/aria-* order relative to style). Canonicalize so navigation
-  // remounts of elided regions are compared on substance, not serializer noise.
+  // server-written HTML after an elided region remounts. Canonicalize so the
+  // navigation check compares substance, not serializer noise:
+  // - style spacing ("margin-top: 8px" vs "margin-top:8px")
+  // - zero lengths ("0" vs "0px" / "0%" / …)
+  // - attribute order (data-*/aria-* vs style)
   c.querySelectorAll('*').forEach(el => {
     if (el.hasAttribute('style')) {
       el.setAttribute(
@@ -62,6 +64,11 @@ function serialize() {
           .replace(/\s*:\s*/g, ':')
           .replace(/\s*;\s*/g, ';')
           .replace(/;+$/, '')
+          // 0px, 0%, 0em, … are the same used length as unitless 0.
+          .replace(
+            /(^|[^0-9.])0(?:px|%|em|rem|ex|ch|vh|vw|vmin|vmax|pt|pc|in|cm|mm|Q)\b/gi,
+            (_, p) => p + '0',
+          )
       );
     }
     const attrs = Array.from(el.attributes)

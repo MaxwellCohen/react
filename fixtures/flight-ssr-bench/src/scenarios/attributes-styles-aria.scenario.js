@@ -121,16 +121,6 @@ export function Root({size}) {
   );
 }
 
-// React finding (flags-on `all` build): after a full-Flight client navigation the
-// re-rendered DOM is not identical to the hydrated DOM — the style object is not
-// minified (e.g. "margin-top: 8px" vs "margin-top:8px") and host attribute order
-// differs (data-*/aria-* before style). All other checks pass on all variants.
-export const knownFailure = {
-  variants: ['all'],
-  error:
-    '(navigation) DOM after full-Flight navigation differs from hydrated DOM: first difference at char 245 (lengths 4548 vs 4616)',
-};
-
 export const interact = [
   {click: 'button.counter'},
   {expectText: {selector: 'button.counter', text: 'n: 1'}},
