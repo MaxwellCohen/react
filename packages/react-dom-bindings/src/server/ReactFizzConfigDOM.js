@@ -4974,7 +4974,8 @@ const patchDeclarativeSeparator = stringToPrecomputedChunk(',');
 const patchDeclarativeQuote = stringToPrecomputedChunk('"');
 
 // One script per group of <template for> patches that were written together. The first
-// one carries the shared $RP definition. Nonce aware like every other inline script.
+// one carries the shared runtimes. $RB/$RV/$RC (completeBoundary) ship in the same
+// <script> as $RP so SVG/MathML/$RC fallbacks do not open a second bootstrap tag.
 export function writeDeclarativePatchScript(
   destination: Destination,
   resumableState: ResumableState,
@@ -4986,6 +4987,14 @@ export function writeDeclarativePatchScript(
   }
   writeChunk(destination, renderState.startInlineScript);
   writeChunk(destination, endOfStartTag);
+  if (
+    (resumableState.instructions & SentCompleteBoundaryFunction) ===
+    NothingSent
+  ) {
+    // $RP's stylesheet-aware insert path and any later $RC() share $RB/$RV.
+    resumableState.instructions |= SentCompleteBoundaryFunction;
+    writeChunk(destination, completeBoundaryScriptFunctionOnly);
+  }
   if (
     (resumableState.instructions & SentPatchDeclarativeFunction) ===
     NothingSent
@@ -5320,6 +5329,16 @@ export function writeCompletedBoundaryInstruction(
         resumableState.instructions |= SentCompleteBoundaryFunction;
         writeChunk(destination, completeBoundaryScriptFunctionOnly);
       }
+      // Keep $RP in this same <script> when declarative patching is on.
+      if (
+        enableFizzDeclarativePatching &&
+        renderState.declarativePatching &&
+        (resumableState.instructions & SentPatchDeclarativeFunction) ===
+          NothingSent
+      ) {
+        resumableState.instructions |= SentPatchDeclarativeFunction;
+        writeChunk(destination, patchDeclarativeFunction);
+      }
       if (
         requiresViewTransitions &&
         (resumableState.instructions & SentUpgradeToViewTransitions) ===
@@ -5347,6 +5366,15 @@ export function writeCompletedBoundaryInstruction(
       ) {
         resumableState.instructions |= SentCompleteBoundaryFunction;
         writeChunk(destination, completeBoundaryScriptFunctionOnly);
+      }
+      if (
+        enableFizzDeclarativePatching &&
+        renderState.declarativePatching &&
+        (resumableState.instructions & SentPatchDeclarativeFunction) ===
+          NothingSent
+      ) {
+        resumableState.instructions |= SentPatchDeclarativeFunction;
+        writeChunk(destination, patchDeclarativeFunction);
       }
       if (
         requiresViewTransitions &&
