@@ -181,7 +181,8 @@ describe('ReactDOMFizzServer declarative patching', () => {
     );
     expect(out).toContain('$RP=function');
     expect(out).toContain('$RP("B:0"');
-    expect(out).not.toContain('$RC');
+    // Bootstrap may define $RC for mixed classic completions; no $RC() calls.
+    expect(out).not.toContain('$RC(');
     expect(out).not.toContain('<div hidden id="S:');
   });
 
@@ -265,14 +266,17 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['svg', 'math', 'item-0']);
-    // Only the HTML boundary is declarative. Template content is HTML, so SVG and
-    // MathML content would end up in the wrong namespace.
-    expect(occurrences(out, '<template for=')).toBe(1);
-    expect(occurrences(out, '<?start')).toBe(1);
+    // All three stay on <template for> + $RP. $RP reparses SVG/MathML via outerHTML.
+    expect(occurrences(out, '<template for=')).toBe(3);
+    expect(occurrences(out, '<?start')).toBe(3);
+    expect(out).toContain(
+      '<template for="B:0"><circle r="2"></circle></template>',
+    );
+    expect(out).toContain('<template for="B:1"><mi>x</mi></template>');
     expect(out).toContain('<template for="B:2"><p class="item">');
-    expect(out).toContain('$RC("B:0"');
-    expect(out).toContain('$RC("B:1"');
-    expect(out).not.toContain('outerHTML');
+    expect(out).toContain('$RP(');
+    expect(out).not.toContain('$RC(');
+    expect(out).toContain('outerHTML');
   });
 
   // @gate enableViewTransition
@@ -291,9 +295,12 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['item-0']);
-    expect(occurrences(out, '<template for=')).toBe(0);
-    expect(occurrences(out, '<?start')).toBe(0);
-    expect(out).toContain('$RC("B:0"');
+    // Stay on declarative markers; $RP wraps the swap in startViewTransition.
+    expect(occurrences(out, '<template for=')).toBe(1);
+    expect(occurrences(out, '<?start')).toBe(1);
+    expect(out).toContain('$RP(');
+    expect(out).not.toContain('$RC(');
+    expect(out).toContain('startViewTransition');
   });
 
   it('keeps nested pending boundaries patchable', async () => {

@@ -272,6 +272,9 @@ export type ResumableState = {
   nextFormID: number,
   streamingFormat: StreamingFormat,
   externalRuntimeConfig: string | BootstrapScriptDescriptor | void,
+  // Opt-in carried across prerender → resume so resumeRenderState can recreate
+  // the same declarative patching RenderState.
+  declarativePatching: boolean,
 
   // We carry the bootstrap intializers in resumable state in case we postpone in the shell
   // of a prerender. On resume we will reinitialize the bootstrap scripts if necessary.
@@ -562,11 +565,14 @@ export function createRenderState(
     hoistableState: null,
     stylesToHoist: false,
     declarativePatching:
-      enableFizzDeclarativePatching &&
-      declarativePatching === true &&
-      // The external runtime has no inline scripts to build on.
-      !(enableFizzExternalRuntime && externalRuntimeConfig !== undefined),
+      enableFizzDeclarativePatching && declarativePatching === true,
   };
+
+  // Persist the opt-in on resumable state so prerender → resume keeps the same wire.
+  if (enableFizzDeclarativePatching) {
+    resumableState.declarativePatching =
+      enableFizzDeclarativePatching && declarativePatching === true;
+  }
 
   if (bootstrapScripts !== undefined) {
     for (let i = 0; i < bootstrapScripts.length; i++) {
@@ -698,6 +704,7 @@ export function resumeRenderState(
     undefined,
     undefined,
     undefined,
+    resumableState.declarativePatching,
   );
 }
 
@@ -721,6 +728,7 @@ export function createResumableState(
     nextFormID: 0,
     streamingFormat,
     externalRuntimeConfig,
+    declarativePatching: false,
     bootstrapScriptContent,
     bootstrapScripts,
     bootstrapModules,
@@ -4744,32 +4752,14 @@ export function supportsDeclarativePatching(
   renderState: RenderState,
   formatContext: FormatContext,
 ): boolean {
-  if (!enableFizzDeclarativePatching || !renderState.declarativePatching) {
-    return false;
-  }
-  // Template content is parsed as HTML. Nodes patched into SVG or MathML would end up in
-  // the wrong namespace and need a serialize-and-reparse repair, so those boundaries
-  // use the classic $RC path. The format context is known when the fallback flushes.
-  if (
-    formatContext.insertionMode === SVG_MODE ||
-    formatContext.insertionMode === MATHML_MODE
-  ) {
-    return false;
-  }
-  // A native patch cannot be wrapped in startViewTransition like $RC reveals are. Use
-  // $RC when the boundary sits inside a ViewTransition, or when ViewTransitions have
-  // already been rendered in this request (those flag NeedUpgradeToViewTransitions).
-  // A ViewTransition inside content that has not rendered yet is not visible here.
-  if (
-    enableViewTransition &&
-    (formatContext.viewTransition !== null ||
-      (formatContext.tagScope & UPDATE_SCOPE) !== 0 ||
-      (resumableState.instructions & NeedUpgradeToViewTransitions) !==
-        NothingSent)
-  ) {
-    return false;
-  }
-  return true;
+  // SVG/MathML and ViewTransition cases stay on <template for> + $RP. The script
+  // reparses foreign-namespace nodes (outerHTML) and wraps script-path swaps in
+  // startViewTransition. Native DPU still cannot enter startViewTransition.
+  // resumableState / formatContext are retained for call-site stability and so
+  // ViewTransition requests can still set NeedUpgradeToViewTransitions elsewhere.
+  void resumableState;
+  void formatContext;
+  return enableFizzDeclarativePatching && renderState.declarativePatching;
 }
 
 export function writeStartPendingDeclarativeBoundary(
@@ -4972,10 +4962,16 @@ const patchDeclarativeFunction = stringToPrecomputedChunk(
 );
 const patchDeclarativeSeparator = stringToPrecomputedChunk(',');
 const patchDeclarativeQuote = stringToPrecomputedChunk('"');
+// External / data streaming format: observed by ReactDOMServerExternalRuntime.
+const patchDeclarativeDataStart = stringToPrecomputedChunk(
+  '<template data-rpi="" data-ids="',
+);
+const patchDeclarativeDataEnd = dataElementQuotedEnd;
 
-// One script per group of <template for> patches that were written together. The first
-// one carries the shared runtimes. $RB/$RV/$RC (completeBoundary) ship in the same
-// <script> as $RP so SVG/MathML/$RC fallbacks do not open a second bootstrap tag.
+// One script (or data instruction) per group of <template for> patches. The first
+// inline script carries shared runtimes. $RB/$RV/$RC ship in the same <script> as
+// $RP so mixed classic completions do not open a second bootstrap tag. With the
+// external runtime, $RP lives in that bundle and completions use data-rpi.
 export function writeDeclarativePatchScript(
   destination: Destination,
   resumableState: ResumableState,
@@ -4985,34 +4981,64 @@ export function writeDeclarativePatchScript(
   if (ids.length === 0) {
     return true;
   }
-  writeChunk(destination, renderState.startInlineScript);
-  writeChunk(destination, endOfStartTag);
-  if (
-    (resumableState.instructions & SentCompleteBoundaryFunction) ===
-    NothingSent
-  ) {
-    // $RP's stylesheet-aware insert path and any later $RC() share $RB/$RV.
-    resumableState.instructions |= SentCompleteBoundaryFunction;
-    writeChunk(destination, completeBoundaryScriptFunctionOnly);
+  const requiresViewTransitions =
+    enableViewTransition &&
+    (resumableState.instructions & NeedUpgradeToViewTransitions) !==
+      NothingSent;
+  const scriptFormat =
+    !enableFizzExternalRuntime ||
+    resumableState.streamingFormat === ScriptStreamingFormat;
+  if (scriptFormat) {
+    writeChunk(destination, renderState.startInlineScript);
+    writeChunk(destination, endOfStartTag);
+    if (
+      (resumableState.instructions & SentCompleteBoundaryFunction) ===
+      NothingSent
+    ) {
+      // Later $RC() share $RB/$RV with this bootstrap.
+      resumableState.instructions |= SentCompleteBoundaryFunction;
+      writeChunk(destination, completeBoundaryScriptFunctionOnly);
+    }
+    if (
+      (resumableState.instructions & SentPatchDeclarativeFunction) ===
+      NothingSent
+    ) {
+      resumableState.instructions |= SentPatchDeclarativeFunction;
+      writeChunk(destination, patchDeclarativeFunction);
+    }
+    if (
+      requiresViewTransitions &&
+      (resumableState.instructions & SentUpgradeToViewTransitions) ===
+        NothingSent
+    ) {
+      resumableState.instructions |= SentUpgradeToViewTransitions;
+      writeChunk(
+        destination,
+        completeBoundaryUpgradeToViewTransitionsInstruction,
+      );
+    }
+    writeChunk(destination, patchDeclarativeScriptCall);
+    for (let i = 0; i < ids.length; i++) {
+      if (i > 0) {
+        writeChunk(destination, patchDeclarativeSeparator);
+      }
+      writeChunk(destination, patchDeclarativeQuote);
+      writeChunk(destination, renderState.boundaryPrefix);
+      writeChunk(destination, stringToChunk(ids[i].toString(16)));
+      writeChunk(destination, patchDeclarativeQuote);
+    }
+    return writeChunkAndReturn(destination, patchDeclarativeScriptEnd);
   }
-  if (
-    (resumableState.instructions & SentPatchDeclarativeFunction) ===
-    NothingSent
-  ) {
-    resumableState.instructions |= SentPatchDeclarativeFunction;
-    writeChunk(destination, patchDeclarativeFunction);
-  }
-  writeChunk(destination, patchDeclarativeScriptCall);
+  // External runtime already defines $RP; emit a data instruction it observes.
+  writeChunk(destination, patchDeclarativeDataStart);
   for (let i = 0; i < ids.length; i++) {
     if (i > 0) {
       writeChunk(destination, patchDeclarativeSeparator);
     }
-    writeChunk(destination, patchDeclarativeQuote);
     writeChunk(destination, renderState.boundaryPrefix);
     writeChunk(destination, stringToChunk(ids[i].toString(16)));
-    writeChunk(destination, patchDeclarativeQuote);
   }
-  return writeChunkAndReturn(destination, patchDeclarativeScriptEnd);
+  return writeChunkAndReturn(destination, patchDeclarativeDataEnd);
 }
 
 export function writeEndDeclarativePatch(

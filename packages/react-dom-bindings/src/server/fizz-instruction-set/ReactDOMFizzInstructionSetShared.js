@@ -664,14 +664,17 @@ export function listenToFormSubmissionsForReplaying() {
   });
 }
 
+const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+
 // Declarative patching ($RP). Called as $RP("B:0","B:1") by a script that follows a group
 // of <template for="B:n"> patches. Finds each boundary by its <!--B:n--> anchor (which
 // sits right before the boundary's <!--$?--> comment) and does whatever the browser did
 // not do itself:
 // - Without native support the template is still there: replace the fallback range
-//   with its content, unless the client already owns that DOM.
-// - With native support the template is already consumed and there is nothing to do.
-// Boundaries inside SVG/MathML never use patches, since template content is HTML.
+//   with its content, unless the client already owns that DOM. When View Transitions
+//   are available the swap is wrapped in startViewTransition (native DPU cannot be).
+// - With native support the template is already consumed. Both cases then fix up
+//   boundaries inside SVG/MathML, which a patch cannot create in the right namespace.
 // React's hydration notices the range markers disappearing (MutationObserver), so there
 // is nothing to notify here.
 export function patchDeclarativeBoundaries() {
@@ -686,10 +689,6 @@ export function patchDeclarativeBoundaries() {
   const found = document.querySelectorAll('template[for]');
   for (let i = 0; i < found.length; i++) {
     templates[found[i].getAttribute('for')] = found[i];
-  }
-  if (!found.length) {
-    // The browser applied every patch itself.
-    return;
   }
   const comments = document.createNodeIterator(document, 128);
   let anchor;
@@ -759,13 +758,46 @@ function patchBoundary(anchor, template) {
       }
       node = node.nextSibling;
     }
-    if (!owned) {
-      let node;
-      while ((node = start.nextSibling) !== end) {
-        node.parentNode.removeChild(node);
+  }
+
+  const apply = () => {
+    if (template) {
+      if (!owned) {
+        let node;
+        while ((node = start.nextSibling) !== end) {
+          node.parentNode.removeChild(node);
+        }
+        start.after(template.content);
       }
-      start.after(template.content);
+      template.parentNode.removeChild(template);
     }
-    template.parentNode.removeChild(template);
+    // Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
+    // parsed again in their parent's namespace (HTML integration points excluded).
+    // Needed even when native DPU already applied the template.
+    const parent = start.parentNode;
+    if (
+      !owned &&
+      parent &&
+      parent.namespaceURI !== XHTML_NAMESPACE &&
+      parent.localName !== 'foreignObject' &&
+      parent.localName !== 'desc' &&
+      parent.localName !== 'title'
+    ) {
+      for (let node = start.nextSibling, next; node !== end; node = next) {
+        next = node.nextSibling;
+        node.outerHTML = node.outerHTML;
+      }
+    }
+  };
+
+  // Native DPU cannot enter startViewTransition; the script path can.
+  if (
+    template &&
+    !owned &&
+    typeof document['startViewTransition'] === 'function'
+  ) {
+    document['startViewTransition'](apply);
+  } else {
+    apply();
   }
 }

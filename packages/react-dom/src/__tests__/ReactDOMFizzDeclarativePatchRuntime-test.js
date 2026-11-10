@@ -137,8 +137,7 @@ describe('$RP runtime (polyfill path)', () => {
     expect(document.body.innerHTML).toBe(before);
   });
 
-  it('leaves SVG content in its parent namespace untouched', () => {
-    // SVG boundaries never use patches, so $RP must not reparse anything.
+  it('reparses patched children into the SVG namespace', () => {
     setBody(
       '<svg>' +
         pending('B:a', '<circle r="1"></circle>') +
@@ -148,5 +147,32 @@ describe('$RP runtime (polyfill path)', () => {
     window.$RP('B:a');
     expect(document.querySelector('svg')).toBe(svg);
     expect(visible()).toBe('<svg><circle r="2"></circle></svg>');
+    const circle = document.querySelector('circle');
+    expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
+  });
+
+  it('reparses after native DPU already applied into SVG', () => {
+    // Native support consumed the template; $RP still fixes the namespace.
+    setBody(
+      '<svg><!--B:a--><!--$?--><circle r="2"></circle><!--/$--></svg>',
+    );
+    window.$RP('B:a');
+    const circle = document.querySelector('circle');
+    expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
+  });
+
+  it('wraps the script-path swap in startViewTransition when available', () => {
+    let ran = false;
+    document.startViewTransition = cb => {
+      ran = true;
+      cb();
+      return {finished: Promise.resolve()};
+    };
+    setBody(
+      pending('B:a', 'fb') + '<template for="B:a">done</template>',
+    );
+    window.$RP('B:a');
+    expect(ran).toBe(true);
+    expect(visible()).toBe('done');
   });
 });

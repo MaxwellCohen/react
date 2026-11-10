@@ -253,7 +253,7 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
     expect(patchGroups(r)).toEqual([]);
     await r.resolve('b');
     expect(patchGroups(r)).toEqual([['0', '1', '2']]);
-    expect(r.text()).not.toContain('$RC');
+    expect(r.text()).not.toContain('$RC(');
     expect(r.text()).not.toContain('<template id="B:');
     expect(r.text().match(/<\?start/g).length).toBe(3);
   });

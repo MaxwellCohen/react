@@ -283,6 +283,7 @@ function renderToReadableStream(
         options ? options.importMap : undefined,
         onHeadersImpl,
         options ? options.maxHeadersLength : undefined,
+        options ? options.unstable_declarativePatching : undefined,
       ),
       createRootFormatContext(options ? options.namespaceURI : undefined),
       options ? options.progressiveChunkSize : undefined,

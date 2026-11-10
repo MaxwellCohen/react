@@ -95,5 +95,10 @@ function handleNode(node_: Node) {
   } else if (dataset['rsi'] != null) {
     window['$RS'](dataset['sid'], dataset['pid']);
     node.remove();
+  } else if (dataset['rpi'] != null) {
+    // data-ids is a comma-separated list of boundary ids (B:0,B:1,…).
+    const ids = dataset['ids'] ? dataset['ids'].split(',') : [];
+    window['$RP'].apply(null, ids);
+    node.remove();
   }
 }

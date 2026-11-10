@@ -8,6 +8,7 @@ import {
   completeBoundaryWithStyles,
   completeSegment,
   listenToFormSubmissionsForReplaying,
+  patchDeclarativeBoundaries,
   revealCompletedBoundaries,
   revealCompletedBoundariesWithViewTransitions,
 } from './ReactDOMFizzInstructionSetShared';
@@ -24,6 +25,7 @@ window['$RV'] = revealCompletedBoundariesWithViewTransitions.bind(
 window['$RC'] = completeBoundary;
 window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
+window['$RP'] = patchDeclarativeBoundaries;
 
 listenToFormSubmissionsForReplaying();
 
