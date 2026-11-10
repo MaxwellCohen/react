@@ -64,9 +64,10 @@ export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTem
 export type {TemporaryReferenceSet};
 
 type Options = {
-  // Prototype (enableFlightHtmlFirst): receive elided host rows.
-  onElidedRow?: (id: number, json: string) => void,
-  onElidedValue?: (id: number, value: mixed) => void,
+  // Prototype (enableFlightHtmlFirst): receive elided host rows, or `false`
+  // to keep full hosts in the stream. Omit both to use the internal registry.
+  onElidedRow?: false | ((id: number, json: string) => void),
+  onElidedValue?: false | ((id: number, value: mixed) => void),
   debugChannel?: {readable?: ReadableStream, writable?: WritableStream, ...},
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,

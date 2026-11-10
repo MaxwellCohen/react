@@ -149,9 +149,10 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // Prototype (enableFlightHtmlFirst): receive elided host rows.
-  onElidedRow?: (id: number, json: string) => void,
-  onElidedValue?: (id: number, value: mixed) => void,
+  // Prototype (enableFlightHtmlFirst): receive elided host rows, or `false`
+  // to keep full hosts in the stream. Omit both to use the internal registry.
+  onElidedRow?: false | ((id: number, json: string) => void),
+  onElidedValue?: false | ((id: number, value: mixed) => void),
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -361,6 +362,8 @@ function renderToReadableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.onElidedRow : undefined,
+    options ? options.onElidedValue : undefined,
   );
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);

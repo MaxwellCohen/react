@@ -19,6 +19,10 @@ import {
   enableFlightObjectReferences,
   enableFlightHtmlFirst,
 } from 'shared/ReactFeatureFlags';
+import {
+  allocateElidedRowsRegistry,
+  releaseElidedRowsRegistry,
+} from 'shared/ReactFlightElidedRowsRegistry';
 
 import {
   scheduleWork,
@@ -625,6 +629,8 @@ export type Request = {
   identifierPrefix: string,
   onElidedRow: null | ((id: number, json: string) => void),
   onElidedValue: null | ((id: number, value: mixed) => void),
+  // enableFlightHtmlFirst: internal registry id when no framework callbacks.
+  elidedRequestId: number,
   // enableFlightHtmlFirst: memoized isStaticHostNode results.
   staticHostCache: null | WeakMap<any, boolean>,
   identifierCount: number,
@@ -703,8 +709,8 @@ function RequestInstance(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  onElidedRow: void | ((id: number, json: string) => void),
-  onElidedValue: void | ((id: number, value: mixed) => void),
+  onElidedRow: void | false | ((id: number, json: string) => void),
+  onElidedValue: void | false | ((id: number, value: mixed) => void),
 ) {
   if (
     ReactSharedInternals.A !== null &&
@@ -758,15 +764,34 @@ function RequestInstance(
   this.identifierPrefix = identifierPrefix || '';
   // enableFlightHtmlFirst: in-process consumers can take the live value of an
   // elided row instead of JSON (no stringify here, no parse in the client).
-  this.onElidedValue =
-    enableFlightHtmlFirst && typeof onElidedValue === 'function'
-      ? onElidedValue
-      : null;
-  this.onElidedRow =
-    enableFlightHtmlFirst &&
-    (typeof onElidedRow === 'function' || this.onElidedValue !== null)
-      ? onElidedRow || noop
-      : null;
+  // When the framework passes no callbacks, collect into an internal registry
+  // keyed by a request id emitted in the stream (`:Q…`) so createFrom* on
+  // the same isolate can claim the rows without a side channel.
+  // Pass `onElidedRow: false` (or onElidedValue: false) to keep full host
+  // rows in the stream even when the flag is on.
+  this.elidedRequestId = 0;
+  if (
+    !enableFlightHtmlFirst ||
+    onElidedRow === false ||
+    onElidedValue === false
+  ) {
+    this.onElidedValue = null;
+    this.onElidedRow = null;
+  } else if (typeof onElidedValue === 'function') {
+    this.onElidedValue = onElidedValue;
+    this.onElidedRow = typeof onElidedRow === 'function' ? onElidedRow : noop;
+  } else if (typeof onElidedRow === 'function') {
+    this.onElidedValue = null;
+    this.onElidedRow = onElidedRow;
+  } else {
+    const registry = allocateElidedRowsRegistry();
+    this.elidedRequestId = registry.requestId;
+    this.onElidedValue = (id: number, value: mixed) => {
+      registry.rows.set(id, value);
+    };
+    this.onElidedRow = noop;
+    emitElidedRowsRequestIdChunk(this, registry.requestId);
+  }
   this.staticHostCache = enableFlightHtmlFirst ? new WeakMap() : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
@@ -854,8 +879,8 @@ export function createRequest(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  onElidedRow?: (id: number, json: string) => void,
-  onElidedValue?: (id: number, value: mixed) => void,
+  onElidedRow?: false | ((id: number, json: string) => void),
+  onElidedValue?: false | ((id: number, value: mixed) => void),
 ): Request {
   if (__DEV__) {
     resetOwnerStackLimit();
@@ -5186,6 +5211,15 @@ function emitHintChunk<Code: HintCode>(
   request.completedHintChunks.push(processedChunk);
 }
 
+function emitElidedRowsRequestIdChunk(
+  request: Request,
+  requestId: number,
+): void {
+  // enableFlightHtmlFirst: identify the internal row registry across tee().
+  const row = ':Q' + requestId.toString(16) + '\n';
+  request.completedHintChunks.push(stringToChunk(row));
+}
+
 function emitSymbolChunk(request: Request, id: number, name: string): void {
   const symbolReference = serializeSymbolReference(name);
   const processedChunk = encodeReferenceChunk(request, id, symbolReference);
@@ -7285,6 +7319,11 @@ export function abort(request: Request, reason: mixed): void {
   }
   try {
     request.status = ABORTING;
+    if (enableFlightHtmlFirst && request.elidedRequestId !== 0) {
+      // No createFrom* claimed the rows (cancelled before SSR). Drop them.
+      releaseElidedRowsRegistry(request.elidedRequestId);
+      request.elidedRequestId = 0;
+    }
     if (enableProfilerTimer) {
       request.abortTime = performance.now();
     }

@@ -145,7 +145,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const rows = new Map();
     const options = elide
       ? {onElidedRow: (id, json) => rows.set(id, json)}
-      : {};
+      : {onElidedRow: false};
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -275,12 +275,109 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelector('td').textContent).toBe('name-0');
   });
 
+  // Zero framework opt-in: flag on, no onElidedRow / elidedRows. The server
+  // registers rows internally; the first createFrom* claims them for SSR.
+  async function renderAppZeroOptIn(count) {
+    const Counter = clientExports(function Counter({label}) {
+      const [n, setN] = React.useState(0);
+      return (
+        <button onClick={() => setN(n + 1)}>
+          {label}:{n}
+        </button>
+      );
+    });
+
+    function Table({size}) {
+      return (
+        <table className="data">
+          <tbody>
+            {Array.from({length: size}, (_, i) => (
+              <tr key={i}>
+                <td>{'name-' + i}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+
+    function App({size}) {
+      return (
+        <main>
+          <h1>Report</h1>
+          <Counter label="clicks" />
+          <Table size={size} />
+        </main>
+      );
+    }
+
+    const main = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(
+          <App size={count} />,
+          webpackMap,
+        ),
+      ),
+    );
+    return main;
+  }
+
+  it('SSRs and hydrates with no onElidedRow or elidedRows (internal registry)', async () => {
+    const ROWS = 50;
+    const main = await renderAppZeroOptIn(ROWS);
+    expect(main).toContain(':Q');
+    expect(main).toContain('$J');
+    expect(main).not.toContain('name-49');
+
+    // First consumer claims the registry (SSR).
+    const html = await ssr({main, rows: undefined});
+    expect(html).toContain('name-49');
+    expect(html).toContain('clicks');
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const table = container.querySelector('table');
+    const button = container.querySelector('button');
+
+    // Second consumer finds an empty registry → stubs → adopt HTML.
+    const response = consume(main, undefined);
+    await response;
+    await act(() => {
+      ReactDOMClient.hydrateRoot(container, <Shell response={response} />);
+    });
+    expect(container.querySelector('table')).toBe(table);
+    expect(container.querySelector('button')).toBe(button);
+    expect(container.querySelectorAll('tr').length).toBe(ROWS);
+    await act(() => {
+      button.click();
+    });
+    expect(button.textContent).toBe('clicks:1');
+  });
+
+  it('isolates concurrent zero-opt-in requests', async () => {
+    const a = await renderAppZeroOptIn(3);
+    const b = await renderAppZeroOptIn(7);
+    expect(a).toMatch(/:Q[0-9a-f]+\n/);
+    expect(b).toMatch(/:Q[0-9a-f]+\n/);
+    const idA = a.match(/:Q([0-9a-f]+)\n/)[1];
+    const idB = b.match(/:Q([0-9a-f]+)\n/)[1];
+    expect(idA).not.toBe(idB);
+
+    const htmlA = await ssr({main: a, rows: undefined});
+    const htmlB = await ssr({main: b, rows: undefined});
+    expect(htmlA).toContain('name-2');
+    expect(htmlA).not.toContain('name-6');
+    expect(htmlB).toContain('name-6');
+    expect(htmlB.match(/name-\d+/g).length).toBe(7);
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();
     const options = elide
       ? {onElidedRow: (id, json) => rows.set(id, json)}
-      : {};
+      : {onElidedRow: false};
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(

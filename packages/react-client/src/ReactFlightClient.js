@@ -49,6 +49,10 @@ import {
   enableFlightObjectReferences,
   enableFlightHtmlFirst,
 } from 'shared/ReactFeatureFlags';
+import {
+  claimElidedRowsRegistry,
+  releaseElidedRowsRegistry,
+} from 'shared/ReactFlightElidedRowsRegistry';
 
 import {
   resolveClientReference,
@@ -5426,6 +5430,22 @@ function processFullStringRow(
     case 72 /* "H" */: {
       const code: HintCode = row[0] as any;
       resolveHint(response, code, row.slice(1));
+      return;
+    }
+    case 81 /* "Q" */: {
+      // enableFlightHtmlFirst: in-process registry id for elided rows.
+      if (enableFlightHtmlFirst) {
+        const requestId = parseInt(row, 16);
+        if (response._elidedRows !== null) {
+          // Framework already supplied elidedRows; drop the unused registry.
+          releaseElidedRowsRegistry(requestId);
+        } else {
+          const rows = claimElidedRowsRegistry(requestId);
+          if (rows !== undefined) {
+            response._elidedRows = rows;
+          }
+        }
+      }
       return;
     }
     case 69 /* "E" */: {

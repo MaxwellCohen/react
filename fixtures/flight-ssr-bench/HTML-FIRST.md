@@ -1,6 +1,6 @@
 # [Flight] HTML-first initial load: don't re-ship static server output (`enableFlightHtmlFirst`)
 
-Single flag (`enableFlightHtmlFirst`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default; nothing changes unless a framework opts in.
+Single flag (`enableFlightHtmlFirst`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default; when on, in-process Flight→SSR elides automatically (internal registry, no framework callbacks). Explicit `onElidedRow` / `onElidedValue` remain for custom sinks; pass `onElidedRow: false` to keep full hosts in the stream.
 
 **Scope: server-component output only.** Client components are never elided, pruned or stubbed: they keep their full props in Flight and hydrate normally.
 
@@ -25,8 +25,11 @@ A host region is elided only if everything in it is static host output. A region
 component keeps its host skeleton and the client component keeps its props; only its static
 host siblings are elided.
 
-Initial-load only: elision happens only when the framework passes
-`onElidedRow`/`onElidedValue`. Navigation/refetch responses are ordinary full Flight.
+Initial-load: with the flag on, Flight auto-elides into an internal registry keyed by a
+`:Q…` row in the stream; the first in-process `createFrom*` claims it for SSR, later
+consumers (browser) get stubs and adopt HTML. Frameworks may still pass
+`onElidedRow`/`onElidedValue` for out-of-process sinks. Pass `onElidedRow: false` on a
+navigation/refetch if you want a full Flight payload while the flag is compiled in.
 Elided stubs are same-tag hosts, so navigation **adopts** the existing DOM (react-dom
 hydrates children into the static island instead of remounting) when the tag matches.
 
@@ -49,10 +52,11 @@ CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Fli
 - Every binding x entry: `node fixtures/flight-ssr-bench/e2e/bindings-smoke.js` (JSON rows, live rows, inline fallback) for webpack, turbopack, parcel, unbundled, esm.
 
 ## Contract (what a framework has to know)
-- `onElidedValue` is for in-process SSR: the framework passes the live node to its SSR client (`fixtures/flight-ssr-bench/render-helpers.js` has the resolver; with server-only rows it has nothing to resolve). `onElidedRow` (JSON) remains for out-of-process consumers.
-- Stubs adopt server DOM. If a boundary is client-rendered instead (e.g. regenerated after a hydration mismatch), the stub throws a clear error so the app's error boundary can refetch, rather than rendering blank content. (This is the base host-elision behavior, unchanged.)
+- **Zero opt-in (in-process):** ship a React build with the flag on. `renderToReadableStream` → tee → `createFrom*` → Fizz works with no `onElidedRow` / `elidedRows`. The stream carries a `:Q<id>` row; SSR claims the registry; the browser isolate has an empty registry and adopts HTML.
+- `onElidedValue` / `onElidedRow` remain for out-of-process or custom sinks. `onElidedRow: false` disables elision for that request.
+- Stubs adopt server DOM. If a boundary is client-rendered instead (e.g. regenerated after a hydration mismatch), the stub throws a clear error so the app's error boundary can refetch, rather than rendering blank content. (`onElidedContentMissing` is still framework-specific.)
 - Large strings passed as client props are ordinary Flight strings. To keep CSS/JSON-LD out of Flight, render it from a Server Component as a direct `<style>` / `<script type="application/ld+json">`.
-- Wired into every server binding through the `onElidedRow`/`onElidedValue` options: webpack, turbopack, parcel, unbundled, esm. `react-server-dom-fb` calls `createRequest` positionally and takes the new trailing parameters unchanged, but is not wired here.
+- Wired into webpack / edge / browser server bindings (and Node pipeable + readable). Other bundler packages share `RequestInstance` auto-collect.
 
 ## Not in scope / next
 Eliding client components (needs an author or build-time guarantee that the component does nothing in the browser, deliberately not part of this PR); collapsing runs of server-rendered sibling rows into one elided row (each server row is its own `$J` ref today); routing more rows through live handoff for Suspense-streamed content.

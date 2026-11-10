@@ -114,10 +114,11 @@ export const enableDefaultTransitionIndicator = __EXPERIMENTAL__;
 
 export const enableOptimisticKey = __EXPERIMENTAL__;
 
-// Prototype: HTML-first Flight. When a framework opts in, static host markup
-// that a Server Component renders in host position (including inside Suspense
-// children) is left out of the inlined browser payload and adopted from the
-// SSR HTML on hydration.
+// Prototype: HTML-first Flight. When on, static host markup that a Server
+// Component renders in host position (including inside Suspense children) is
+// left out of the inlined browser payload and adopted from the SSR HTML on
+// hydration. In-process Flight→SSR claims elided rows from an internal
+// registry (no onElidedRow/elidedRows); out-of-process sinks still use those.
 export const enableFlightHtmlFirst: boolean = false;
 
 /**

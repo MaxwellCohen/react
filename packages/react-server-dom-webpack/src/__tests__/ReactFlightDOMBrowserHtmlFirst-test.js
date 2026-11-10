@@ -141,7 +141,7 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     const rows = new Map();
     const options = elide
       ? {onElidedRow: (id, json) => rows.set(id, json)}
-      : {};
+      : {onElidedRow: false};
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
