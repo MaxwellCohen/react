@@ -98,6 +98,11 @@ function validateProperty(tagName, name, value, eventRegistry) {
       return true;
     }
 
+    // enableFlightHtmlFirst: reserved host prop, never a DOM attribute.
+    if (name === 'unstable_elidedRecover') {
+      return true;
+    }
+
     if (lowerCasedName === 'innerhtml') {
       console.error(
         'Directly setting property `innerHTML` is not permitted. ' +
@@ -177,6 +182,7 @@ function validateProperty(tagName, name, value, eventRegistry) {
       case 'style':
       case 'suppressContentEditableWarning':
       case 'suppressHydrationWarning':
+      case 'unstable_elidedRecover':
       case 'defaultValue': // Reserved
       case 'defaultChecked':
       case 'innerHTML':

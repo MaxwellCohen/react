@@ -677,6 +677,7 @@ function setProp(
     }
     case 'suppressContentEditableWarning':
     case 'suppressHydrationWarning':
+    case 'unstable_elidedRecover': // enableFlightHtmlFirst: never a DOM attribute
     case 'defaultValue': // Reserved
     case 'defaultChecked':
     case 'innerHTML':
@@ -1066,6 +1067,7 @@ function setPropOnCustomElement(
     }
     case 'suppressContentEditableWarning':
     case 'suppressHydrationWarning':
+    case 'unstable_elidedRecover': // enableFlightHtmlFirst: never a DOM attribute
     case 'innerHTML':
     case 'ref': {
       // Noop

@@ -26,8 +26,9 @@ component keeps its host skeleton and the client component keeps its props; only
 host siblings are elided.
 
 Initial-load only: elision happens only when the framework passes
-`onElidedRow`/`onElidedValue`. Navigation/refetch responses are ordinary full Flight, and
-an elided region **remounts** (fresh DOM from the full payload) on the first client navigation.
+`onElidedRow`/`onElidedValue`. Navigation/refetch responses are ordinary full Flight.
+Elided stubs are same-tag hosts, so navigation **adopts** the existing DOM (react-dom
+hydrates children into the static island instead of remounting) when the tag matches.
 
 ## Results (real Chromium, 1000-row page: inline CSS 244KB + JSON-LD 143KB + static chrome + 1000 table rows, every 100th row an interactive Counter)
 See [BENCH-RESULTS-server-only.md](./BENCH-RESULTS-server-only.md) for the full tables, before/after against the

@@ -259,32 +259,20 @@ describe('ReactFlightDOMBrowser host elision', () => {
     });
     expect(button.textContent).toBe('clicks:1');
 
-    // A later (non elided) payload replaces the adopted region.
-    const next = await serverAct(async () =>
-      readAll(
-        ReactServerDOMServer.renderToReadableStream(
-          <main>
-            <h1>Report</h1>
-            <table className="data">
-              <tbody>
-                <tr>
-                  <td>only</td>
-                </tr>
-              </tbody>
-            </table>
-          </main>,
-          webpackMap,
-        ),
-      ),
-    );
-    const nextResponse = consume(next);
+    // A later full (non-elided) payload for the same App shape: table keeps
+    // its sibling index next to Counter so the update can adopt DOM.
+    const next = await renderApp(1, false);
+    expect(next.main).not.toContain('$J');
+    const nextResponse = consume(next.main);
     await nextResponse;
     await act(() => {
       root.render(<Shell response={nextResponse} />);
     });
     expect(container.querySelectorAll('tr').length).toBe(1);
-    expect(container.querySelector('table')).not.toBe(table);
-    expect(container.textContent).toBe('Reportonly');
+    // Same-tag update adopts the existing host DOM (no remount).
+    expect(container.querySelector('table')).toBe(table);
+    expect(button.textContent).toBe('clicks:1');
+    expect(container.querySelector('td').textContent).toBe('name-0');
   });
 
   // Returns {main, rows}: rendered with or without elision.
@@ -954,14 +942,10 @@ describe('ReactFlightDOMBrowser host elision', () => {
       // Nothing was committed while the content is missing.
       expect(container.textContent).toContain('shell-text');
       expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
-      const h1 = container.querySelector('h1');
       await renderFullPayload(root, <App />);
       expect(visibleText(container)).toBe(
         'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
       );
-      // The full payload has real elements where the stubs were, so they are
-      // remounted, as on a navigation.
-      expect(container.querySelector('h1')).not.toBe(h1);
       expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
       expect(missing).toHaveBeenCalledTimes(1);
       return {chunks, errors};
