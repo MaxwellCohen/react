@@ -63,6 +63,13 @@ import {
   pushEndActivityBoundary,
   writeStartCompletedSuspenseBoundary,
   writeStartPendingSuspenseBoundary,
+  supportsDeclarativePatching,
+  writeStartPendingDeclarativeBoundary,
+  writeEndPendingDeclarativeBoundary,
+  writeStartDeclarativePatch,
+  writeEndDeclarativePatch,
+  writeDeclarativeClientRenderedBoundary,
+  writeDeclarativePatchScript,
   writeStartClientRenderedSuspenseBoundary,
   writeEndCompletedSuspenseBoundary,
   writeEndPendingSuspenseBoundary,
@@ -187,6 +194,7 @@ import {
   enableViewTransition,
   enableViewTransitionParentEnterExit,
   enableFizzBlockingRender,
+  enableFizzDeclarativePatching,
   enableCPUSuspense,
 } from 'shared/ReactFeatureFlags';
 
@@ -266,6 +274,7 @@ type SuspenseBoundary = {
   completedSegments: Array<Segment>, // completed but not yet flushed segments.
   byteSize: number, // used to determine whether to inline children boundaries.
   defer: boolean, // never inline deferred boundaries
+  declarative: boolean, // flushed as a <?start> range, completes with <template for>
   fallbackAbortableTasks: Set<Task>, // used to cancel task on the fallback if the boundary completes or gets canceled.
   contentState: HoistableState,
   fallbackState: HoistableState,
@@ -384,6 +393,7 @@ const RENDER_ENDED = 'The render ended.';
 export opaque type Request = {
   destination: null | Destination,
   flushScheduled: boolean,
+  declarativePatchedIds: Array<number>, // patches written but not yet followed by their $RP script
   +resumableState: ResumableState,
   +renderState: RenderState,
   +rootFormatContext: FormatContext,
@@ -558,6 +568,7 @@ function RequestInstance(
   const abortSet: Set<Task> = new Set();
   this.destination = null;
   this.flushScheduled = false;
+  this.declarativePatchedIds = [];
   this.resumableState = resumableState;
   this.renderState = renderState;
   this.rootFormatContext = rootFormatContext;
@@ -896,6 +907,7 @@ function createSuspenseBoundary(
     completedSegments: [],
     byteSize: 0,
     defer: defer,
+    declarative: false,
     fallbackAbortableTasks,
     errorDigest: null,
     contentState: createHoistableState(),
@@ -2035,8 +2047,17 @@ function tryToResolveTogetherRow(
   let allCompleteAndInlinable = true;
   for (let i = 0; i < boundaries.length; i++) {
     const rowBoundary = boundaries[i];
+    if (rowBoundary.pendingTasks !== 1) {
+      allCompleteAndInlinable = false;
+      break;
+    }
+    if (enableFizzDeclarativePatching && rowBoundary.declarative) {
+      // A declarative boundary whose fallback already flushed has no partial flush to
+      // wait for: its content is held until it completes, and completing the whole row
+      // here queues every patch in the same tick so they flush as one group.
+      continue;
+    }
     if (
-      rowBoundary.pendingTasks !== 1 ||
       rowBoundary.parentFlushed ||
       isEligibleForOutlining(request, rowBoundary)
     ) {
@@ -5986,6 +6007,36 @@ function flushSubtree(
 // flushing root or completed boundary.
 let flushedByteSize = 0;
 
+function writeStartPendingBoundary(
+  request: Request,
+  destination: Destination,
+  boundary: SuspenseBoundary,
+  fallbackSegment: Segment,
+): boolean {
+  const declarative =
+    enableFizzDeclarativePatching &&
+    supportsDeclarativePatching(
+      request.resumableState,
+      request.renderState,
+      fallbackSegment.parentFormatContext,
+    );
+  boundary.declarative = declarative;
+  const id = boundary.rootSegmentID;
+  return declarative
+    ? writeStartPendingDeclarativeBoundary(destination, request.renderState, id)
+    : writeStartPendingSuspenseBoundary(destination, request.renderState, id);
+}
+
+function writeEndPendingBoundary(
+  request: Request,
+  destination: Destination,
+  boundary: SuspenseBoundary,
+): boolean {
+  return enableFizzDeclarativePatching && boundary.declarative
+    ? writeEndPendingDeclarativeBoundary(destination)
+    : writeEndPendingSuspenseBoundary(destination, request.renderState);
+}
+
 function flushSegment(
   request: Request,
   destination: Destination,
@@ -6058,9 +6109,7 @@ function flushSegment(
     }
 
     // This boundary is still loading. Emit a pending suspense boundary wrapper.
-
-    const id = boundary.rootSegmentID;
-    writeStartPendingSuspenseBoundary(destination, request.renderState, id);
+    writeStartPendingBoundary(request, destination, boundary, segment);
 
     if (hoistableState) {
       hoistHoistables(hoistableState, boundary.fallbackState);
@@ -6068,7 +6117,7 @@ function flushSegment(
     // Flush the fallback.
     flushSubtree(request, destination, segment, hoistableState);
 
-    return writeEndPendingSuspenseBoundary(destination, request.renderState);
+    return writeEndPendingBoundary(request, destination, boundary);
   } else if (
     // We don't outline when we're emitting partially completed boundaries optimistically
     // because it doesn't make sense to outline something if its parent is going to be
@@ -6092,11 +6141,7 @@ function flushSegment(
 
     request.completedBoundaries.push(boundary);
     // Emit a pending rendered suspense boundary wrapper.
-    writeStartPendingSuspenseBoundary(
-      destination,
-      request.renderState,
-      boundary.rootSegmentID,
-    );
+    writeStartPendingBoundary(request, destination, boundary, segment);
 
     // While we are going to flush the fallback we are going to follow it up with
     // the completed boundary immediately so we make the choice to omit fallback
@@ -6106,7 +6151,7 @@ function flushSegment(
     // Flush the fallback.
     flushSubtree(request, destination, segment, hoistableState);
 
-    return writeEndPendingSuspenseBoundary(destination, request.renderState);
+    return writeEndPendingBoundary(request, destination, boundary);
   } else {
     // We're inlining this boundary so its bytes get counted to the current running count.
     flushedByteSize += boundary.byteSize;
@@ -6171,12 +6216,62 @@ function flushClientRenderedBoundary(
   }
 }
 
+// The script for a group of patches goes right after the group, so browsers that cannot
+// apply <template for> themselves apply all of it in one task, parents before children.
+function flushDeclarativePatchScript(
+  request: Request,
+  destination: Destination,
+): void {
+  const ids = request.declarativePatchedIds;
+  if (ids.length > 0) {
+    writeDeclarativePatchScript(
+      destination,
+      request.resumableState,
+      request.renderState,
+      ids,
+    );
+    ids.length = 0;
+  }
+}
+
+function flushDeclarativeClientRenderedBoundary(
+  request: Request,
+  destination: Destination,
+  boundary: SuspenseBoundary,
+): boolean {
+  return writeDeclarativeClientRenderedBoundary(
+    destination,
+    request.renderState,
+    boundary.rootSegmentID,
+    boundary.errorDigest,
+    __DEV__ ? boundary.errorMessage : null,
+    __DEV__ ? boundary.errorStack : null,
+    __DEV__ ? boundary.errorComponentStack : null,
+  );
+}
+
 function flushSegmentContainer(
   request: Request,
   destination: Destination,
   segment: Segment,
   hoistableState: HoistableState,
+  boundary: null | SuspenseBoundary,
 ): boolean {
+  if (
+    enableFizzDeclarativePatching &&
+    boundary !== null &&
+    boundary.declarative
+  ) {
+    request.declarativePatchedIds.push(segment.id);
+    writeStartDeclarativePatch(
+      destination,
+      request.renderState,
+      segment.id,
+      hoistableState,
+    );
+    flushSegment(request, destination, segment, hoistableState);
+    return writeEndDeclarativePatch(destination, request.renderState);
+  }
   writeStartSegment(
     destination,
     request.renderState,
@@ -6210,6 +6305,11 @@ function flushCompletedBoundary(
     }
   }
 
+  if (enableFizzDeclarativePatching && boundary.declarative) {
+    // Styles, stylesheets and the bootstrap flush are written with the patch itself.
+    return true;
+  }
+
   writeHoistablesForBoundary(
     destination,
     boundary.contentState,
@@ -6229,6 +6329,11 @@ function flushPartialBoundary(
   destination: Destination,
   boundary: SuspenseBoundary,
 ): boolean {
+  if (enableFizzDeclarativePatching && boundary.declarative) {
+    // A <template for> patch is applied the moment it is parsed, so a declarative
+    // boundary is never revealed in pieces. It flushes whole when it completes.
+    return true;
+  }
   flushedByteSize = boundary.byteSize; // Start counting bytes
   const completedSegments = boundary.completedSegments;
   let i = 0;
@@ -6292,13 +6397,25 @@ function flushPartiallyCompletedSegment(
       );
     }
 
-    return flushSegmentContainer(request, destination, segment, hoistableState);
+    return flushSegmentContainer(
+      request,
+      destination,
+      segment,
+      hoistableState,
+      boundary,
+    );
   } else if (segmentID === boundary.rootSegmentID) {
     // When we emit postponed boundaries, we might have assigned the ID already
     // but it's still the root segment so we can't inject it into the parent yet.
-    return flushSegmentContainer(request, destination, segment, hoistableState);
+    return flushSegmentContainer(
+      request,
+      destination,
+      segment,
+      hoistableState,
+      boundary,
+    );
   } else {
-    flushSegmentContainer(request, destination, segment, hoistableState);
+    flushSegmentContainer(request, destination, segment, hoistableState, null);
     return writeCompletedSegmentInstruction(
       destination,
       request.resumableState,
@@ -6395,7 +6512,15 @@ function flushCompletedQueues(
     const clientRenderedBoundaries = request.clientRenderedBoundaries;
     for (i = 0; i < clientRenderedBoundaries.length; i++) {
       const boundary = clientRenderedBoundaries[i];
-      if (!flushClientRenderedBoundary(request, destination, boundary)) {
+      const flushed =
+        enableFizzDeclarativePatching && boundary.declarative
+          ? flushDeclarativeClientRenderedBoundary(
+              request,
+              destination,
+              boundary,
+            )
+          : flushClientRenderedBoundary(request, destination, boundary);
+      if (!flushed) {
         request.destination = null;
         i++;
         clientRenderedBoundaries.splice(0, i);
@@ -6418,6 +6543,9 @@ function flushCompletedQueues(
       }
     }
     completedBoundaries.splice(0, i);
+    if (enableFizzDeclarativePatching) {
+      flushDeclarativePatchScript(request, destination);
+    }
 
     // Allow anything written so far to flush to the underlying sink before
     // we continue with lower priorities.
@@ -6459,6 +6587,9 @@ function flushCompletedQueues(
     largeBoundaries.splice(0, i);
   } finally {
     flushingPartialBoundaries = false;
+    if (enableFizzDeclarativePatching) {
+      flushDeclarativePatchScript(request, destination);
+    }
     const postponedState = request.postponedState;
     if (postponedState !== null) {
       // The shell flush above may have outlined completed boundaries, advancing

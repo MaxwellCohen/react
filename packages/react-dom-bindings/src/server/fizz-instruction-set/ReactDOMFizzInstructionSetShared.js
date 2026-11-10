@@ -663,3 +663,109 @@ export function listenToFormSubmissionsForReplaying() {
     );
   });
 }
+
+// Declarative patching ($RP). Called as $RP("B:0","B:1") by a script that follows a group
+// of <template for="B:n"> patches. Finds each boundary by its <!--B:n--> anchor (which
+// sits right before the boundary's <!--$?--> comment) and does whatever the browser did
+// not do itself:
+// - Without native support the template is still there: replace the fallback range
+//   with its content, unless the client already owns that DOM.
+// - With native support the template is already consumed and there is nothing to do.
+// Boundaries inside SVG/MathML never use patches, since template content is HTML.
+// React's hydration notices the range markers disappearing (MutationObserver), so there
+// is nothing to notify here.
+export function patchDeclarativeBoundaries() {
+  const ids = {};
+  let remaining = 0;
+  for (let i = 0; i < arguments.length; i++) {
+    ids[arguments[i]] = 1;
+    remaining++;
+  }
+  // Templates the browser did not apply itself, by boundary id.
+  const templates = {};
+  const found = document.querySelectorAll('template[for]');
+  for (let i = 0; i < found.length; i++) {
+    templates[found[i].getAttribute('for')] = found[i];
+  }
+  if (!found.length) {
+    // The browser applied every patch itself.
+    return;
+  }
+  const comments = document.createNodeIterator(document, 128);
+  let anchor;
+  while (remaining && (anchor = comments.nextNode())) {
+    const id = anchor.data;
+    if (ids[id] === 1) {
+      ids[id] = 2;
+      remaining--;
+      patchBoundary(anchor, templates[id]);
+    }
+  }
+}
+
+function patchBoundary(anchor, template) {
+  const start = anchor.nextSibling;
+  if (!start || start.nodeType !== COMMENT_NODE) {
+    return;
+  }
+  if (template) {
+    // Only a boundary that is still pending, and whose range marker carries this
+    // anchor's name, may be replaced. An orphaned anchor (its boundary was removed)
+    // points at something else, so the template is dropped instead.
+    const marker = start.nextSibling;
+    if (
+      start.data !== SUSPENSE_PENDING_START_DATA ||
+      !marker ||
+      marker.nodeType !== COMMENT_NODE ||
+      marker.data !== '?start name="' + anchor.data + '"'
+    ) {
+      template.parentNode.removeChild(template);
+      return;
+    }
+  }
+  // The boundary ends at the matching <!--/$-->. Nested boundaries are counted.
+  let depth = 1;
+  let end = start.nextSibling;
+  for (; end; end = end.nextSibling) {
+    if (end.nodeType === COMMENT_NODE) {
+      const data = end.data;
+      if (data === SUSPENSE_END_DATA) {
+        if (--depth === 0) {
+          break;
+        }
+      } else if (
+        data === SUSPENSE_START_DATA ||
+        data === SUSPENSE_PENDING_START_DATA ||
+        data === SUSPENSE_FALLBACK_START_DATA ||
+        data === SUSPENSE_QUEUED_START_DATA
+      ) {
+        depth++;
+      }
+    }
+  }
+  if (!end) {
+    return;
+  }
+  let owned = false;
+  if (template) {
+    // No native support. DOM React already created for this range (a client render got
+    // there first) must survive, so then the template is only dropped.
+    for (let node = start.nextSibling; node !== end && !owned; ) {
+      const keys = Object.keys(node);
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0) {
+          owned = true;
+        }
+      }
+      node = node.nextSibling;
+    }
+    if (!owned) {
+      let node;
+      while ((node = start.nextSibling) !== end) {
+        node.parentNode.removeChild(node);
+      }
+      start.after(template.content);
+    }
+    template.parentNode.removeChild(template);
+  }
+}

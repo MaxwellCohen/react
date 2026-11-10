@@ -79,6 +79,18 @@ export const writeEndCompletedSuspenseBoundary =
   $$$config.writeEndCompletedSuspenseBoundary;
 export const writeEndPendingSuspenseBoundary =
   $$$config.writeEndPendingSuspenseBoundary;
+export const supportsDeclarativePatching =
+  $$$config.supportsDeclarativePatching;
+export const writeStartPendingDeclarativeBoundary =
+  $$$config.writeStartPendingDeclarativeBoundary;
+export const writeEndPendingDeclarativeBoundary =
+  $$$config.writeEndPendingDeclarativeBoundary;
+export const writeStartDeclarativePatch = $$$config.writeStartDeclarativePatch;
+export const writeEndDeclarativePatch = $$$config.writeEndDeclarativePatch;
+export const writeDeclarativeClientRenderedBoundary =
+  $$$config.writeDeclarativeClientRenderedBoundary;
+export const writeDeclarativePatchScript =
+  $$$config.writeDeclarativePatchScript;
 export const writeEndClientRenderedSuspenseBoundary =
   $$$config.writeEndClientRenderedSuspenseBoundary;
 export const writeStartSegment = $$$config.writeStartSegment;
