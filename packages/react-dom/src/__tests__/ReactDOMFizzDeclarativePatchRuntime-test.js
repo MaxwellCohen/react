@@ -26,12 +26,20 @@ describe('$RP runtime (polyfill path)', () => {
       require('react-dom-bindings/src/server/fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings').patchDeclarativeBoundaries;
     const jsdom = new JSDOM(
       '<!DOCTYPE html><html><head></head><body></body></html>',
-      {runScripts: 'outside-only'},
+      {runScripts: 'outside-only', pretendToBeVisual: true},
     );
     window = jsdom.window;
     document = window.document;
     window.eval(patchDeclarativeBoundaries);
   });
+
+  // $RP batches behind a throttle. A shell time far in the past makes it flush on the
+  // next timer.
+  async function patch(...ids) {
+    window.$RT = -1e6;
+    window.$RP(...ids);
+    jest.runOnlyPendingTimers();
+  }
 
   function pending(name, fallback) {
     return (
@@ -55,7 +63,7 @@ describe('$RP runtime (polyfill path)', () => {
     return document.body.innerHTML.replace(/<!--[^>]*-->/g, '');
   }
 
-  it('drops a template whose anchor was orphaned instead of replacing other content', () => {
+  it('drops a template whose anchor was orphaned instead of replacing other content', async () => {
     // B:a's boundary was removed by React but its anchor stayed. The next sibling is
     // now the following boundary's anchor, not a pending start comment.
     setBody(
@@ -65,37 +73,37 @@ describe('$RP runtime (polyfill path)', () => {
         '<template for="B:a">evil</template>' +
         '<template for="B:b">good</template>',
     );
-    window.$RP('B:a', 'B:b');
+    await patch('B:a', 'B:b');
     expect(visible()).toBe('good<p>after</p>');
     expect(document.querySelectorAll('template').length).toBe(0);
   });
 
-  it('drops a template when the range marker names another boundary', () => {
+  it('drops a template when the range marker names another boundary', async () => {
     setBody(
       '<!--B:a--><!--$?--><?start name="B:other">fb<?end><!--/$-->' +
         '<template for="B:a">evil</template>',
     );
-    window.$RP('B:a');
+    await patch('B:a');
     expect(visible()).toBe('fb');
     expect(document.querySelectorAll('template').length).toBe(0);
   });
 
-  it('drops a template for a boundary that is no longer pending', () => {
+  it('drops a template for a boundary that is no longer pending', async () => {
     setBody(
       '<!--B:a--><!--$--><?start name="B:a">done<?end><!--/$-->' +
         '<template for="B:a">evil</template>',
     );
-    window.$RP('B:a');
+    await patch('B:a');
     expect(visible()).toBe('done');
   });
 
-  it('replaces the fallback range with the template content', () => {
+  it('replaces the fallback range with the template content', async () => {
     setBody(
       '<div id="a">' +
         pending('B:a', 'fb-a') +
         '</div><p>x</p><template for="B:a"><span>done</span></template>',
     );
-    window.$RP('B:a');
+    await patch('B:a');
     expect(visible()).toBe('<div id="a"><span>done</span></div><p>x</p>');
     // The range markers are gone with the fallback; the boundary comments stay.
     expect(document.body.innerHTML).not.toContain('?start');
@@ -104,7 +112,7 @@ describe('$RP runtime (polyfill path)', () => {
     expect(document.body.innerHTML).toContain('<!--/$-->');
   });
 
-  it('patches a group of boundaries, parents before children', () => {
+  it('patches a group of boundaries, parents before children', async () => {
     setBody(
       pending('B:p', 'fb-p') +
         '<template for="B:p">[' +
@@ -112,59 +120,59 @@ describe('$RP runtime (polyfill path)', () => {
         ']</template>' +
         '<template for="B:c">child</template>',
     );
-    window.$RP('B:p', 'B:c');
+    await patch('B:p', 'B:c');
     expect(visible()).toBe('[child]');
     expect(document.querySelectorAll('template').length).toBe(0);
   });
 
-  it('does not touch a range React already created DOM for', () => {
+  it('does not touch a range React already created DOM for', async () => {
     setBody(
       pending('B:a', '<i id="client">client</i>') +
         '<template for="B:a">server</template>',
     );
     // React hydrated or client rendered into the range before the template arrived.
     document.getElementById('client').__reactFiber$test = {};
-    window.$RP('B:a');
+    await patch('B:a');
     expect(visible()).toBe('<i id="client">client</i>');
     expect(document.querySelectorAll('template').length).toBe(0);
   });
 
-  it('is a no-op when the browser already applied the patch', () => {
+  it('is a no-op when the browser already applied the patch', async () => {
     // Native support consumes the template and the markers.
     setBody('<!--B:a--><!--$?-->done<!--/$-->');
     const before = document.body.innerHTML;
-    window.$RP('B:a');
+    await patch('B:a');
     expect(document.body.innerHTML).toBe(before);
   });
 
-  it('reparses patched children into the SVG namespace', () => {
+  it('reparses patched children into the SVG namespace', async () => {
     setBody(
       '<svg>' +
         pending('B:a', '<circle r="1"></circle>') +
         '</svg><template for="B:a"><circle r="2"></circle></template>',
     );
     const svg = document.querySelector('svg');
-    window.$RP('B:a');
+    await patch('B:a');
     expect(document.querySelector('svg')).toBe(svg);
     expect(visible()).toBe('<svg><circle r="2"></circle></svg>');
     const circle = document.querySelector('circle');
     expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
   });
 
-  it('restores <image> that the HTML parser turned into <img> inside SVG', () => {
+  it('restores <image> that the HTML parser turned into <img> inside SVG', async () => {
     setBody(
       '<svg>' +
         pending('B:a', '<circle r="1"></circle>') +
         '</svg><template for="B:a"><g><img href="a.png"><foreignObject><img src="b.png"></foreignObject></g></template>',
     );
-    window.$RP('B:a');
+    await patch('B:a');
     const image = document.querySelector('svg image');
     expect(image.namespaceURI).toBe('http://www.w3.org/2000/svg');
     expect(image.getAttribute('href')).toBe('a.png');
     expect(document.querySelectorAll('img').length).toBe(1);
   });
 
-  it('hoists late styles to their precedence position in the head', () => {
+  it('hoists late styles to their precedence position in the head', async () => {
     document.head.innerHTML =
       '<style data-precedence="a" data-href="x">x{}</style>' +
       '<style data-precedence="b" data-href="y">y{}</style>';
@@ -172,31 +180,22 @@ describe('$RP runtime (polyfill path)', () => {
       pending('B:a', 'fallback') +
         '<template for="B:a"><style data-precedence="a" data-href="z">z{}</style><p>hi</p></template>',
     );
-    window.$RP('B:a');
+    await patch('B:a');
     expect(
       Array.from(document.head.children).map(n => n.getAttribute('data-href')),
     ).toEqual(['x', 'z', 'y']);
     expect(visible()).toBe('<p>hi</p>');
   });
 
-  it('applies a <template data-for> patch that the browser ignores', () => {
-    setBody(
-      pending('B:a', 'fallback') +
-        '<template data-for="B:a"><p>hi</p></template>',
-    );
-    window.$RP('B:a');
-    expect(visible()).toBe('<p>hi</p>');
-  });
-
-  it('reparses after native DPU already applied into SVG', () => {
+  it('reparses after native DPU already applied into SVG', async () => {
     // Native support consumed the template; $RP still fixes the namespace.
     setBody('<svg><!--B:a--><!--$?--><circle r="2"></circle><!--/$--></svg>');
-    window.$RP('B:a');
+    await patch('B:a');
     const circle = document.querySelector('circle');
     expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
   });
 
-  it('patches synchronously by default even when startViewTransition exists', () => {
+  it('patches synchronously by default even when startViewTransition exists', async () => {
     let calls = 0;
     document.startViewTransition = cb => {
       calls++;
@@ -204,12 +203,12 @@ describe('$RP runtime (polyfill path)', () => {
       return {finished: Promise.resolve()};
     };
     setBody(pending('B:a', 'fb') + '<template for="B:a">done</template>');
-    window.$RP('B:a');
+    await patch('B:a');
     expect(calls).toBe(0);
     expect(visible()).toBe('done');
   });
 
-  it('wraps a whole group in one startViewTransition when flagged', () => {
+  it('wraps a whole group in one startViewTransition when flagged', async () => {
     let calls = 0;
     document.startViewTransition = cb => {
       calls++;
@@ -221,7 +220,7 @@ describe('$RP runtime (polyfill path)', () => {
         pending('B:b', 'fb') +
         '<template for="B:a">A</template><template for="B:b">B</template>',
     );
-    window.$RP(1, 'B:a', 'B:b');
+    await patch(1, 'B:a', 'B:b');
     expect(calls).toBe(1);
     expect(visible()).toBe('AB');
     expect(document.querySelectorAll('template').length).toBe(0);
@@ -247,28 +246,29 @@ describe('$RP runtime (polyfill path)', () => {
       );
     }
 
-    it('patches a parent and child group once the callback runs', () => {
+    it('patches a parent and child group once the callback runs', async () => {
       fixture();
-      window.$RP(1, 'B:p', 'B:c');
+      await patch(1, 'B:p', 'B:c');
       expect(queue.length).toBe(1);
       queue.shift()();
       expect(visible()).toBe('[child]');
       expect(document.querySelectorAll('template').length).toBe(0);
     });
 
-    it('patches consecutive groups correctly when callbacks run in order', () => {
+    it('batches consecutive groups into one transition', async () => {
       fixture();
+      window.$RT = -1e6;
       window.$RP(1, 'B:p');
       window.$RP(1, 'B:c');
-      expect(queue.length).toBe(2);
-      queue.shift()();
+      jest.runOnlyPendingTimers();
+      expect(queue.length).toBe(1);
       queue.shift()();
       expect(visible()).toBe('[child]');
       expect(document.querySelectorAll('template').length).toBe(0);
     });
   });
 
-  it('does not reparse nodes React already owns on the native path', () => {
+  it('does not reparse nodes React already owns on the native path', async () => {
     setBody(
       '<svg><!--B:a--><!--$?--><circle id="c1" r="2"></circle><circle id="c2" r="3"></circle><!--/$--></svg>',
     );
@@ -276,8 +276,33 @@ describe('$RP runtime (polyfill path)', () => {
     const c2 = document.getElementById('c2');
     c1.__reactFiber$abc = {};
     c2.__reactFiber$abc = {};
-    window.$RP('B:a');
+    await patch('B:a');
     expect(document.getElementById('c1')).toBe(c1);
     expect(document.getElementById('c2')).toBe(c2);
+  });
+
+  it('holds patches until the throttle expires and applies them together', async () => {
+    setBody(
+      pending('B:a', 'fa') +
+        pending('B:b', 'fb') +
+        '<template for="B:a">A</template><template for="B:b">B</template>',
+    );
+    window.$RT = window.performance.now();
+    window.$RP('B:a');
+    window.$RP('B:b');
+    jest.advanceTimersByTime(100);
+    expect(document.body.textContent).toBe('fafb');
+    jest.advanceTimersByTime(300);
+    expect(document.body.textContent).toBe('AB');
+  });
+
+  it('turns <?start> processing instructions into comments so the browser cannot patch them', () => {
+    const pi = document.createProcessingInstruction('start', 'name="B:a"');
+    document.body.appendChild(pi);
+    window.$RP();
+    expect(pi.parentNode).toBe(null);
+    const marker = document.body.firstChild;
+    expect(marker.nodeType).toBe(8);
+    expect(marker.data).toBe('?start name="B:a"');
   });
 });

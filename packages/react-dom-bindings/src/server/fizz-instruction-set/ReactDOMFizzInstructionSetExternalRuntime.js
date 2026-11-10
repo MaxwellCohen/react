@@ -7,6 +7,7 @@ import {
   completeBoundary,
   completeBoundaryWithStyles,
   completeSegment,
+  disarmDeclarativeBoundaries,
   listenToFormSubmissionsForReplaying,
   patchDeclarativeBoundaries,
   revealCompletedBoundaries,
@@ -25,7 +26,10 @@ window['$RV'] = revealCompletedBoundariesWithViewTransitions.bind(
 window['$RC'] = completeBoundary;
 window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
+window['$RPQ'] = [];
+window['$RPV'] = false;
 window['$RP'] = patchDeclarativeBoundaries;
+disarmDeclarativeBoundaries(document);
 
 listenToFormSubmissionsForReplaying();
 

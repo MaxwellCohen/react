@@ -4582,6 +4582,7 @@ function writeBootstrap(
   return true;
 }
 
+const armDeclarativePatchesCall = stringToPrecomputedChunk('$RP()');
 const shellTimeRuntimeScript = stringToPrecomputedChunk(markShellTime);
 
 function writeShellTimeInstruction(
@@ -4597,9 +4598,24 @@ function writeShellTimeInstruction(
     return true;
   }
   if (enableFizzDeclarativePatching && renderState.declarativePatching) {
-    // The reveal throttle lives in the $RC runtime which declarative patching
-    // doesn't emit. Boundaries that fall back to $RC just reveal on the next frame.
-    return true;
+    // $RP() with no arguments keeps browsers from patching natively (so that $RP can
+    // throttle the reveals) and tracks the paint time of the shell.
+    if ((resumableState.instructions & SentMarkShellTime) !== NothingSent) {
+      return true;
+    }
+    resumableState.instructions |= SentMarkShellTime;
+    writeChunk(destination, renderState.startInlineScript);
+    writeCompletedShellIdAttribute(destination, resumableState);
+    writeChunk(destination, endOfStartTag);
+    if (
+      (resumableState.instructions & SentPatchDeclarativeFunction) ===
+      NothingSent
+    ) {
+      resumableState.instructions |= SentPatchDeclarativeFunction;
+      writeChunk(destination, patchDeclarativeFunction);
+    }
+    writeChunk(destination, armDeclarativePatchesCall);
+    return writeChunkAndReturn(destination, endInlineScript);
   }
   if ((resumableState.instructions & SentMarkShellTime) !== NothingSent) {
     // We already sent this instruction.
@@ -4779,10 +4795,6 @@ export function writeEndPendingDeclarativeBoundary(
 }
 
 const startDeclarativePatch1 = stringToPrecomputedChunk('<template for="');
-// Not applied by the browser, only by $RP, so that it can run inside a view transition.
-const startScriptOnlyDeclarativePatch1 = stringToPrecomputedChunk(
-  '<template data-for="',
-);
 const startDeclarativePatch2 = stringToPrecomputedChunk('">');
 const endDeclarativePatch = stringToPrecomputedChunk('</template>');
 const declarativeStyleOpen1 = stringToPrecomputedChunk(' data-precedence="');
@@ -4791,7 +4803,6 @@ const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
 
 export function writeStartDeclarativePatch(
   destination: Destination,
-  resumableState: ResumableState,
   renderState: RenderState,
   id: number,
   hoistableState: HoistableState,
@@ -4821,14 +4832,7 @@ export function writeStartDeclarativePatch(
     resource.state = LATE;
   });
 
-  writeChunk(
-    destination,
-    enableViewTransition &&
-      (resumableState.instructions & NeedUpgradeToViewTransitions) !==
-        NothingSent
-      ? startScriptOnlyDeclarativePatch1
-      : startDeclarativePatch1,
-  );
+  writeChunk(destination, startDeclarativePatch1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
   writeChunk(destination, startDeclarativePatch2);

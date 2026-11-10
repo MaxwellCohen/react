@@ -6280,7 +6280,6 @@ function flushSegmentContainer(
     request.declarativePatchedIds.push(segment.id);
     writeStartDeclarativePatch(
       destination,
-      request.resumableState,
       request.renderState,
       segment.id,
       hoistableState,

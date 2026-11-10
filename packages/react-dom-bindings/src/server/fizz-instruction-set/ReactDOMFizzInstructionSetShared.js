@@ -666,52 +666,113 @@ export function listenToFormSubmissionsForReplaying() {
 
 const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
-// <template for> is applied by the browser itself. <template data-for> is the same patch
-// that browsers ignore, so only $RP applies it (inside a view transition).
-const PATCH_TEMPLATES = 'template[for],template[data-for]';
 
-// Declarative patching ($RP). Called as $RP("B:0","B:1") by a script that follows a group
-// of <template for="B:n"> patches. Finds each boundary by its <!--B:n--> anchor (which
-// sits right before the boundary's <!--$?--> comment) and does whatever the browser did
-// not do itself:
-// - Without native support the template is still there: replace the fallback range
-//   with its content, unless the client already owns that DOM.
-// - With native support the template is already consumed. Both cases then fix up
-//   boundaries inside SVG/MathML, which a patch cannot create in the right namespace.
-// A leading 1, $RP(1,"B:0"), means the page uses View Transitions. Then a group that
-// still has templates to apply is applied inside one startViewTransition. A patch the
-// browser applied natively cannot be put in a transition.
+// Declarative patching ($RP).
+//
+// $RP() with no arguments runs once after the shell. A browser with native support
+// applies a <template for="B:n"> while it parses it, and no script can hold that back,
+// so it first turns every <?start name="B:n"> marker (a processing instruction there)
+// into a comment with the same text. Without its marker the browser has nothing to
+// patch and leaves the template in the document. That is what makes batching possible
+// when scripts run; without scripts the browser still patches natively, unthrottled.
+// Browsers without native support already parse the marker as that comment.
+//
+// $RP("B:0","B:1") follows a group of <template for="B:n"> patches. It queues the ids and
+// applies everything queued after the same throttle as $RC (FALLBACK_THROTTLE_MS since
+// the last reveal). Each boundary is found by its <!--B:n--> anchor (which sits right
+// before the boundary's <!--$?--> comment) and its fallback range is replaced with the
+// template content, parents before children, unless the client already owns that DOM.
+// Boundaries inside SVG/MathML are then reparsed in the right namespace.
+// A leading 1, $RP(1,"B:0"), means the page uses View Transitions. Then the batch is
+// applied inside one startViewTransition.
 // React's hydration notices the range markers disappearing (MutationObserver), so there
 // is nothing to notify here.
+export function disarmDeclarativeBoundaries(root) {
+  const iterator = document.createNodeIterator(root, 64);
+  const markers = [];
+  let node;
+  while ((node = iterator.nextNode())) {
+    if (node['target'] === 'start') {
+      markers.push(node);
+    }
+  }
+  for (let i = 0; i < markers.length; i++) {
+    markers[i].parentNode.replaceChild(
+      document.createComment('?start ' + markers[i].data),
+      markers[i],
+    );
+  }
+}
+
 export function patchDeclarativeBoundaries() {
-  const args = arguments;
+  if (arguments.length === 0) {
+    disarmDeclarativeBoundaries(document);
+    // Track the paint time of the shell, like markShellTime does for $RC.
+    requestAnimationFrame(() => {
+      window['$RT'] = performance.now();
+    });
+    return;
+  }
+  const queue = window['$RPQ'];
+  const first = queue.length === 0;
+  for (let i = 0; i < arguments.length; i++) {
+    if (i === 0 && arguments[0] === 1) {
+      window['$RPV'] = true;
+    } else {
+      queue.push(arguments[i]);
+    }
+  }
+  if (!first) {
+    return;
+  }
+  // This is the first patch of the batch. Flush it after the throttle.
+  if (typeof window['$RT'] !== 'number') {
+    // We haven't had our rAF callback yet, so schedule everything for the first paint.
+    requestAnimationFrame(flushDeclarativePatches);
+  } else {
+    const currentTime = performance.now();
+    const msUntilTimeout =
+      currentTime < TARGET_VANITY_METRIC &&
+      currentTime > TARGET_VANITY_METRIC - FALLBACK_THROTTLE_MS
+        ? TARGET_VANITY_METRIC - currentTime
+        : window['$RT'] + FALLBACK_THROTTLE_MS - currentTime;
+    // Always use a timer, even for a low or negative delay, so that patches that are
+    // already queued make the batch.
+    setTimeout(flushDeclarativePatches, msUntilTimeout);
+  }
+}
+
+function flushDeclarativePatches() {
+  const ids = window['$RPQ'];
+  const viewTransitions = window['$RPV'];
+  window['$RPQ'] = [];
+  window['$RPV'] = false;
+  window['$RT'] = performance.now();
   if (
-    args[0] === 1 &&
-    document.querySelector(PATCH_TEMPLATES) &&
-    typeof document['startViewTransition'] === 'function'
+    viewTransitions &&
+    typeof document['startViewTransition'] === 'function' &&
+    document.querySelector('template[for]')
   ) {
     // The callback runs later. Everything, including looking up the templates, happens
-    // inside it so that groups are still applied in order, parents before children.
-    document['startViewTransition'](() => patchDeclarativeGroup(args));
+    // inside it so that patches are still applied in order, parents before children.
+    document['startViewTransition'](() => patchDeclarativeGroup(ids));
   } else {
-    patchDeclarativeGroup(args);
+    patchDeclarativeGroup(ids);
   }
 }
 
 function patchDeclarativeGroup(args) {
   const ids = {};
   let remaining = 0;
-  for (let i = args[0] === 1 ? 1 : 0; i < args.length; i++) {
+  for (let i = 0; i < args.length; i++) {
     ids[args[i]] = 1;
     remaining++;
   }
   // Templates the browser did not apply itself, by boundary id.
   const templates = {};
-  const found = document.querySelectorAll(PATCH_TEMPLATES);
+  const found = document.querySelectorAll('template[for]');
   for (let i = 0; i < found.length; i++) {
-    templates[
-      found[i].getAttribute('for') || found[i].getAttribute('data-for')
-    ] = found[i];
+    templates[found[i].getAttribute('for')] = found[i];
   }
   const comments = document.createNodeIterator(document, 128);
   let anchor;
@@ -786,6 +847,8 @@ function patchBoundary(anchor, template) {
       while ((node = start.nextSibling) !== end) {
         node.parentNode.removeChild(node);
       }
+      // Boundaries inside the content are not allowed to be patched by the browser either.
+      disarmDeclarativeBoundaries(template.content);
       start.after(template.content);
     }
     template.parentNode.removeChild(template);

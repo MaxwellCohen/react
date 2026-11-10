@@ -336,7 +336,8 @@ describe('ReactDOMFizzServer declarative patching batching', () => {
       '<template data-rcr id="E:B:0" data-dgst="digest-1"',
     );
     expect(r.text()).not.toContain('$RX');
-    expect(r.text()).not.toContain('<script');
+    // Only the shell's $RP() call (no arguments) is a script; no patch script.
+    expect(r.text()).not.toContain('$RP("');
     // The fallback range is untouched and a later completion still patches normally.
     expect(r.text()).toContain('<?start name="B:0"><i>loading</i><?end>');
     await r.resolve('a');

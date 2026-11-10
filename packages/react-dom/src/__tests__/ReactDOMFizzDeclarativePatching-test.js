@@ -284,7 +284,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
   });
 
   // @gate enableViewTransition
-  it('keeps boundaries inside a ViewTransition on script-only patches', async () => {
+  it('keeps boundaries inside a ViewTransition on <template for>', async () => {
     const ViewTransition = React.ViewTransition;
     const r = await render(
       <div>
@@ -299,10 +299,9 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['item-0']);
-    // Stay on declarative markers, but the browser must not apply the patch itself:
-    // the leading 1 asks $RP to wrap the group in a view transition.
-    expect(occurrences(out, '<template for=')).toBe(0);
-    expect(occurrences(out, '<template data-for="B:')).toBe(1);
+    // Stay on declarative markers; the leading 1 asks $RP to wrap the batch in a
+    // view transition.
+    expect(occurrences(out, '<template for=')).toBe(1);
     expect(occurrences(out, '<?start')).toBe(1);
     expect(out).toContain('$RP(1,"B:0")');
     expect(out).not.toContain('$RV=');
