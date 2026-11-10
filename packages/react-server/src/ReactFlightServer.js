@@ -3062,6 +3062,14 @@ function resolveModel(
     return rendered;
   }
 
+  return resolveModelChildren(request, task, rendered);
+}
+
+function resolveModelChildren(
+  request: Request,
+  task: Task,
+  rendered: any,
+): ReactJSONValue {
   if (isArray(rendered)) {
     if (
       enableFlightHtmlFirst &&
