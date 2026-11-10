@@ -4779,6 +4779,10 @@ export function writeEndPendingDeclarativeBoundary(
 }
 
 const startDeclarativePatch1 = stringToPrecomputedChunk('<template for="');
+// Not applied by the browser, only by $RP, so that it can run inside a view transition.
+const startScriptOnlyDeclarativePatch1 = stringToPrecomputedChunk(
+  '<template data-for="',
+);
 const startDeclarativePatch2 = stringToPrecomputedChunk('">');
 const endDeclarativePatch = stringToPrecomputedChunk('</template>');
 const declarativeStyleOpen1 = stringToPrecomputedChunk(' data-precedence="');
@@ -4787,6 +4791,7 @@ const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
 
 export function writeStartDeclarativePatch(
   destination: Destination,
+  resumableState: ResumableState,
   renderState: RenderState,
   id: number,
   hoistableState: HoistableState,
@@ -4816,7 +4821,14 @@ export function writeStartDeclarativePatch(
     resource.state = LATE;
   });
 
-  writeChunk(destination, startDeclarativePatch1);
+  writeChunk(
+    destination,
+    enableViewTransition &&
+      (resumableState.instructions & NeedUpgradeToViewTransitions) !==
+        NothingSent
+      ? startScriptOnlyDeclarativePatch1
+      : startDeclarativePatch1,
+  );
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
   writeChunk(destination, startDeclarativePatch2);
@@ -4935,7 +4947,7 @@ export function writeDeclarativeClientRenderedBoundary(
 
 const patchDeclarativeScriptCall = stringToPrecomputedChunk('$RP(');
 const patchDeclarativeScriptEnd = stringToPrecomputedChunk(')</script>');
-const patchDeclarativeFunction = stringToPrecomputedChunk(
+const patchDeclarativeFunction = stringToChunk(
   patchDeclarativeBoundariesFunction,
 );
 const patchDeclarativeSeparator = stringToPrecomputedChunk(',');

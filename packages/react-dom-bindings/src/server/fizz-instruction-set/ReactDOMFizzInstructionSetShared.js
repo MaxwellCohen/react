@@ -665,6 +665,10 @@ export function listenToFormSubmissionsForReplaying() {
 }
 
 const XHTML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+// <template for> is applied by the browser itself. <template data-for> is the same patch
+// that browsers ignore, so only $RP applies it (inside a view transition).
+const PATCH_TEMPLATES = 'template[for],template[data-for]';
 
 // Declarative patching ($RP). Called as $RP("B:0","B:1") by a script that follows a group
 // of <template for="B:n"> patches. Finds each boundary by its <!--B:n--> anchor (which
@@ -683,7 +687,7 @@ export function patchDeclarativeBoundaries() {
   const args = arguments;
   if (
     args[0] === 1 &&
-    document.querySelector('template[for]') &&
+    document.querySelector(PATCH_TEMPLATES) &&
     typeof document['startViewTransition'] === 'function'
   ) {
     // The callback runs later. Everything, including looking up the templates, happens
@@ -703,9 +707,11 @@ function patchDeclarativeGroup(args) {
   }
   // Templates the browser did not apply itself, by boundary id.
   const templates = {};
-  const found = document.querySelectorAll('template[for]');
+  const found = document.querySelectorAll(PATCH_TEMPLATES);
   for (let i = 0; i < found.length; i++) {
-    templates[found[i].getAttribute('for')] = found[i];
+    templates[
+      found[i].getAttribute('for') || found[i].getAttribute('data-for')
+    ] = found[i];
   }
   const comments = document.createNodeIterator(document, 128);
   let anchor;
@@ -798,7 +804,81 @@ function patchBoundary(anchor, template) {
   ) {
     for (let node = start.nextSibling, next; node !== end; node = next) {
       next = node.nextSibling;
+      if (parent.namespaceURI === SVG_NAMESPACE) {
+        node = restoreSvgImages(node);
+      }
       node.outerHTML = node.outerHTML;
+    }
+  }
+  if (!owned) {
+    hoistPatchStyles(start, end);
+  }
+}
+
+// The HTML parser turns <image> into <img> (an SVG element that is not allowed to be
+// reparsed, since <img> breaks out of SVG). Turn those back before the reparse, except
+// in <foreignObject> where <img> is real HTML.
+function restoreSvgImages(node) {
+  if (node.nodeType !== ELEMENT_NODE) {
+    return node;
+  }
+  const images = node.querySelectorAll('img');
+  const list = node.localName === 'img' ? [node] : [];
+  for (let i = 0; i < images.length; i++) {
+    list.push(images[i]);
+  }
+  for (let i = 0; i < list.length; i++) {
+    const img = list[i];
+    let ancestor = img.parentNode;
+    while (ancestor && ancestor !== node.parentNode) {
+      if (ancestor.localName === 'foreignobject') {
+        break;
+      }
+      ancestor = ancestor.parentNode;
+    }
+    if (ancestor && ancestor !== node.parentNode) {
+      continue;
+    }
+    const image = document.createElementNS(SVG_NAMESPACE, 'image');
+    for (let j = 0; j < img.attributes.length; j++) {
+      image.setAttribute(img.attributes[j].name, img.attributes[j].value);
+    }
+    img.parentNode.replaceChild(image, img);
+    if (img === node) {
+      node = image;
+    }
+  }
+  return node;
+}
+
+// Late <style data-precedence> rules arrive inside the patch. Move them to where a
+// hoisted style of that precedence belongs: after the last resource with the same
+// precedence, or after the last resource of all, like $RR does for a new precedence.
+function hoistPatchStyles(start, end) {
+  for (let node = start.nextSibling, next; node !== end; node = next) {
+    next = node.nextSibling;
+    if (
+      node.nodeType === ELEMENT_NODE &&
+      node.localName === 'style' &&
+      node.hasAttribute('data-precedence')
+    ) {
+      const precedence = node.getAttribute('data-precedence');
+      const resources = document.head.querySelectorAll(
+        'link[data-precedence],style[data-precedence]',
+      );
+      let prior, last;
+      for (let i = 0; i < resources.length; i++) {
+        last = resources[i];
+        if (last.getAttribute('data-precedence') === precedence) {
+          prior = last;
+        }
+      }
+      prior = prior || last;
+      if (prior) {
+        prior.parentNode.insertBefore(node, prior.nextSibling);
+      } else {
+        document.head.insertBefore(node, document.head.firstChild);
+      }
     }
   }
 }

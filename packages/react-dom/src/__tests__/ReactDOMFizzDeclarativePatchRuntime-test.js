@@ -151,6 +151,43 @@ describe('$RP runtime (polyfill path)', () => {
     expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
   });
 
+  it('restores <image> that the HTML parser turned into <img> inside SVG', () => {
+    setBody(
+      '<svg>' +
+        pending('B:a', '<circle r="1"></circle>') +
+        '</svg><template for="B:a"><g><img href="a.png"><foreignObject><img src="b.png"></foreignObject></g></template>',
+    );
+    window.$RP('B:a');
+    const image = document.querySelector('svg image');
+    expect(image.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    expect(image.getAttribute('href')).toBe('a.png');
+    expect(document.querySelectorAll('img').length).toBe(1);
+  });
+
+  it('hoists late styles to their precedence position in the head', () => {
+    document.head.innerHTML =
+      '<style data-precedence="a" data-href="x">x{}</style>' +
+      '<style data-precedence="b" data-href="y">y{}</style>';
+    setBody(
+      pending('B:a', 'fallback') +
+        '<template for="B:a"><style data-precedence="a" data-href="z">z{}</style><p>hi</p></template>',
+    );
+    window.$RP('B:a');
+    expect(
+      Array.from(document.head.children).map(n => n.getAttribute('data-href')),
+    ).toEqual(['x', 'z', 'y']);
+    expect(visible()).toBe('<p>hi</p>');
+  });
+
+  it('applies a <template data-for> patch that the browser ignores', () => {
+    setBody(
+      pending('B:a', 'fallback') +
+        '<template data-for="B:a"><p>hi</p></template>',
+    );
+    window.$RP('B:a');
+    expect(visible()).toBe('<p>hi</p>');
+  });
+
   it('reparses after native DPU already applied into SVG', () => {
     // Native support consumed the template; $RP still fixes the namespace.
     setBody('<svg><!--B:a--><!--$?--><circle r="2"></circle><!--/$--></svg>');
