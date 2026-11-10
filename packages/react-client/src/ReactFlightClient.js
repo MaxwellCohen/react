@@ -2754,10 +2754,16 @@ function getTrue(): boolean {
   return true;
 }
 
-function createElidedHostElement(tag: string): React$Element<any> {
-  const element: any = React.createElement(ElidedHost, {tag});
+function createElidedHostElement(
+  tag: string,
+  key: null | string,
+): React$Element<any> {
+  const element: any = React.createElement(
+    ElidedHost,
+    key === null ? {tag} : {tag, key},
+  );
   if (__DEV__) {
-    // Elided elements lost their keys, don't warn about it in lists.
+    // Elided elements keep their key if they had one, don't warn about it in lists.
     element._store.validated = 1;
   }
   return element;
@@ -2795,8 +2801,9 @@ function parseModelString(
       }
       case 'J': {
         if (enableFlightHostElision) {
-          // Elided host element: "$J<rowId>:<tag>". See ElidedHost below.
+          // Elided host element: "$J<rowId>:<tag>[:<key>]". See ElidedHost below.
           const colon = value.indexOf(':');
+          const keyColon = value.indexOf(':', colon + 1);
           const ref = value.slice(2, colon);
           const id = parseInt(ref, 16);
           const rows = response._elidedRows;
@@ -2808,6 +2815,18 @@ function parseModelString(
                 typeof json === 'string'
                   ? createResolvedModelChunk(response, json)
                   : createInitializedValueChunk(json),
+              );
+            } else {
+              // This consumer renders HTML, so there is no DOM to adopt: a
+              // stub would silently turn into an empty element and the
+              // browser would then adopt that. Rows are looked up
+              // synchronously, so a missing one can't arrive later either.
+              // eslint-disable-next-line react-internal/prod-error-codes
+              throw new Error(
+                'Missing elided row ' +
+                  ref +
+                  '. The elidedRows option must contain every row that ' +
+                  'the server handed to onElidedRow for this payload.',
               );
             }
           }
@@ -2821,9 +2840,18 @@ function parseModelString(
               createModel,
             );
           }
-          return createElidedHostElement(value.slice(colon + 1));
+          return createElidedHostElement(
+            value.slice(colon + 1, keyColon === -1 ? value.length : keyColon),
+            keyColon === -1 ? null : value.slice(keyColon + 1),
+          );
         }
-        // Fallthrough
+        // The server elided an element but this client was built without
+        // support. Never parse the id as a lazy reference to an unrelated row.
+        // eslint-disable-next-line react-internal/prod-error-codes
+        throw new Error(
+          'Received an elided host element but enableFlightHostElision is ' +
+            'off in this client. The server and client builds must match.',
+        );
       }
       case 'L': {
         // Lazy node

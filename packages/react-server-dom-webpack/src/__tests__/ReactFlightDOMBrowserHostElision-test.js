@@ -9,10 +9,12 @@
 
 'use strict';
 
-// Run the whole file with enableFlightHostElision turned on.
+// Run the whole file with enableFlightHostElision turned on. Dedupe is on too
+// to cover that nothing from elided rows reaches the main stream.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
   enableFlightHostElision: true,
+  enableFlightPayloadDedupe: true,
 }));
 
 // Polyfills for test environment
@@ -281,12 +283,10 @@ describe('ReactFlightDOMBrowser host elision', () => {
     });
     function App() {
       return (
-        <React.Suspense fallback={null}>
-          <section>
-            <p>{'static text '.repeat(5)}</p>
-            <Mismatch />
-          </section>
-        </React.Suspense>
+        <section>
+          <p>{'static text '.repeat(5)}</p>
+          <Mismatch />
+        </section>
       );
     }
     const rows = new Map();
@@ -299,8 +299,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
     );
     expect(rows.size).toBe(1);
     // Force a hydration mismatch: the client component's node is missing, so
-    // React regenerates the boundary on the client, where the stub has nothing
-    // to adopt.
+    // React regenerates the root on the client, where the stub has nothing to
+    // adopt.
     const html = (await ssr({main, rows})).replace('<b>server</b>', '');
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -335,5 +335,401 @@ describe('ReactFlightDOMBrowser host elision', () => {
     // Not silently blank: the app's error boundary took over.
     expect(container.textContent).toBe('recovered');
     spy.mockRestore();
+  });
+  // Returns {main, rows}: rendered with or without elision.
+  async function flight(element, elide = true) {
+    const rows = new Map();
+    const options = elide
+      ? {onElidedRow: (id, json) => rows.set(id, json)}
+      : {};
+    const main = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(
+          element,
+          webpackMap,
+          options,
+        ),
+      ),
+    );
+    return {main, rows};
+  }
+
+  function rowsText(rows) {
+    return Array.from(rows.values()).join('\n');
+  }
+
+  // Hydrates `html` with the (row-less) browser payload `main`.
+  async function hydrate(main, html, extraOptions) {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const errors = [];
+    const response = consume(main);
+    await response;
+    let root;
+    await act(() => {
+      root = ReactDOMClient.hydrateRoot(
+        container,
+        <Shell response={response} />,
+        {
+          onUncaughtError: e => errors.push('uncaught: ' + e.message),
+          onCaughtError: e => errors.push('caught: ' + e.message),
+          onRecoverableError: e => errors.push('recoverable: ' + e.message),
+          ...extraOptions,
+        },
+      );
+    });
+    return {container, errors, root};
+  }
+
+  it('does not elide host elements passed as props to a client component', async () => {
+    const Tabs = clientExports(function Tabs({panels}) {
+      const [i, setI] = React.useState(0);
+      return (
+        <section>
+          <button onClick={() => setI(1)}>next</button>
+          {panels[i]}
+        </section>
+      );
+    });
+    const App = () => (
+      <Tabs panels={[<div key="a">panel-A</div>, <div key="b">panel-B</div>]} />
+    );
+    const f = await flight(<App />);
+    expect(f.rows.size).toBe(0);
+    expect(f.main).not.toContain('$J');
+    const html = await ssr(f);
+    const {container, errors} = await hydrate(f.main, html);
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('panel-A');
+    await act(() => container.querySelector('button').click());
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('panel-B');
+  });
+
+  it('keeps keyed host elements in client props so a reorder is reflected', async () => {
+    const Sortable = clientExports(function Sortable({items}) {
+      const [rev, setRev] = React.useState(false);
+      return (
+        <div>
+          <button onClick={() => setRev(true)}>rev</button>
+          <ul>{rev ? items.slice().reverse() : items}</ul>
+        </div>
+      );
+    });
+    const App = () => (
+      <Sortable
+        items={[<li key="x">x</li>, <li key="y">y</li>, <li key="z">z</li>]}
+      />
+    );
+    const f = await flight(<App />);
+    const html = await ssr(f);
+    const {container} = await hydrate(f.main, html);
+    expect(container.querySelector('ul').textContent).toBe('xyz');
+    await act(() => container.querySelector('button').click());
+    expect(container.querySelector('ul').textContent).toBe('zyx');
+  });
+
+  it('keeps keyed static children of a client list so a reorder is reflected', async () => {
+    const List = clientExports(function List({children}) {
+      const [rev, setRev] = React.useState(false);
+      const items = React.Children.toArray(children);
+      return (
+        <div>
+          <button onClick={() => setRev(true)}>rev</button>
+          <ul>{rev ? items.slice().reverse() : items}</ul>
+        </div>
+      );
+    });
+    const App = () => (
+      <List>
+        <li key="x">x</li>
+        <li key="y">y</li>
+        <li key="z">z</li>
+      </List>
+    );
+    const f = await flight(<App />);
+    expect(f.rows.size).toBe(0);
+    const html = await ssr(f);
+    const {container, errors} = await hydrate(f.main, html);
+    await act(() => container.querySelector('button').click());
+    expect(errors).toEqual([]);
+    expect(container.querySelector('ul').textContent).toBe('zyx');
+  });
+
+  it('does not elide server children of a client panel that hides then shows them', async () => {
+    const Panel = clientExports(function Panel({children}) {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <div>
+          <button onClick={() => setOpen(!open)}>toggle</button>
+          {open ? <aside>{children}</aside> : null}
+        </div>
+      );
+    });
+    const App = () => (
+      <Panel>
+        <p>modal-body</p>
+      </Panel>
+    );
+    const f = await flight(<App />);
+    expect(f.rows.size).toBe(0);
+    const html = await ssr(f);
+    const {container, errors} = await hydrate(f.main, html);
+    expect(container.textContent).not.toContain('modal-body');
+    await act(() => container.querySelector('button').click());
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('modal-body');
+  });
+
+  it('keeps the key on the stub of an elided element', async () => {
+    const Client = clientExports(function Client() {
+      return <i>c</i>;
+    });
+    function Item({label}) {
+      return <li>{label}</li>;
+    }
+    const App = () => (
+      <ul>
+        <Client />
+        {['a', 'b'].map(l => (
+          <li key={l}>item-{l}</li>
+        ))}
+        <Item key="srv" label="from-server-component" />
+      </ul>
+    );
+    const f = await flight(<App />);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:li:a"/);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:li:b"/);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:li:srv"/);
+    const html = await ssr(f);
+    const {container, errors} = await hydrate(f.main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelectorAll('li').length).toBe(3);
+  });
+
+  it('does not elide a Suspense fallback that is shown after hydration', async () => {
+    const p = new Promise(() => {});
+    const Loader = clientExports(function Loader() {
+      const [go, setGo] = React.useState(false);
+      if (go) {
+        use(p);
+      }
+      return <button onClick={() => setGo(true)}>load</button>;
+    });
+    const App = () => (
+      <main>
+        <React.Suspense fallback={<p className="skeleton">loading...</p>}>
+          <Loader />
+        </React.Suspense>
+      </main>
+    );
+    const f = await flight(<App />);
+    expect(f.rows.size).toBe(0);
+    const html = await ssr(f);
+    const {container, errors} = await hydrate(f.main, html);
+    await act(() => container.querySelector('button').click());
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('loading...');
+  });
+
+  it('does not elide children of a client-only wrapper', async () => {
+    const ClientOnly = clientExports(function ClientOnly({children}) {
+      const [mounted, setMounted] = React.useState(false);
+      React.useEffect(() => setMounted(true), []);
+      return mounted ? children : null;
+    });
+    const App = () => (
+      <div>
+        <ClientOnly>
+          <p>client-only-content</p>
+        </ClientOnly>
+      </div>
+    );
+    const f = await flight(<App />);
+    expect(f.rows.size).toBe(0);
+    const html = await ssr(f);
+    const {container, errors} = await hydrate(f.main, html);
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('client-only-content');
+  });
+
+  it('recovers a boundary that client-renders next to static content', async () => {
+    let onServer = true;
+    const ServerFragile = clientExports(function ServerFragile() {
+      if (onServer) {
+        throw new Error('window is not defined');
+      }
+      return <b>client-ok</b>;
+    });
+    const App = () => (
+      <main>
+        <React.Suspense fallback="loading">
+          <section>
+            <p>static-sibling</p>
+            <ServerFragile />
+          </section>
+        </React.Suspense>
+      </main>
+    );
+    const f = await flight(<App />);
+    const response = consume(f.main, f.rows);
+    await response;
+    let html;
+    await act(async () => {
+      html = await readAll(
+        await ReactDOMFizzServer.renderToReadableStream(
+          <Shell response={response} />,
+          {onError() {}},
+        ),
+      );
+    });
+    onServer = false;
+    const {container} = await hydrate(f.main, html, {
+      onRecoverableError() {},
+    });
+    // TODO(html-first): the static <p> inside a Suspense boundary is not
+    // elided, so the boundary can client-render. If elision is ever allowed
+    // there, ElidedHost needs a way to fetch the row (the page goes blank).
+    expect(container.textContent).toContain('static-sibling');
+    expect(container.textContent).toContain('client-ok');
+  });
+
+  it('fails the SSR consumer when an elided row is missing', async () => {
+    const App = () => <article>{'important '.repeat(10)}</article>;
+    const f = await flight(<App />);
+    expect(f.rows.size).toBe(1);
+    const response = consume(f.main, new Map());
+    let error;
+    try {
+      await response;
+      await act(async () => {
+        await readAll(
+          await ReactDOMFizzServer.renderToReadableStream(
+            <Shell response={response} />,
+            {onError() {}},
+          ),
+        );
+      });
+    } catch (e) {
+      error = e;
+    }
+    expect(error && error.message).toContain('Missing elided row');
+  });
+
+  it('elides only static host elements in host position', async () => {
+    const Client = clientExports(function Client({children, fallback}) {
+      return (
+        <div>
+          {children}
+          {fallback}
+        </div>
+      );
+    });
+    function ServerTable() {
+      return (
+        <table>
+          <tbody>
+            <tr>
+              <td>server-row-text</td>
+            </tr>
+          </tbody>
+        </table>
+      );
+    }
+    const App = () => (
+      <main>
+        <Client fallback={<i>client-prop-text</i>}>
+          <p>client-child-text</p>
+          <ServerTable />
+        </Client>
+        <section>
+          <Client />
+          <h2>host-child-text</h2>
+        </section>
+        <React.Suspense fallback={<p>suspense-fallback-text</p>}>
+          <ServerTable />
+          <h3>suspense-content-text</h3>
+        </React.Suspense>
+        <ServerTable />
+      </main>
+    );
+    const f = await flight(<App />);
+    const elided = rowsText(f.rows);
+    // Elided: server component output and static host children of a host
+    // element that stays in the payload.
+    expect(elided).toContain('server-row-text');
+    expect(elided).toContain('host-child-text');
+    expect(f.main).not.toContain('host-child-text');
+    // Kept: anything inside the props or children of a non-host element.
+    [
+      'client-prop-text',
+      'client-child-text',
+      'suspense-fallback-text',
+      'suspense-content-text',
+    ].forEach(kept => {
+      expect(elided).not.toContain(kept);
+      expect(f.main).toContain(kept);
+    });
+    // The server component output next to them still is.
+    expect(f.main).toMatch(/\$J[0-9a-f]+:table/);
+    // Hydrates without mismatches.
+    const html = await ssr(f);
+    const {errors} = await hydrate(f.main, html);
+    expect(errors).toEqual([]);
+  });
+
+  it('evaluates each element once, so deep trees scale linearly', async () => {
+    const Leaf = clientExports(function Leaf() {
+      return <i>leaf</i>;
+    });
+    async function countTypeReads(depth) {
+      let reads = 0;
+      const counted = element =>
+        new Proxy(element, {
+          get(target, key) {
+            if (key === 'type') {
+              reads++;
+            }
+            return Reflect.get(target, key);
+          },
+        });
+      let node = <Leaf />;
+      for (let d = 0; d < depth; d++) {
+        const spans = [];
+        for (let i = 0; i < 20; i++) {
+          spans.push(counted(<span key={i}>static</span>));
+        }
+        node = (
+          <div>
+            {spans}
+            {node}
+          </div>
+        );
+      }
+      await flight(node);
+      return reads;
+    }
+    const shallow = await countTypeReads(20);
+    const deep = await countTypeReads(80);
+    // 4x deeper: ~4x the reads (linear), not ~16x (quadratic).
+    expect(deep / shallow).toBeLessThan(6);
+  });
+
+  it('keeps everything from elided rows out of the main stream', async () => {
+    const T = 'this is a long static paragraph that repeats across rows';
+    const BIG_TEXT = 'big-text-'.repeat(300);
+    const App = () => (
+      <main>
+        <p>{T}</p>
+        <p>{T}</p>
+        <p>{T}</p>
+        <p>{BIG_TEXT}</p>
+      </main>
+    );
+    const f = await flight(<App />);
+    expect(f.rows.size).toBeGreaterThan(0);
+    expect(f.main).not.toContain(T);
+    expect(f.main).not.toContain('big-text-');
   });
 });

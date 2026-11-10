@@ -320,7 +320,9 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     }
     const elided = await flight(<Doc />, true);
     expect(elided.main).not.toContain('item-199');
-    expect(elided.main).not.toContain('late-text');
+    // Content inside a Suspense boundary is not in host position: the
+    // boundary can client-render, which needs the real content.
+    expect(elided.main).toContain('late-text');
     expect(elided.rows.size).toBeGreaterThan(0);
 
     const html = await ssr(elided);

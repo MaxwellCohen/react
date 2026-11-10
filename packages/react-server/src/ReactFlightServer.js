@@ -554,6 +554,7 @@ type Task = {
   keyPath: ReactKey, // parent server component keys
   implicitSlot: boolean, // true if the root server component of this sequence had a null key
   formatContext: FormatContext, // an approximate parent context from host components
+  hostPosition: boolean, // enableFlightHostElision: the root of this task is in host position
   thenableState: ThenableState | null,
   timed: boolean, // Profiling-only. Whether we need to track the completion time of this task.
   time: number, // Profiling-only. The last time stamp emitted for this task.
@@ -624,6 +625,8 @@ export type Request = {
   identifierPrefix: string,
   onElidedRow: null | ((id: number, json: string) => void),
   onElidedValue: null | ((id: number, value: mixed) => void),
+  // enableFlightHostElision: memoized isStaticHostNode results.
+  staticHostCache: null | WeakMap<any, boolean>,
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
   onError: (error: mixed) => ?string,
@@ -764,6 +767,7 @@ function RequestInstance(
     (typeof onElidedRow === 'function' || this.onElidedValue !== null)
       ? onElidedRow || noop
       : null;
+  this.staticHostCache = enableFlightHostElision ? new WeakMap() : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
   this.onError = onError === undefined ? defaultErrorHandler : onError;
@@ -836,6 +840,7 @@ function RequestInstance(
     null,
     null,
   );
+  rootTask.hostPosition = true;
   pingedTasks.push(rootTask);
 }
 
@@ -906,7 +911,8 @@ export function createPrerenderRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
-    false,
+    undefined,
+    undefined,
   );
 }
 
@@ -2199,6 +2205,18 @@ function renderAsyncFragment(
 // Host elision (see tryElideHostElement): > 0 while serializing an elided row.
 let elisionDepth = 0;
 
+// Host elision is only safe for a static host element that React renders in
+// place and hydrates in place: output of a Server Component, or the children
+// of such a host element. True while resolving such a position. It is cleared
+// in the props of anything that is not a host element (Client Components,
+// Suspense, Activity, ...) and in every prop except `children`, since those
+// may be shown later, moved, or rendered outside of hydration.
+let hostPosition = true;
+// The props object of the element tuple that is being resolved, and whether its
+// `children` are in host position.
+let elementProps: null | Object = null;
+let elementChildrenInHostPosition = false;
+
 function renderClientElement(
   request: Request,
   task: Task,
@@ -2927,6 +2945,7 @@ function createTaskWithID(
     keyPath,
     implicitSlot,
     formatContext: formatContext,
+    hostPosition: hostPosition,
     ping: () => pingTask(request, task),
     thenableState: null,
   } as Omit<
@@ -3041,6 +3060,13 @@ function resolveModel(
   }
 
   if (isArray(rendered)) {
+    if (
+      enableFlightHostElision &&
+      request.onElidedRow !== null &&
+      rendered[0] === REACT_ELEMENT_TYPE
+    ) {
+      return resolveElementTuple(request, task, rendered);
+    }
     const resolved: Array<ReactJSONValue> = [];
     for (let i = 0; i < rendered.length; i++) {
       resolved[i] = resolveModel(request, task, rendered, '' + i, rendered[i]);
@@ -3051,15 +3077,31 @@ function resolveModel(
   // Use `{}` for fast properties; `__proto__` is handled below because simple
   // assignment would hit Object.prototype's setter instead of creating a key.
   const resolved: {[key: string]: ReactJSONValue} = {} as any;
+  const trackHostPosition =
+    enableFlightHostElision && request.onElidedRow !== null;
+  const prevHostPosition = hostPosition;
+  const isElementProps =
+    trackHostPosition && (rendered as any) === elementProps;
+  const childrenInHostPosition = elementChildrenInHostPosition;
   for (const key in rendered) {
     if (hasOwnProperty.call(rendered, key)) {
-      const resolvedValue = resolveModel(
-        request,
-        task,
-        rendered,
-        key,
-        rendered[key],
-      );
+      if (trackHostPosition) {
+        // Only the `children` of a host element stay in host position.
+        hostPosition =
+          isElementProps && key === 'children' ? childrenInHostPosition : false;
+      }
+      let resolvedValue;
+      try {
+        resolvedValue = resolveModel(
+          request,
+          task,
+          rendered,
+          key,
+          rendered[key],
+        );
+      } finally {
+        hostPosition = prevHostPosition;
+      }
       if (key === __PROTO__) {
         // Match JSON's ordinary data-property semantics for this legacy key.
         Object.defineProperty(resolved, key, {
@@ -3072,6 +3114,34 @@ function resolveModel(
         resolved[key] = resolvedValue;
       }
     }
+  }
+  return resolved;
+}
+
+// Resolves an element tuple [$, type, key, props, ...]. Its props are resolved
+// with the host position rules (see hostPosition).
+function resolveElementTuple(
+  request: Request,
+  task: Task,
+  rendered: Array<any>,
+): ReactJSONValue {
+  const prevProps = elementProps;
+  const prevChildrenInHostPosition = elementChildrenInHostPosition;
+  const prevHostPosition = hostPosition;
+  const resolved: Array<ReactJSONValue> = [];
+  try {
+    for (let i = 0; i < rendered.length; i++) {
+      if (i === 3) {
+        elementProps = rendered[3];
+        elementChildrenInHostPosition =
+          prevHostPosition && typeof rendered[1] === 'string';
+      }
+      resolved[i] = resolveModel(request, task, rendered, '' + i, rendered[i]);
+    }
+  } finally {
+    elementProps = prevProps;
+    elementChildrenInHostPosition = prevChildrenInHostPosition;
+    hostPosition = prevHostPosition;
   }
   return resolved;
 }
@@ -3745,7 +3815,7 @@ function isElidableStyleOrScript(type: string, props: any): boolean {
   );
 }
 
-function isStaticPropValue(value: mixed): boolean {
+function isStaticPropValue(value: any): boolean {
   if (value === null || value === undefined) {
     return true;
   }
@@ -3753,11 +3823,13 @@ function isStaticPropValue(value: mixed): boolean {
   if (t === 'string' || t === 'number' || t === 'boolean') {
     return true;
   }
+  // $FlowFixMe[incompatible-use]
+  // $FlowFixMe[prop-missing]
   if (t === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
     // style / dangerouslySetInnerHTML: one level of primitives.
     // $FlowFixMe[incompatible-use]
     for (const k in value) {
-      const v = (value as any)[k];
+      const v = value[k];
       const vt = typeof v;
       if (v != null && vt !== 'string' && vt !== 'number' && vt !== 'boolean') {
         return false;
@@ -3768,7 +3840,7 @@ function isStaticPropValue(value: mixed): boolean {
   return false;
 }
 
-function isStaticHostNode(node: any): boolean {
+function isStaticHostNode(cache: WeakMap<any, boolean>, node: any): boolean {
   if (node === null || node === undefined) {
     return true;
   }
@@ -3778,38 +3850,51 @@ function isStaticHostNode(node: any): boolean {
   }
   if (isArray(node)) {
     for (let i = 0; i < node.length; i++) {
-      if (!isStaticHostNode(node[i])) {
+      if (!isStaticHostNode(cache, node[i])) {
         return false;
       }
     }
     return true;
   }
+  // $FlowFixMe[invalid-compare]
   if (t === 'object' && node.$$typeof === REACT_ELEMENT_TYPE) {
-    const type = node.type;
-    if (typeof type !== 'string') {
-      return false;
+    // Each element is classified once per request, otherwise every ancestor of
+    // a non-static element walks all of the static content below it again.
+    const cached = cache.get(node);
+    if (cached !== undefined) {
+      return cached;
     }
-    const props = node.props;
-    if (nonElidableTags.has(type)) {
-      if (
-        !enableFlightHtmlFirst ||
-        (type !== 'style' && type !== 'script') ||
-        !isElidableStyleOrScript(type, props)
-      ) {
-        return false;
-      }
-    }
-    for (const k in props) {
-      if (k === 'children') {
-        continue;
-      }
-      if (k === 'ref' || !isStaticPropValue(props[k])) {
-        return false;
-      }
-    }
-    return isStaticHostNode(props.children);
+    const result = isStaticHostElement(cache, node);
+    cache.set(node, result);
+    return result;
   }
   return false;
+}
+
+function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
+  const type = node.type;
+  if (typeof type !== 'string') {
+    return false;
+  }
+  const props = node.props;
+  if (nonElidableTags.has(type)) {
+    if (
+      !enableFlightHtmlFirst ||
+      (type !== 'style' && type !== 'script') ||
+      !isElidableStyleOrScript(type, props)
+    ) {
+      return false;
+    }
+  }
+  for (const k in props) {
+    if (k === 'children') {
+      continue;
+    }
+    if (k === 'ref' || !isStaticPropValue(props[k])) {
+      return false;
+    }
+  }
+  return isStaticHostNode(cache, props.children);
 }
 
 function tryElideHostElement(
@@ -3818,14 +3903,30 @@ function tryElideHostElement(
   element: ReactElement,
 ): null | string {
   const onElidedRow = request.onElidedRow;
+  const cache = request.staticHostCache;
   if (
     onElidedRow === null ||
+    cache === null ||
     elisionDepth > 0 ||
     typeof element.type !== 'string' ||
-    !isStaticHostNode(element)
+    !isStaticHostNode(cache, element)
   ) {
     return null;
   }
+  // The stub keeps the key of the element (including the keys of the Server
+  // Components around it), so that reordering or swapping it remounts.
+  let key: ReactKey = element.key;
+  const keyPath = task.keyPath;
+  if (keyPath === REACT_OPTIMISTIC_KEY || key === REACT_OPTIMISTIC_KEY) {
+    // Optimistic keys are not representable in the stub.
+    return null;
+  }
+  if (key === null) {
+    key = keyPath;
+  } else if (keyPath !== null) {
+    key = keyPath + ',' + key;
+  }
+  const keySuffix = key === null ? '' : ':' + key;
   const id = request.nextChunkId++;
   const onElidedValue = request.onElidedValue;
   if (onElidedValue !== null) {
@@ -3833,7 +3934,7 @@ function tryElideHostElement(
       assertNoTaint(element, new Set());
     }
     onElidedValue(id, element);
-    return '$J' + id.toString(16) + ':' + element.type;
+    return '$J' + id.toString(16) + ':' + element.type + keySuffix;
   }
   const prevSize = serializedSize;
   const prevKeyPath = task.keyPath;
@@ -3846,9 +3947,9 @@ function tryElideHostElement(
     const rendered = renderModelDestructive(
       request,
       task,
-      {'': element},
+      {'': element} as any,
       '',
-      element,
+      element as any,
     );
     // The element consumed the key context of the Server Components around it.
     // Its children must not see it again (an array child would be wrapped in
@@ -3870,7 +3971,7 @@ function tryElideHostElement(
   }
   // Not written to the stream: handed to the framework instead.
   onElidedRow(id, json);
-  return '$J' + id.toString(16) + ':' + element.type;
+  return '$J' + id.toString(16) + ':' + element.type + keySuffix;
 }
 
 // A live row (onElidedValue) skips serialization, which is where taint is
@@ -4050,7 +4151,11 @@ function renderModelDestructive(
   if (typeof value === 'object') {
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
-        if (enableFlightHostElision && request.onElidedRow !== null) {
+        if (
+          enableFlightHostElision &&
+          request.onElidedRow !== null &&
+          hostPosition
+        ) {
           const elided = tryElideHostElement(request, task, value as any);
           if (elided !== null) {
             return elided;
@@ -4527,11 +4632,12 @@ function renderModelDestructive(
     // $FlowFixMe[invalid-compare]
     if (
       value.length >= 1024 &&
+      // $FlowFixMe[invalid-compare]
       byteLengthOfChunk !== null &&
-      // enableFlightHtmlFirst: an elided row is one self-contained JSON string
+      // An elided row is one self-contained JSON string
       // for the side channel. Its big strings stay inline in that string so
       // nothing it contains reaches the main stream.
-      !(enableFlightHtmlFirst && elisionDepth > 0)
+      !(elisionDepth > 0)
     ) {
       // For large strings, we encode them outside the JSON payload so that we
       // don't have to double encode and double parse the strings. This can also
@@ -6545,6 +6651,8 @@ function retryTask(request: Request, task: Task): void {
 
 function retryTaskWithRequest(request: Request, task: Task): void {
   const prevCanEmitDebugInfo = canEmitDebugInfo;
+  const prevHostPosition = hostPosition;
+  hostPosition = task.hostPosition;
   task.status = RENDERING;
 
   // We stash the outer parent size so we can restore it when we exit.
@@ -6665,6 +6773,7 @@ function retryTaskWithRequest(request: Request, task: Task): void {
     if (__DEV__) {
       canEmitDebugInfo = prevCanEmitDebugInfo;
     }
+    hostPosition = prevHostPosition;
     serializedSize = parentSerializedSize;
   }
 }
@@ -6683,9 +6792,12 @@ function tryStreamTaskWithRequest(request: Request, task: Task): void {
     canEmitDebugInfo = false;
   }
   const parentSerializedSize = serializedSize;
+  const prevHostPosition = hostPosition;
+  hostPosition = task.hostPosition;
   try {
     emitChunk(request, task, task.model);
   } finally {
+    hostPosition = prevHostPosition;
     serializedSize = parentSerializedSize;
     if (__DEV__) {
       canEmitDebugInfo = prevCanEmitDebugInfo;
