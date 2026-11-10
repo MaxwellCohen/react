@@ -24,7 +24,8 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
       const bytes = {};
       const run = async (w, record) => {
         const r = await w.call('render', {id: s.id, size: s.size, recoverErrors: s.allowRecoverableErrors});
-        if (r.problems.length) throw new Error(s.id + ' [' + w.name + '] server console output: ' + r.problems[0]);
+        const probs = r.problems.filter(p => !(s.allowRecoverableErrors && /Fizz Node error/.test(p)));
+        if (probs.length) throw new Error(s.id + ' [' + w.name + '] server console output: ' + probs[0]);
         const buf = Buffer.from(r.html);
         acc[w.name].lens.add(buf.length);
         if (record) acc[w.name].times.push(r.ms);
