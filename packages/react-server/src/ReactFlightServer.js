@@ -138,6 +138,7 @@ import {
   REACT_FRAGMENT_TYPE,
   REACT_LAZY_TYPE,
   REACT_MEMO_TYPE,
+  REACT_SUSPENSE_TYPE,
   ASYNC_ITERATOR,
   REACT_OPTIMISTIC_KEY,
 } from 'shared/ReactSymbols';
@@ -2207,10 +2208,13 @@ let elisionDepth = 0;
 
 // Host elision is only safe for a static host element that React renders in
 // place and hydrates in place: output of a Server Component, or the children
-// of such a host element. True while resolving such a position. It is cleared
-// in the props of anything that is not a host element (Client Components,
-// Suspense, Activity, ...) and in every prop except `children`, since those
-// may be shown later, moved, or rendered outside of hydration.
+// of such a host element or of a Suspense boundary. True while resolving such
+// a position. It is cleared in the props of anything else (Client Components,
+// Activity, ...) and in every prop except `children` (e.g. a Suspense
+// `fallback`), since those may be shown later, moved, or rendered outside of
+// hydration. A boundary's children are hydrated from the HTML that Fizz
+// streamed for it; if the boundary client-renders instead, ElidedHost recovers
+// (see onElidedContentMissing in the client).
 let hostPosition = true;
 // The props object of the element tuple that is being resolved, and whether its
 // `children` are in host position.
@@ -3134,7 +3138,9 @@ function resolveElementTuple(
       if (i === 3) {
         elementProps = rendered[3];
         elementChildrenInHostPosition =
-          prevHostPosition && typeof rendered[1] === 'string';
+          prevHostPosition &&
+          (typeof rendered[1] === 'string' ||
+            rendered[1] === REACT_SUSPENSE_TYPE);
       }
       resolved[i] = resolveModel(request, task, rendered, '' + i, rendered[i]);
     }

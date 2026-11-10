@@ -26,6 +26,9 @@ global.TextEncoder = require('util').TextEncoder;
 global.TextDecoder = require('util').TextDecoder;
 
 const {
+  insertNodesAndExecuteScripts,
+} = require('react-dom/src/test-utils/FizzTestUtils');
+const {
   patchMessageChannel,
 } = require('../../../../scripts/jest/patchMessageChannel');
 
@@ -39,10 +42,14 @@ let ReactDOMFizzServer;
 let ReactServerDOMServer;
 let ReactServerDOMClient;
 let use;
+let reportedErrors;
 
 describe('ReactFlightDOMBrowser host elision', () => {
   beforeEach(() => {
     jest.resetModules();
+    // Errors reported to window.onerror (reportError).
+    reportedErrors = [];
+    global.reportError = error => reportedErrors.push(error.message);
 
     const ReactServerScheduler = require('scheduler');
     patchMessageChannel(ReactServerScheduler);
@@ -72,6 +79,10 @@ describe('ReactFlightDOMBrowser host elision', () => {
     );
     ReactServerDOMClient = require('react-server-dom-webpack/client');
     use = React.use;
+  });
+
+  afterEach(() => {
+    expect(reportedErrors).toEqual([]);
   });
 
   const encoder = new TextEncoder();
@@ -277,65 +288,6 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toBe('Reportonly');
   });
 
-  it('fails loudly instead of dropping content when a boundary client-renders', async () => {
-    const Mismatch = clientExports(function Mismatch() {
-      return <b>server</b>;
-    });
-    function App() {
-      return (
-        <section>
-          <p>{'static text '.repeat(5)}</p>
-          <Mismatch />
-        </section>
-      );
-    }
-    const rows = new Map();
-    const main = await serverAct(async () =>
-      readAll(
-        ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          onElidedRow: (id, json) => rows.set(id, json),
-        }),
-      ),
-    );
-    expect(rows.size).toBe(1);
-    // Force a hydration mismatch: the client component's node is missing, so
-    // React regenerates the root on the client, where the stub has nothing to
-    // adopt.
-    const html = (await ssr({main, rows})).replace('<b>server</b>', '');
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    container.innerHTML = html;
-    const response = consume(main);
-    await response;
-    // React logs the intentional error; keep the test output clean.
-    const spy = jest.spyOn(console, 'error').mockImplementation(() => {});
-    const caught = [];
-    class Boundary extends React.Component {
-      state = {error: null};
-      static getDerivedStateFromError(error) {
-        return {error};
-      }
-      render() {
-        return this.state.error ? (
-          <i>recovered</i>
-        ) : (
-          <Shell response={response} />
-        );
-      }
-    }
-    await act(() => {
-      ReactDOMClient.hydrateRoot(container, <Boundary />, {
-        onRecoverableError() {},
-        onCaughtError(e) {
-          caught.push(e.message);
-        },
-      });
-    });
-    expect(caught.join()).toContain('left out of this payload');
-    // Not silently blank: the app's error boundary took over.
-    expect(container.textContent).toBe('recovered');
-    spy.mockRestore();
-  });
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();
@@ -554,47 +506,6 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toContain('client-only-content');
   });
 
-  it('recovers a boundary that client-renders next to static content', async () => {
-    let onServer = true;
-    const ServerFragile = clientExports(function ServerFragile() {
-      if (onServer) {
-        throw new Error('window is not defined');
-      }
-      return <b>client-ok</b>;
-    });
-    const App = () => (
-      <main>
-        <React.Suspense fallback="loading">
-          <section>
-            <p>static-sibling</p>
-            <ServerFragile />
-          </section>
-        </React.Suspense>
-      </main>
-    );
-    const f = await flight(<App />);
-    const response = consume(f.main, f.rows);
-    await response;
-    let html;
-    await act(async () => {
-      html = await readAll(
-        await ReactDOMFizzServer.renderToReadableStream(
-          <Shell response={response} />,
-          {onError() {}},
-        ),
-      );
-    });
-    onServer = false;
-    const {container} = await hydrate(f.main, html, {
-      onRecoverableError() {},
-    });
-    // TODO(html-first): the static <p> inside a Suspense boundary is not
-    // elided, so the boundary can client-render. If elision is ever allowed
-    // there, ElidedHost needs a way to fetch the row (the page goes blank).
-    expect(container.textContent).toContain('static-sibling');
-    expect(container.textContent).toContain('client-ok');
-  });
-
   it('fails the SSR consumer when an elided row is missing', async () => {
     const App = () => <article>{'important '.repeat(10)}</article>;
     const f = await flight(<App />);
@@ -657,20 +568,20 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const f = await flight(<App />);
     const elided = rowsText(f.rows);
     // Elided: server component output and static host children of a host
-    // element that stays in the payload.
+    // element or a Suspense boundary that stays in the payload.
     expect(elided).toContain('server-row-text');
     expect(elided).toContain('host-child-text');
+    expect(elided).toContain('suspense-content-text');
     expect(f.main).not.toContain('host-child-text');
-    // Kept: anything inside the props or children of a non-host element.
-    [
-      'client-prop-text',
-      'client-child-text',
-      'suspense-fallback-text',
-      'suspense-content-text',
-    ].forEach(kept => {
-      expect(elided).not.toContain(kept);
-      expect(f.main).toContain(kept);
-    });
+    expect(f.main).not.toContain('suspense-content-text');
+    // Kept: anything inside the props or children of a client component, and
+    // a Suspense fallback.
+    ['client-prop-text', 'client-child-text', 'suspense-fallback-text'].forEach(
+      kept => {
+        expect(elided).not.toContain(kept);
+        expect(f.main).toContain(kept);
+      },
+    );
     // The server component output next to them still is.
     expect(f.main).toMatch(/\$J[0-9a-f]+:table/);
     // Hydrates without mismatches.
@@ -731,5 +642,357 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(f.rows.size).toBeGreaterThan(0);
     expect(f.main).not.toContain(T);
     expect(f.main).not.toContain('big-text-');
+  });
+
+  describe('inside Suspense boundaries', () => {
+    function delay(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // Streams the HTML of `app` like a server does. The SSR consumer gets the
+    // Flight rows of the elided content that contains each marker in `later`
+    // one at a time, in that order, so Fizz completes those boundaries in that
+    // order. Returns the browser payload and the HTML chunks (the shell, then
+    // one chunk per released row).
+    async function streamHTML(app, later = [], fizzOptions) {
+      const f = await flight(app);
+      const lines = f.main.split('\n').filter(line => line !== '');
+      const held = later.map(marker => {
+        let id = -1;
+        f.rows.forEach((json, key) => {
+          if (json.includes(marker)) {
+            id = key;
+          }
+        });
+        const line = lines.find(l => l.includes('"$J' + id.toString(16) + ':'));
+        expect(line).toBeDefined();
+        return line;
+      });
+      let controller;
+      const ssrStream = new ReadableStream({
+        type: 'bytes',
+        start(c) {
+          controller = c;
+        },
+      });
+      const send = text => controller.enqueue(encoder.encode(text));
+      send(
+        lines
+          .filter(line => !held.includes(line))
+          .map(line => line + '\n')
+          .join(''),
+      );
+      const response = ReactServerDOMClient.createFromReadableStream(
+        ssrStream,
+        {elidedRows: f.rows},
+      );
+      let buffer = '';
+      await act(async () => {
+        const html = await ReactDOMFizzServer.renderToReadableStream(
+          <Shell response={response} />,
+          fizzOptions,
+        );
+        const reader = html.getReader();
+        (async () => {
+          while (true) {
+            const {done, value} = await reader.read();
+            if (done) {
+              return;
+            }
+            buffer += decoder.decode(value);
+          }
+        })();
+      });
+      const chunks = [buffer];
+      for (let i = 0; i < held.length; i++) {
+        const line = held[i];
+        buffer = '';
+        await act(async () => {
+          send(line + '\n');
+        });
+        chunks.push(buffer);
+      }
+      controller.close();
+      return {main: f.main, chunks};
+    }
+
+    // Inserts HTML chunks into `container` and runs Fizz's inline scripts.
+    async function insertHTML(container, html) {
+      const temp = document.createElement('div');
+      temp.innerHTML = html;
+      await act(async () => {
+        await insertNodesAndExecuteScripts(temp, container, null);
+        // Fizz reveals completed boundaries on the next frame.
+        jest.runAllTimers();
+      });
+    }
+
+    // The visible text: no scripts, no hidden (not yet revealed) segments.
+    function visibleText(container) {
+      const clone = container.cloneNode(true);
+      clone.querySelectorAll('script, [hidden]').forEach(n => n.remove());
+      return clone.textContent;
+    }
+
+    // Hydrates with the browser payload once the first `ready` chunks are in.
+    async function hydrateStream(main, chunks, ready, onElidedContentMissing) {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      for (let i = 0; i < ready; i++) {
+        await insertHTML(container, chunks[i]);
+      }
+      const errors = [];
+      const response = ReactServerDOMClient.createFromReadableStream(
+        stringToStream(main),
+        {onElidedContentMissing},
+      );
+      await response;
+      let root;
+      await act(() => {
+        root = ReactDOMClient.hydrateRoot(
+          container,
+          <Shell response={response} />,
+          {
+            onUncaughtError: e => errors.push('uncaught: ' + e.message),
+            onCaughtError: e => errors.push('caught: ' + e.message),
+            onRecoverableError: e => errors.push('recoverable: ' + e.message),
+          },
+        );
+      });
+      return {container, errors, root};
+    }
+
+    // What a framework does in onElidedContentMissing: render the full,
+    // non-elided payload (the one it fetches for navigations).
+    async function renderFullPayload(root, app) {
+      const full = await flight(app, false);
+      expect(full.main).not.toContain('$J');
+      const response = consume(full.main);
+      await response;
+      await act(() => root.render(<Shell response={response} />));
+    }
+
+    function makeStreamingApp() {
+      const Counter = clientExports(function Counter() {
+        const [n, setN] = React.useState(0);
+        return <button onClick={() => setN(n + 1)}>n:{n}</button>;
+      });
+      // Resolve in the Flight server out of order: side, outer, inner.
+      async function Late({ms, label, children}) {
+        await delay(ms);
+        return (
+          <section id={label}>
+            <p>{label + '-text'}</p>
+            {children}
+          </section>
+        );
+      }
+      return function App() {
+        return (
+          <main>
+            <h1>shell-text</h1>
+            <Counter />
+            <React.Suspense fallback={<i>loading-outer</i>}>
+              <Late ms={10} label="outer">
+                <React.Suspense fallback={<i>loading-inner</i>}>
+                  <Late ms={20} label="inner" />
+                </React.Suspense>
+              </Late>
+            </React.Suspense>
+            <React.Suspense fallback={<i>loading-side</i>}>
+              <Late ms={5} label="side" />
+            </React.Suspense>
+          </main>
+        );
+      };
+    }
+
+    function getContentNodes(container) {
+      return ['h1', '#outer > p', '#inner', '#side'].map(selector =>
+        container.querySelector(selector),
+      );
+    }
+
+    it('elides and adopts late server components in nested boundaries completed out of order', async () => {
+      const App = makeStreamingApp();
+      // Fizz completes the outer, then the side, then the inner boundary.
+      const {main, chunks} = await streamHTML(<App />, [
+        'outer-text',
+        'side-text',
+        'inner-text',
+      ]);
+      ['shell-text', 'outer-text', 'inner-text', 'side-text'].forEach(text =>
+        expect(main).not.toContain(text),
+      );
+      expect(chunks[0]).toContain('loading-outer');
+      expect(chunks[0]).not.toContain('side-text');
+      expect(chunks[2]).toContain('side-text');
+      expect(chunks[3]).toContain('inner-text');
+
+      const missing = jest.fn();
+      const container = document.createElement('div');
+      for (let i = 0; i < chunks.length; i++) {
+        await insertHTML(container, chunks[i]);
+      }
+      const before = getContentNodes(container);
+      before.forEach(node => expect(node).not.toBe(null));
+      const {container: hydrated, errors} = await hydrateStream(
+        main,
+        chunks,
+        chunks.length,
+        missing,
+      );
+      const after = getContentNodes(hydrated);
+      after.forEach(node => expect(node).not.toBe(null));
+      expect(visibleText(hydrated)).toBe(
+        'shell-textn:0outer-textinner-textside-text',
+      );
+      expect(errors).toEqual([]);
+      expect(missing).not.toHaveBeenCalled();
+      const nodes = getContentNodes(hydrated);
+      await act(() => hydrated.querySelector('button').click());
+      expect(hydrated.querySelector('button').textContent).toBe('n:1');
+      // The server nodes were adopted, not recreated.
+      expect(getContentNodes(hydrated)).toEqual(nodes);
+    });
+
+    it('adopts boundaries that are still pending when hydration starts', async () => {
+      const App = makeStreamingApp();
+      const {main, chunks} = await streamHTML(<App />, [
+        'side-text',
+        'outer-text',
+        'inner-text',
+      ]);
+      const missing = jest.fn();
+      const {container, errors} = await hydrateStream(main, chunks, 1, missing);
+      expect(visibleText(container)).toContain('loading-outer');
+      await act(() => container.querySelector('button').click());
+      for (let i = 1; i < chunks.length; i++) {
+        await insertHTML(container, chunks[i]);
+      }
+      const nodes = getContentNodes(container);
+      nodes.forEach(node => expect(node).not.toBe(null));
+      await act(() => container.querySelector('button').click());
+      expect(visibleText(container)).toBe(
+        'shell-textn:2outer-textinner-textside-text',
+      );
+      expect(getContentNodes(container)).toEqual(nodes);
+      expect(errors).toEqual([]);
+      expect(missing).not.toHaveBeenCalled();
+    });
+
+    function makeFragileApp(throwOnServer, withSuspense = true) {
+      let onServer = true;
+      const Fragile = clientExports(function Fragile() {
+        if (onServer && throwOnServer) {
+          throw new Error('window is not defined');
+        }
+        return <b>{onServer ? 'server-only' : 'client-ok'}</b>;
+      });
+      async function Article() {
+        await delay(5);
+        return <article>{'static-sibling '.repeat(3)}</article>;
+      }
+      const content = (
+        <>
+          <Article />
+          <p>static-p</p>
+          <Fragile />
+        </>
+      );
+      function App() {
+        return (
+          <main>
+            <h1>shell-text</h1>
+            {withSuspense ? (
+              <React.Suspense fallback={<i>loading</i>}>
+                {content}
+              </React.Suspense>
+            ) : (
+              content
+            )}
+          </main>
+        );
+      }
+      return {
+        App,
+        goToClient() {
+          onServer = false;
+        },
+      };
+    }
+
+    async function expectRecovery(throwOnServer, withSuspense) {
+      const {App, goToClient} = makeFragileApp(throwOnServer, withSuspense);
+      const {main, chunks} = await streamHTML(<App />, [], {onError() {}});
+      expect(main).not.toContain('static-sibling');
+      expect(main).not.toContain('static-p');
+      goToClient();
+      const missing = jest.fn();
+      const {container, errors, root} = await hydrateStream(
+        main,
+        chunks,
+        chunks.length,
+        missing,
+      );
+      expect(missing).toHaveBeenCalledTimes(1);
+      // Nothing was committed while the content is missing.
+      expect(container.textContent).toContain('shell-text');
+      expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+      const h1 = container.querySelector('h1');
+      await renderFullPayload(root, <App />);
+      expect(visibleText(container)).toBe(
+        'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
+      );
+      // The full payload has real elements where the stubs were, so they are
+      // remounted, as on a navigation.
+      expect(container.querySelector('h1')).not.toBe(h1);
+      expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+      expect(missing).toHaveBeenCalledTimes(1);
+      return {chunks, errors};
+    }
+
+    it('recovers a boundary that client-renders after a server error', async () => {
+      const {chunks, errors} = await expectRecovery(true, true);
+      expect(chunks.join('')).toContain('loading');
+      expect(errors.length).toBe(1);
+    });
+
+    it('recovers a boundary that client-renders after a hydration mismatch', async () => {
+      const {errors} = await expectRecovery(false, true);
+      expect(errors.length).toBe(1);
+      expect(errors[0]).toContain('recoverable');
+    });
+
+    it('recovers a root that client-renders after a hydration mismatch', async () => {
+      const {errors} = await expectRecovery(false, false);
+      // The mismatch, and the full payload rendered before the root committed.
+      expect(errors.length).toBe(2);
+      errors.forEach(e => expect(e).toContain('recoverable'));
+    });
+
+    it('reports an error and keeps the page when onElidedContentMissing is not provided', async () => {
+      for (let i = 0; i < 2; i++) {
+        const withSuspense = i === 0;
+        const {App, goToClient} = makeFragileApp(withSuspense, withSuspense);
+        const {main, chunks} = await streamHTML(<App />, [], {onError() {}});
+        goToClient();
+        const {container, errors} = await hydrateStream(
+          main,
+          chunks,
+          chunks.length,
+          undefined,
+        );
+        expect(reportedErrors.length).toBe(1);
+        expect(reportedErrors.pop()).toContain('onElidedContentMissing');
+        expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+        // Not blank: the shell and the boundary fallback (or the server HTML
+        // of the root) stay on screen.
+        expect(visibleText(container)).toContain('shell-text');
+        expect(visibleText(container)).toContain(
+          withSuspense ? 'loading' : 'static-p',
+        );
+      }
+    });
   });
 });

@@ -19,6 +19,7 @@ import type {ServerReferenceId} from '../client/ReactFlightClientConfigBundlerPa
 import {
   createResponse,
   attachElidedRows,
+  attachElidedContentMissing,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -142,6 +143,9 @@ function createResponseFromOptions(options: void | Options) {
   if (options && options.elidedRows) {
     attachElidedRows(response, options.elidedRows);
   }
+  if (options && options.onElidedContentMissing) {
+    attachElidedContentMissing(response, options.onElidedContentMissing);
+  }
   return response;
 }
 
@@ -215,6 +219,7 @@ function startReadingFromStream(
 export type Options = {
   // Prototype (enableFlightHostElision): rows withheld by the server.
   elidedRows?: {get(id: number): void | string, ...},
+  onElidedContentMissing?: () => void,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},
   temporaryReferences?: TemporaryReferenceSet,
   unstable_allowPartialStream?: boolean,

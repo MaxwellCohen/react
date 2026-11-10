@@ -111,6 +111,8 @@ import ReactVersion from 'shared/ReactVersion';
 
 import isArray from 'shared/isArray';
 
+import reportUncaughtError from 'shared/reportGlobalError';
+
 import * as React from 'react';
 
 import type {SharedStateServer} from 'react/src/ReactSharedInternalsServer';
@@ -393,6 +395,9 @@ type Response = {
   _chunks: Map<number, SomeChunk<any>>,
   // enableFlightHostElision: rows the server withheld from the stream.
   _elidedRows: null | ElidedRows,
+  // enableFlightHostElision: see recoverElidedContent.
+  _onElidedContentMissing: null | (() => void),
+  _elidedRecovery: null | Promise<empty>,
   _stringDecoder: StringDecoder,
   _closed: boolean,
   _closedReason: mixed,
@@ -439,6 +444,16 @@ export function attachElidedRows(
 ): void {
   if (enableFlightHostElision) {
     unwrapWeakResponse(weakResponse)._elidedRows = rows;
+  }
+}
+
+export function attachElidedContentMissing(
+  weakResponse: WeakResponse,
+  onElidedContentMissing: () => void,
+): void {
+  if (enableFlightHostElision) {
+    unwrapWeakResponse(weakResponse)._onElidedContentMissing =
+      onElidedContentMissing;
   }
 }
 
@@ -2716,11 +2731,18 @@ function getInferredFunctionApproximate(code: string): () => void {
  * and append the new children after the stale server HTML.
  *
  * This is only correct while hydrating server-rendered HTML. A stub that is
- * client rendered instead (e.g. a boundary regenerated after a hydration
- * mismatch) has no DOM to adopt and no content to render, so it throws rather
- * than silently producing an empty element.
+ * client rendered instead (a boundary or root that React client-renders after
+ * a server error or a hydration mismatch) has no DOM to adopt and no content.
+ * It suspends, so React keeps what is on screen (the server HTML or the
+ * boundary's fallback) instead of committing an empty element, and the
+ * framework is asked once to render the full payload (see
+ * recoverElidedContent). That payload has real elements where the stubs were,
+ * which replace them.
  */
-function ElidedHost(props: {tag: string}): React$Node {
+function ElidedHost(props: {
+  tag: string,
+  recover: () => Promise<empty>,
+}): React$Node {
   // True while hydrating (React reads the server snapshot), false in a plain
   // client render.
   const hydrating = React.useSyncExternalStore(
@@ -2730,12 +2752,7 @@ function ElidedHost(props: {tag: string}): React$Node {
   );
   const [adopts] = React.useState(hydrating);
   if (!adopts) {
-    // eslint-disable-next-line react-internal/prod-error-codes
-    throw new Error(
-      'Static content that the server left out of this payload is needed ' +
-        'on the client. This happens when a boundary is client rendered ' +
-        'after a hydration mismatch. Refetch the page to recover.',
-    );
+    React.use(props.recover());
   }
   return React.createElement(props.tag, {
     suppressHydrationWarning: true,
@@ -2754,13 +2771,46 @@ function getTrue(): boolean {
   return true;
 }
 
+// Called when a stub has to render without server HTML. The first call asks
+// the framework (the onElidedContentMissing option) to render the full,
+// non-elided payload. Without that option the page can't get the content
+// back, so it reports an error instead. Either way the stubs stay suspended.
+function recoverElidedContent(response: Response): Promise<empty> {
+  let pending = response._elidedRecovery;
+  if (pending === null) {
+    pending = response._elidedRecovery = new Promise(noop);
+    const onElidedContentMissing = response._onElidedContentMissing;
+    // Not during render: the framework will update the root.
+    Promise.resolve().then(
+      onElidedContentMissing !== null
+        ? onElidedContentMissing
+        : () =>
+            reportUncaughtError(
+              // eslint-disable-next-line react-internal/prod-error-codes
+              new Error(
+                'Static content that the server left out of this payload ' +
+                  'is needed on the client, because a boundary was client ' +
+                  'rendered after a server error or a hydration mismatch. ' +
+                  'Pass onElidedContentMissing to createFromReadableStream ' +
+                  'or createFromFetch to render the full payload.',
+              ),
+            ),
+    );
+  }
+  return pending;
+}
+
+function noop(): void {}
+
 function createElidedHostElement(
+  response: Response,
   tag: string,
   key: null | string,
 ): React$Element<any> {
+  const recover = recoverElidedContent.bind(null, response);
   const element: any = React.createElement(
     ElidedHost,
-    key === null ? {tag} : {tag, key},
+    key === null ? {tag, recover} : {tag, recover, key},
   );
   if (__DEV__) {
     // Elided elements keep their key if they had one, don't warn about it in lists.
@@ -2841,6 +2891,7 @@ function parseModelString(
             );
           }
           return createElidedHostElement(
+            response,
             value.slice(colon + 1, keyColon === -1 ? value.length : keyColon),
             keyColon === -1 ? null : value.slice(keyColon + 1),
           );
@@ -3202,6 +3253,8 @@ function ResponseInstance(
   this._nonce = nonce;
   this._chunks = chunks;
   this._elidedRows = null;
+  this._onElidedContentMissing = null;
+  this._elidedRecovery = null;
   // Preserve a leading U+FEFF instead of consuming it as an encoding signature.
   this._stringDecoder = createStringDecoder(true);
   this._closed = false;

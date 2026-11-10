@@ -21,6 +21,7 @@ import type {ReactServerValue} from 'react-client/src/ReactFlightReplyClient';
 import {
   createResponse,
   attachElidedRows,
+  attachElidedContentMissing,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -48,6 +49,7 @@ type CallServerCallback = <A, T>(string, args: A) => Promise<T>;
 export type Options = {
   // Prototype (enableFlightHostElision): rows withheld by the server.
   elidedRows?: {get(id: number): void | string, ...},
+  onElidedContentMissing?: () => void,
   moduleBaseURL?: string,
   callServer?: CallServerCallback,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},
@@ -120,6 +122,9 @@ function createResponseFromOptions(options: void | Options) {
   );
   if (options && options.elidedRows) {
     attachElidedRows(response, options.elidedRows);
+  }
+  if (options && options.onElidedContentMissing) {
+    attachElidedContentMissing(response, options.onElidedContentMissing);
   }
   return response;
 }
