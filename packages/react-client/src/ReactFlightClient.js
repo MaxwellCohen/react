@@ -47,7 +47,7 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
-  enableFlightHostElision,
+  enableFlightHtmlFirst,
 } from 'shared/ReactFeatureFlags';
 
 import {
@@ -393,9 +393,9 @@ type Response = {
   _encodeFormAction: void | EncodeFormActionCallback,
   _nonce: ?string,
   _chunks: Map<number, SomeChunk<any>>,
-  // enableFlightHostElision: rows the server withheld from the stream.
+  // enableFlightHtmlFirst: rows the server withheld from the stream.
   _elidedRows: null | ElidedRows,
-  // enableFlightHostElision: see recoverElidedContent.
+  // enableFlightHtmlFirst: see recoverElidedContent.
   _onElidedContentMissing: null | (() => void),
   _elidedRecovery: null | Promise<empty>,
   _stringDecoder: StringDecoder,
@@ -442,7 +442,7 @@ export function attachElidedRows(
   weakResponse: WeakResponse,
   rows: ElidedRows,
 ): void {
-  if (enableFlightHostElision) {
+  if (enableFlightHtmlFirst) {
     unwrapWeakResponse(weakResponse)._elidedRows = rows;
   }
 }
@@ -451,7 +451,7 @@ export function attachElidedContentMissing(
   weakResponse: WeakResponse,
   onElidedContentMissing: () => void,
 ): void {
-  if (enableFlightHostElision) {
+  if (enableFlightHtmlFirst) {
     unwrapWeakResponse(weakResponse)._onElidedContentMissing =
       onElidedContentMissing;
   }
@@ -2714,7 +2714,7 @@ function getInferredFunctionApproximate(code: string): () => void {
 }
 
 /**
- * Elided host elements (enableFlightHostElision).
+ * Elided host elements (enableFlightHtmlFirst).
  *
  * The server replaced a static host subtree with "$J<rowId>:<tag>" and the row
  * itself was dropped from the payload inlined in the HTML. We decode that to
@@ -2850,7 +2850,7 @@ function parseModelString(
         return value.slice(1);
       }
       case 'J': {
-        if (enableFlightHostElision) {
+        if (enableFlightHtmlFirst) {
           // Elided host element: "$J<rowId>:<tag>[:<key>]". See ElidedHost below.
           const colon = value.indexOf(':');
           const keyColon = value.indexOf(':', colon + 1);
@@ -2900,7 +2900,7 @@ function parseModelString(
         // support. Never parse the id as a lazy reference to an unrelated row.
         // eslint-disable-next-line react-internal/prod-error-codes
         throw new Error(
-          'Received an elided host element but enableFlightHostElision is ' +
+          'Received an elided host element but enableFlightHtmlFirst is ' +
             'off in this client. The server and client builds must match.',
         );
       }

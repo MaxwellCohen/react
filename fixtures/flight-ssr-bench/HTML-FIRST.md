@@ -1,6 +1,6 @@
 # [Flight] HTML-first initial load: don't re-ship static server output (`enableFlightHtmlFirst`)
 
-Stacked on #12 -> #13 host elision -> #14 lazy reply -> #15 dedupe. Off by default, nothing changes unless a framework opts in.
+Single flag (`enableFlightHtmlFirst`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default; nothing changes unless a framework opts in.
 
 **Scope: server-component output only.** Client components are never elided, pruned or stubbed: they keep their full props in Flight and hydrate normally.
 

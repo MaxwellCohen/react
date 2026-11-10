@@ -9,12 +9,10 @@
 
 'use strict';
 
-// Run the whole file with enableFlightHostElision turned on. Dedupe is on too
-// to cover that nothing from elided rows reaches the main stream.
+// Run the whole file with enableFlightHtmlFirst turned on.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightHostElision: true,
-  enableFlightPayloadDedupe: true,
+  enableFlightHtmlFirst: true,
 }));
 
 // Polyfills for test environment

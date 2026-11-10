@@ -9,10 +9,9 @@
 
 'use strict';
 
-// Run the whole file with enableFlightHostElision turned on.
+// Run the whole file with enableFlightHtmlFirst turned on.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightHostElision: true,
   enableFlightHtmlFirst: true,
 }));
 

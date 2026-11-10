@@ -47,7 +47,7 @@ export type {TemporaryReferenceSet};
 type CallServerCallback = <A, T>(string, args: A) => Promise<T>;
 
 export type Options = {
-  // Prototype (enableFlightHostElision): rows withheld by the server.
+  // Prototype (enableFlightHtmlFirst): rows withheld by the server.
   elidedRows?: {get(id: number): void | string, ...},
   onElidedContentMissing?: () => void,
   moduleBaseURL?: string,

@@ -217,7 +217,7 @@ function startReadingFromStream(
 }
 
 export type Options = {
-  // Prototype (enableFlightHostElision): rows withheld by the server.
+  // Prototype (enableFlightHtmlFirst): rows withheld by the server.
   elidedRows?: {get(id: number): void | string, ...},
   onElidedContentMissing?: () => void,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},

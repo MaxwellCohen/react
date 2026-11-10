@@ -17,7 +17,6 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
-  enableFlightHostElision,
   enableFlightHtmlFirst,
 } from 'shared/ReactFeatureFlags';
 
@@ -555,7 +554,7 @@ type Task = {
   keyPath: ReactKey, // parent server component keys
   implicitSlot: boolean, // true if the root server component of this sequence had a null key
   formatContext: FormatContext, // an approximate parent context from host components
-  hostPosition: boolean, // enableFlightHostElision: the root of this task is in host position
+  hostPosition: boolean, // enableFlightHtmlFirst: the root of this task is in host position
   thenableState: ThenableState | null,
   timed: boolean, // Profiling-only. Whether we need to track the completion time of this task.
   time: number, // Profiling-only. The last time stamp emitted for this task.
@@ -626,7 +625,7 @@ export type Request = {
   identifierPrefix: string,
   onElidedRow: null | ((id: number, json: string) => void),
   onElidedValue: null | ((id: number, value: mixed) => void),
-  // enableFlightHostElision: memoized isStaticHostNode results.
+  // enableFlightHtmlFirst: memoized isStaticHostNode results.
   staticHostCache: null | WeakMap<any, boolean>,
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
@@ -764,11 +763,11 @@ function RequestInstance(
       ? onElidedValue
       : null;
   this.onElidedRow =
-    enableFlightHostElision &&
+    enableFlightHtmlFirst &&
     (typeof onElidedRow === 'function' || this.onElidedValue !== null)
       ? onElidedRow || noop
       : null;
-  this.staticHostCache = enableFlightHostElision ? new WeakMap() : null;
+  this.staticHostCache = enableFlightHtmlFirst ? new WeakMap() : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
   this.onError = onError === undefined ? defaultErrorHandler : onError;
@@ -3065,7 +3064,7 @@ function resolveModel(
 
   if (isArray(rendered)) {
     if (
-      enableFlightHostElision &&
+      enableFlightHtmlFirst &&
       request.onElidedRow !== null &&
       rendered[0] === REACT_ELEMENT_TYPE
     ) {
@@ -3082,7 +3081,7 @@ function resolveModel(
   // assignment would hit Object.prototype's setter instead of creating a key.
   const resolved: {[key: string]: ReactJSONValue} = {} as any;
   const trackHostPosition =
-    enableFlightHostElision && request.onElidedRow !== null;
+    enableFlightHtmlFirst && request.onElidedRow !== null;
   const prevHostPosition = hostPosition;
   const isElementProps =
     trackHostPosition && (rendered as any) === elementProps;
@@ -3757,7 +3756,7 @@ function serializeImportString(request: Request, value: string): string {
 
 let modelRoot: null | ReactClientValue = false;
 
-// --- Host elision (prototype, enableFlightHostElision) ---------------------
+// --- Host elision (prototype, enableFlightHtmlFirst) ---------------------
 // Host elements produced by Server Components whose whole subtree is static
 // (host elements, text, and primitive-only props; no client references,
 // Suspense, lazy, Promises or Server Components still to render) are not
@@ -4158,7 +4157,7 @@ function renderModelDestructive(
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
         if (
-          enableFlightHostElision &&
+          enableFlightHtmlFirst &&
           request.onElidedRow !== null &&
           hostPosition
         ) {

@@ -114,11 +114,10 @@ export const enableDefaultTransitionIndicator = __EXPERIMENTAL__;
 
 export const enableOptimisticKey = __EXPERIMENTAL__;
 
-// Prototype: elide static host subtrees from the initial Flight payload.
-export const enableFlightHostElision: boolean = false;
-
-// Prototype: elide static <style>/JSON-LD <script> and keep big strings of elided
-// rows out of the main stream (builds on enableFlightHostElision).
+// Prototype: HTML-first Flight. When a framework opts in, static host markup
+// that a Server Component renders in host position (including inside Suspense
+// children) is left out of the inlined browser payload and adopted from the
+// SSR HTML on hydration.
 export const enableFlightHtmlFirst: boolean = false;
 
 /**

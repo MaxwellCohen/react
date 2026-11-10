@@ -156,7 +156,7 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // Prototype (enableFlightHostElision): receive elided host rows.
+  // Prototype (enableFlightHtmlFirst): receive elided host rows.
   onElidedRow?: (id: number, json: string) => void,
   onElidedValue?: (id: number, value: mixed) => void,
   debugChannel?: Readable | Writable | Duplex | WebSocket,

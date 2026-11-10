@@ -74,7 +74,6 @@ export const enableInternalInstanceMap: boolean = false;
 
 export const enableOptimisticKey: boolean = false;
 
-export const enableFlightHostElision: boolean = false;
 
 export const enableFlightHtmlFirst: boolean = false;
 

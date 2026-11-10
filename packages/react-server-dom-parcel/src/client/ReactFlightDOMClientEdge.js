@@ -75,7 +75,7 @@ type EncodeFormActionCallback = <A>(
 ) => ReactCustomFormAction;
 
 export type Options = {
-  // Prototype (enableFlightHostElision): rows withheld by the server.
+  // Prototype (enableFlightHtmlFirst): rows withheld by the server.
   elidedRows?: {get(id: number): void | string, ...},
   nonce?: string,
   encodeFormAction?: EncodeFormActionCallback,
