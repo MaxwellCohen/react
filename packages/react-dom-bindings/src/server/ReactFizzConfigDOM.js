@@ -88,6 +88,7 @@ import {
   formReplaying as formReplayingRuntime,
   markShellTime,
   patchDeclarativeBoundaries as patchDeclarativeBoundariesFunction,
+  patchDeclarativeBoundariesUpgradeToViewTransitions as patchDeclarativeUpgradeToViewTransitionsInstruction,
 } from './fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings';
 
 import {getValueDescriptorExpectingObjectForWarning} from '../shared/ReactDOMResourceValidation';
@@ -138,6 +139,7 @@ const SentMarkShellTime /*                */ = 0b001000000;
 const NeedUpgradeToViewTransitions /*     */ = 0b010000000;
 const SentUpgradeToViewTransitions /*     */ = 0b100000000;
 const SentPatchDeclarativeFunction /*     */ = 0b1000000000;
+const SentPatchUpgradeToViewTransitions /**/ = 0b10000000000;
 
 type NonceOption =
   | string
@@ -4955,7 +4957,9 @@ const patchDeclarativeFunction = stringToChunk(
   patchDeclarativeBoundariesFunction,
 );
 const patchDeclarativeSeparator = stringToPrecomputedChunk(',');
-const patchDeclarativeViewTransitionFlag = stringToPrecomputedChunk('1,');
+const patchDeclarativeUpgradeChunk = stringToChunk(
+  patchDeclarativeUpgradeToViewTransitionsInstruction,
+);
 const patchDeclarativeQuote = stringToPrecomputedChunk('"');
 // External / data streaming format: observed by ReactDOMServerExternalRuntime.
 const patchDeclarativeDataStart = stringToPrecomputedChunk(
@@ -4988,15 +4992,18 @@ export function writeDeclarativePatchScript(
       resumableState.instructions |= SentPatchDeclarativeFunction;
       writeChunk(destination, patchDeclarativeFunction);
     }
-    writeChunk(destination, patchDeclarativeScriptCall);
     if (
       enableViewTransition &&
       (resumableState.instructions & NeedUpgradeToViewTransitions) !==
+        NothingSent &&
+      (resumableState.instructions & SentPatchUpgradeToViewTransitions) ===
         NothingSent
     ) {
-      // Tells $RP to apply this group inside a View Transition where it can.
-      writeChunk(destination, patchDeclarativeViewTransitionFlag);
+      // Reveals animate with ViewTransitions, same as $RV does for $RC.
+      resumableState.instructions |= SentPatchUpgradeToViewTransitions;
+      writeChunk(destination, patchDeclarativeUpgradeChunk);
     }
+    writeChunk(destination, patchDeclarativeScriptCall);
     for (let i = 0; i < ids.length; i++) {
       if (i > 0) {
         writeChunk(destination, patchDeclarativeSeparator);

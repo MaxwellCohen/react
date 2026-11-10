@@ -42,6 +42,10 @@ const config = [
     exportName: 'patchDeclarativeBoundaries',
   },
   {
+    entry: 'ReactDOMFizzInlinePatchBoundaryUpgradeToViewTransitions.js',
+    exportName: 'patchDeclarativeBoundariesUpgradeToViewTransitions',
+  },
+  {
     entry: 'ReactDOMFizzInlineFormReplaying.js',
     exportName: 'formReplaying',
   },

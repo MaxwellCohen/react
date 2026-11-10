@@ -15,6 +15,7 @@
 
 let JSDOM;
 let patchDeclarativeBoundaries;
+let upgradeToViewTransitions;
 
 describe('$RP runtime (polyfill path)', () => {
   let window;
@@ -24,6 +25,8 @@ describe('$RP runtime (polyfill path)', () => {
     JSDOM = require('jsdom').JSDOM;
     patchDeclarativeBoundaries =
       require('react-dom-bindings/src/server/fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings').patchDeclarativeBoundaries;
+    upgradeToViewTransitions =
+      require('react-dom-bindings/src/server/fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings').patchDeclarativeBoundariesUpgradeToViewTransitions;
     const jsdom = new JSDOM(
       '<!DOCTYPE html><html><head></head><body></body></html>',
       {runScripts: 'outside-only', pretendToBeVisual: true},
@@ -108,7 +111,7 @@ describe('$RP runtime (polyfill path)', () => {
     // The range markers are gone with the fallback; the boundary comments stay.
     expect(document.body.innerHTML).not.toContain('?start');
     expect(document.body.innerHTML).not.toContain('?end');
-    expect(document.body.innerHTML).toContain('<!--$?-->');
+    expect(document.body.innerHTML).toContain('<!--$-->');
     expect(document.body.innerHTML).toContain('<!--/$-->');
   });
 
@@ -195,12 +198,11 @@ describe('$RP runtime (polyfill path)', () => {
     expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
   });
 
-  it('patches synchronously by default even when startViewTransition exists', async () => {
+  it('patches without a view transition unless $RW was upgraded', async () => {
     let calls = 0;
-    document.startViewTransition = cb => {
+    document.startViewTransition = () => {
       calls++;
-      cb();
-      return {finished: Promise.resolve()};
+      return {};
     };
     setBody(pending('B:a', 'fb') + '<template for="B:a">done</template>');
     await patch('B:a');
@@ -208,63 +210,69 @@ describe('$RP runtime (polyfill path)', () => {
     expect(visible()).toBe('done');
   });
 
-  it('wraps a whole group in one startViewTransition when flagged', async () => {
-    let calls = 0;
-    document.startViewTransition = cb => {
-      calls++;
-      cb();
-      return {finished: Promise.resolve()};
-    };
-    setBody(
-      pending('B:a', 'fa') +
-        pending('B:b', 'fb') +
-        '<template for="B:a">A</template><template for="B:b">B</template>',
-    );
-    await patch(1, 'B:a', 'B:b');
-    expect(calls).toBe(1);
-    expect(visible()).toBe('AB');
-    expect(document.querySelectorAll('template').length).toBe(0);
-  });
-
-  describe('with an async startViewTransition', () => {
-    let queue;
+  describe('upgraded to view transitions', () => {
+    let transitions;
     beforeEach(() => {
-      queue = [];
-      document.startViewTransition = cb => {
-        queue.push(cb);
-        return {finished: Promise.resolve()};
+      transitions = [];
+      window.eval(upgradeToViewTransitions);
+      window.CSS = {escape: name => name};
+      document.fonts = {ready: Promise.resolve()};
+      // jsdom has no layout; pretend everything is visible.
+      window.Element.prototype.getBoundingClientRect = () => ({
+        left: 0,
+        top: 0,
+        width: 10,
+        height: 10,
+      });
+      document.startViewTransition = options => {
+        const transition = {
+          ready: Promise.resolve(),
+          finished: new Promise(() => {}),
+        };
+        transitions.push({options, transition});
+        return transition;
       };
     });
 
     function fixture() {
       setBody(
-        pending('B:p', 'fb-p') +
-          '<template for="B:p">[' +
+        '<div>' +
+          pending('B:p', '<i vt-exit="auto" vt-name="x">fb-p</i>') +
+          '</div>' +
+          '<template for="B:p"><b vt-enter="auto" vt-name="y">[' +
           pending('B:c', 'fb-c') +
-          ']</template>' +
+          ']</b></template>' +
           '<template for="B:c">child</template>',
       );
     }
 
-    it('patches a parent and child group once the callback runs', async () => {
+    it('applies per-element names and the whole batch inside one transition', async () => {
       fixture();
-      await patch(1, 'B:p', 'B:c');
-      expect(queue.length).toBe(1);
-      queue.shift()();
-      expect(visible()).toBe('[child]');
+      // No await: the names are restored once the transition is ready.
+      patch('B:p', 'B:c');
+      expect(transitions.length).toBe(1);
+      // Names are on the exiting fallback and the entering content before the update.
+      expect(document.querySelector('i').style.viewTransitionName).toBe('x');
+      expect(
+        document.querySelector('template[for="B:p"]').content.firstChild.style
+          .viewTransitionName,
+      ).toBe('y');
+      transitions[0].options.update();
+      expect(visible()).toBe(
+        '<div><b vt-enter="auto" vt-name="y" style="view-transition-name: y;">[child]</b></div>',
+      );
       expect(document.querySelectorAll('template').length).toBe(0);
     });
 
     it('batches consecutive groups into one transition', async () => {
       fixture();
       window.$RT = -1e6;
-      window.$RP(1, 'B:p');
-      window.$RP(1, 'B:c');
+      window.$RP('B:p');
+      window.$RP('B:c');
       jest.runOnlyPendingTimers();
-      expect(queue.length).toBe(1);
-      queue.shift()();
-      expect(visible()).toBe('[child]');
-      expect(document.querySelectorAll('template').length).toBe(0);
+      expect(transitions.length).toBe(1);
+      transitions[0].options.update();
+      expect(document.body.textContent).toContain('[child]');
     });
   });
 

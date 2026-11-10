@@ -303,7 +303,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     // view transition.
     expect(occurrences(out, '<template for=')).toBe(1);
     expect(occurrences(out, '<?start')).toBe(1);
-    expect(out).toContain('$RP(1,"B:0")');
+    expect(out).toContain('$RP("B:0")');
     expect(out).not.toContain('$RV=');
     expect(out).not.toContain('$RC=');
     expect(out).not.toContain('$RC(');

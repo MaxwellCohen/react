@@ -142,7 +142,13 @@ export function revealCompletedBoundariesWithViewTransitions(
     const existingTransition = document['__reactViewTransition'];
     if (existingTransition) {
       // Retry after the previous ViewTransition finishes.
-      existingTransition.finished.finally(window['$RV'].bind(null, batch));
+      existingTransition.finished.finally(
+        revealCompletedBoundariesWithViewTransitions.bind(
+          null,
+          revealBoundaries,
+          batch,
+        ),
+      );
       return;
     }
     // First collect all entering names that might form pairs exiting names.
@@ -715,13 +721,12 @@ export function patchDeclarativeBoundaries() {
   }
   const queue = window['$RPQ'];
   const first = queue.length === 0;
+  const ids = [];
   for (let i = 0; i < arguments.length; i++) {
-    if (i === 0 && arguments[0] === 1) {
-      window['$RPV'] = true;
-    } else {
-      queue.push(arguments[i]);
-    }
+    ids.push(arguments[i]);
+    queue.push(arguments[i]);
   }
+  queueDeclarativePatches(ids);
   if (!first) {
     return;
   }
@@ -742,23 +747,89 @@ export function patchDeclarativeBoundaries() {
   }
 }
 
+// Calls fn(anchor, template) for each queued id: first in the document, then in the
+// template content of other patches (a child's boundary is still in its parent's patch).
+function forEachPatch(ids, fn) {
+  const wanted = {};
+  let remaining = ids.length;
+  for (let i = 0; i < ids.length; i++) {
+    wanted[ids[i]] = 1;
+  }
+  const templates = {};
+  const found = document.querySelectorAll('template[for]');
+  for (let i = 0; i < found.length; i++) {
+    templates[found[i].getAttribute('for')] = found[i];
+  }
+  const roots = [document];
+  for (let i = 0; i < found.length; i++) {
+    roots.push(found[i].content);
+  }
+  for (let i = 0; i < roots.length; i++) {
+    const comments = document.createNodeIterator(roots[i], 128);
+    let anchor;
+    while (remaining && (anchor = comments.nextNode())) {
+      const id = anchor.data;
+      if (wanted[id] === 1) {
+        wanted[id] = 2;
+        remaining--;
+        fn(anchor, templates[id], id);
+      }
+    }
+  }
+  return wanted;
+}
+
+// Like $RC does when it queues a boundary: mark it as queued so React does not client
+// render it while the reveal waits for the throttle, and drop the patch of a boundary
+// that is gone.
+function queueDeclarativePatches(ids) {
+  const wanted = forEachPatch(ids, (anchor, template) => {
+    const start = anchor.nextSibling;
+    // A patch the browser already applied has no template and nothing to wait for.
+    if (template && start && start.nodeType === COMMENT_NODE) {
+      if (start.data === SUSPENSE_PENDING_START_DATA) {
+        start.data = SUSPENSE_QUEUED_START_DATA;
+      }
+    }
+  });
+  const found = document.querySelectorAll('template[for]');
+  for (let i = 0; i < found.length; i++) {
+    if (wanted[found[i].getAttribute('for')] === 1) {
+      found[i].parentNode.removeChild(found[i]);
+    }
+  }
+}
+
+// The base of $RW, like revealCompletedBoundaries is for $RV. The batch carries the ids
+// of the patches to apply.
+export function revealDeclarativePatches(batch) {
+  window['$RT'] = performance.now();
+  patchDeclarativeGroup(batch['ids']);
+}
+
 function flushDeclarativePatches() {
   const ids = window['$RPQ'];
-  const viewTransitions = window['$RPV'];
   window['$RPQ'] = [];
-  window['$RPV'] = false;
-  window['$RT'] = performance.now();
-  if (
-    viewTransitions &&
-    typeof document['startViewTransition'] === 'function' &&
-    document.querySelector('template[for]')
-  ) {
-    // The callback runs later. Everything, including looking up the templates, happens
-    // inside it so that patches are still applied in order, parents before children.
-    document['startViewTransition'](() => patchDeclarativeGroup(ids));
-  } else {
-    patchDeclarativeGroup(ids);
+  const batch = [];
+  batch['ids'] = ids;
+  if (window['$RW'] !== revealDeclarativePatches) {
+    // Upgraded to View Transitions. Hand it the boundaries to animate, as $RV gets them:
+    // the start of each fallback range and the content that replaces it.
+    forEachPatch(ids, (anchor, template) => {
+      const start = anchor.nextSibling;
+      const marker = start && start.nextSibling;
+      if (
+        template &&
+        marker &&
+        marker.nodeType === COMMENT_NODE &&
+        marker.data === '?start name="' + anchor.data + '"' &&
+        document.contains(anchor)
+      ) {
+        batch.push(marker, template.content);
+      }
+    });
   }
+  window['$RW'](batch);
 }
 
 function patchDeclarativeGroup(args) {
@@ -797,7 +868,8 @@ function patchBoundary(anchor, template) {
     // points at something else, so the template is dropped instead.
     const marker = start.nextSibling;
     if (
-      start.data !== SUSPENSE_PENDING_START_DATA ||
+      (start.data !== SUSPENSE_PENDING_START_DATA &&
+        start.data !== SUSPENSE_QUEUED_START_DATA) ||
       !marker ||
       marker.nodeType !== COMMENT_NODE ||
       marker.data !== '?start name="' + anchor.data + '"'
@@ -850,6 +922,11 @@ function patchBoundary(anchor, template) {
       // Boundaries inside the content are not allowed to be patched by the browser either.
       disarmDeclarativeBoundaries(template.content);
       start.after(template.content);
+      // Revealed. Let React know, like $RC does.
+      start.data = SUSPENSE_START_DATA;
+      if (start['_reactRetry']) {
+        requestAnimationFrame(start['_reactRetry']);
+      }
     }
     template.parentNode.removeChild(template);
   }

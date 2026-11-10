@@ -12,6 +12,7 @@ import {
   patchDeclarativeBoundaries,
   revealCompletedBoundaries,
   revealCompletedBoundariesWithViewTransitions,
+  revealDeclarativePatches,
 } from './ReactDOMFizzInstructionSetShared';
 
 // This is a string so Closure's advanced compilation mode doesn't mangle it.
@@ -27,7 +28,10 @@ window['$RC'] = completeBoundary;
 window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
 window['$RPQ'] = [];
-window['$RPV'] = false;
+window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
+  null,
+  revealDeclarativePatches,
+);
 window['$RP'] = patchDeclarativeBoundaries;
 disarmDeclarativeBoundaries(document);
 
