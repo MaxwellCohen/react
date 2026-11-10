@@ -34,7 +34,17 @@ const flightStream = new ReadableStream({
 
 const root = hydrateRoot(
   document,
-  <Shell response={createFromReadableStream(flightStream)} />,
+  <Shell
+    response={createFromReadableStream(flightStream, {
+      // A boundary or the root client-rendered where static HTML was elided:
+      // re-render from the full payload, like a navigation to the same URL.
+      onElidedContentMissing() {
+        const [, v, id] = location.pathname.split('/');
+        window.__elidedRecoveries = (window.__elidedRecoveries || 0) + 1;
+        root.render(<Shell response={createFromFetch(fetch('/' + v + '/rsc/' + id))} />);
+      },
+    })}
+  />,
   {
     onRecoverableError(e) {
       (window.__recoverable ||= []).push(String(e && e.message));

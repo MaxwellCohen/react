@@ -49,6 +49,27 @@ function serialize() {
   while (w.nextNode()) comments.push(w.currentNode);
   comments.forEach(n => n.remove());
   c.normalize();
+  // Fresh client-created nodes serialize style/attrs differently than
+  // server-written HTML (e.g. "margin-top: 8px" vs "margin-top:8px", and
+  // data-*/aria-* order relative to style). Canonicalize so navigation
+  // remounts of elided regions are compared on substance, not serializer noise.
+  c.querySelectorAll('*').forEach(el => {
+    if (el.hasAttribute('style')) {
+      el.setAttribute(
+        'style',
+        el
+          .getAttribute('style')
+          .replace(/\s*:\s*/g, ':')
+          .replace(/\s*;\s*/g, ';')
+          .replace(/;+$/, '')
+      );
+    }
+    const attrs = Array.from(el.attributes)
+      .map(a => [a.name, a.value])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    attrs.forEach(([name]) => el.removeAttribute(name));
+    attrs.forEach(([name, value]) => el.setAttribute(name, value));
+  });
   return c.outerHTML;
 }
 

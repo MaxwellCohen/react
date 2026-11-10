@@ -28,6 +28,3 @@ export const interact = [
   {expectText: {selector: '.done', text: 'loaded'}},
   {expectText: {selector: '.sib', text: 'static sibling'}},
 ];
-
-// Elided static content is mounted by a client render (review finding 1/2).
-export const knownFailure = {variants: ['all'], error: 'Static content that the server left out of this payload is needed on the client. This happens when a boundary is client rendered after a hydration mismatch. Refetch the page to recover.'};

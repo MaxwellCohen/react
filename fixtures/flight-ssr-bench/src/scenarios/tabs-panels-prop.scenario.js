@@ -32,6 +32,3 @@ export const interact = [
   {click: '.tab', nth: 0},
   {expectText: {selector: '.shown p', text: 'panel-A'}},
 ];
-
-// Silent wrong content: the client keeps showing the adopted panel A (review finding 1).
-export const knownFailure = {variants: ['all'], error: 'interact[2] expectText .shown p "panel-B": still shows "panel-A"'};
