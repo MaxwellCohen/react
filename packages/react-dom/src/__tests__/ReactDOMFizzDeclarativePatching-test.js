@@ -179,7 +179,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain(
       '<template for="B:0"><p class="item">item-0</p></template>',
     );
-    expect(out).toContain('$RP("B:0"');
+    expect(out).not.toContain('$RP("B:');
     // The declarative runtime is the only one inlined: no $RC or $RB bootstrap.
     expect(occurrences(out, '$RP=')).toBe(1);
     expect(out).not.toContain('$RC=');
@@ -277,7 +277,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain('<template for="B:1"><mi>x</mi></template>');
     expect(out).toContain('<template for="B:2"><p class="item">');
     expect(out).toContain('$RP(');
-    expect(out).toContain('$RP("B:0"');
+    expect(out).not.toContain('$RP("B:');
     expect(out).not.toContain('$RP(1,');
     expect(out).not.toContain('$RC(');
     expect(out).toContain('outerHTML');
@@ -303,7 +303,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     // view transition.
     expect(occurrences(out, '<template for=')).toBe(1);
     expect(occurrences(out, '<?start')).toBe(1);
-    expect(out).toContain('$RP("B:0")');
+    expect(out).not.toContain('$RP("B:');
     expect(out).not.toContain('$RV=');
     expect(out).not.toContain('$RC=');
     expect(out).not.toContain('$RC(');

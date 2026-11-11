@@ -111,7 +111,7 @@ describe('ReactDOMFizzServer declarative patching resume', () => {
     expect(resumeOut).toContain(
       '<template for="B:0"><p>content</p></template>',
     );
-    expect(resumeOut).toContain('$RP(');
+    expect(resumeOut).not.toContain('$RP("B:');
     expect(occurrences(prelude + resumeOut, '$RP=')).toBe(1);
     expect(resumeOut).not.toContain('$RC(');
     expect(resumeOut).not.toContain('<div hidden id="S:');
