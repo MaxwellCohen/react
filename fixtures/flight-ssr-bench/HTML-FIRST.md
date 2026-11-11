@@ -21,7 +21,7 @@ server (serialize, tee, parse).
 2. **Zero opt-in for in-process SSR:** with the flag on and no callbacks, Flight
    stores elided rows in a `globalThis` registry, emits a `:Q<id>` row, and the
    first in-process `createFrom*` claims them for SSR. The browser isolate has an
-   empty registry and adopts HTML stubs (same-tag hosts).
+   empty registry and adopts HTML stubs (hydration).
 3. **`onElidedValue(id, value)` / `onElidedRow(id, json)`:** overrides for
    out-of-process or custom sinks (live node vs JSON). Same taint checks as the
    JSON path.
@@ -37,9 +37,8 @@ Initial-load: with the flag on, Flight auto-elides into an internal registry key
 consumers (browser) get stubs and adopt HTML. Frameworks may still pass
 `onElidedRow`/`onElidedValue` for out-of-process sinks. **Pass `onElidedRow: false` on
 navigation/refetch** while the flag is compiled in — otherwise the response carries
-stubs with no HTML to adopt. Elided stubs are same-tag hosts, so navigation **adopts**
-the existing DOM (react-dom hydrates children into the static island instead of remounting)
-when the tag matches.
+stubs with no HTML to adopt. On navigation the full payload has real elements where the stubs were, so react-dom
+**re-creates** those regions from the payload (the old DOM is not trusted: the new page may differ)
 
 ## Results
 ### 41-scenario corpus (tip `c31090aa6e`, flag off vs on, full size)
@@ -69,8 +68,8 @@ CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Fli
 
 ## Correctness
 - Scenario corpus (`yarn scenarios:check --size full --variants off,all --browser chromium|firefox|webkit`): hydrated + interacted DOM vs flags-off, plus SPA navigation with full Flight (`onElidedRow: false`). Chromium is **41/41** — registry SSR applies Flight `:HL` preload hints into Fizz (pinned `currentRequest` across suspended work + duplicate hint forward) matching flags-off / side-channel.
-- Real browser (`yarn e2e`): hydration adopts the **same DOM nodes** (1000/1000 rows, `<style>`, JSON-LD), zero console warnings, zero recoverable errors, interactive counters (top-level and mid-table) work, client navigation fetches full Flight and **adopts** existing DOM.
-- jest (`ReactFlightDOMBrowserHtmlFirst-test`, HostElision suites): leakage, resources/executable scripts not elided, whole-document + Suspense hydration, client components keep full props, interactive hand-off, live rows, keyed array-children rows, taint on live rows, adopt on full-payload navigation.
+- Real browser (`yarn e2e`): hydration adopts the **same DOM nodes** (1000/1000 rows, `<style>`, JSON-LD), zero console warnings, zero recoverable errors, interactive counters (top-level and mid-table) work, client navigation fetches full Flight and re-creates the elided regions with the new content.
+- jest (`ReactFlightDOMBrowserHtmlFirst-test`, HostElision suites): leakage, resources/executable scripts not elided, whole-document + Suspense hydration, client components keep full props, interactive hand-off, live rows, keyed array-children rows, taint on live rows, navigation to different content, root element maps.
 - Every binding x entry: `node fixtures/flight-ssr-bench/e2e/bindings-smoke.js` (JSON rows, live rows, inline fallback) for webpack, turbopack, parcel, unbundled, esm.
 
 ## Contract (what a framework has to know)

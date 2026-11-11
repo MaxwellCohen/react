@@ -119,7 +119,6 @@ import {
   enableCPUSuspense,
   disableLegacyMode,
   enableViewTransition,
-  enableFlightHtmlFirst,
 } from 'shared/ReactFeatureFlags';
 import shallowEqual from 'shared/shallowEqual';
 import getComponentNameFromFiber from 'react-reconciler/src/getComponentNameFromFiber';
@@ -131,9 +130,6 @@ import {
   REACT_MEMO_TYPE,
   REACT_CONTEXT_TYPE,
 } from 'shared/ReactSymbols';
-
-// Must match react-client ELIDED_HOST_RECOVER_PROP (avoid circular import).
-const ELIDED_HOST_RECOVER_PROP = 'unstable_elidedRecover';
 import {REACT_RECOVERABLE_DIGEST} from 'shared/ReactRecoverable';
 import {setCurrentFiber} from './ReactCurrentFiber';
 import {resolveTypeForHotReloading} from './ReactFiberHotReloading';
@@ -243,7 +239,6 @@ import {
   enterHydrationState,
   reenterHydrationStateFromDehydratedActivityInstance,
   reenterHydrationStateFromDehydratedSuspenseInstance,
-  reenterHydrationStateFromElidedHost,
   resetHydrationState,
   claimHydratableSingleton,
   tryToClaimNextHydratableInstance,
@@ -1979,20 +1974,6 @@ function updateHostComponent(
   const nextProps = workInProgress.pendingProps;
   const prevProps = current !== null ? current.memoizedProps : null;
 
-  // enableFlightHtmlFirst: elided stub client-rendered with no server HTML.
-  if (
-    enableFlightHtmlFirst &&
-    current === null &&
-    !getIsHydrating() &&
-    nextProps != null &&
-    typeof nextProps === 'object' &&
-    nextProps[ELIDED_HOST_RECOVER_PROP] != null
-  ) {
-    const recover = nextProps[ELIDED_HOST_RECOVER_PROP];
-    // Suspend until the framework renders a full payload.
-    throw typeof recover === 'function' ? recover() : recover;
-  }
-
   let nextChildren = nextProps.children;
   const isDirectTextChild = shouldSetTextContent(type, nextProps);
 
@@ -2003,20 +1984,9 @@ function updateHostComponent(
     // avoids allocating another HostText fiber and traversing it.
     nextChildren = null;
   } else if (prevProps !== null && shouldSetTextContent(type, prevProps)) {
-    // enableFlightHtmlFirst: static island → real children. Adopt existing
-    // child DOM instead of ContentReset (which would wipe server HTML).
-    const wasElidedIsland =
-      enableFlightHtmlFirst &&
-      prevProps[ELIDED_HOST_RECOVER_PROP] != null &&
-      current !== null &&
-      current.stateNode != null;
-    if (wasElidedIsland) {
-      reenterHydrationStateFromElidedHost(workInProgress);
-    } else {
-      // If we're switching from a direct text child to a normal child, or to
-      // empty, we need to schedule the text content to be reset.
-      workInProgress.flags |= ContentReset;
-    }
+    // If we're switching from a direct text child to a normal child, or to
+    // empty, we need to schedule the text content to be reset.
+    workInProgress.flags |= ContentReset;
   }
 
   const memoizedState = workInProgress.memoizedState;

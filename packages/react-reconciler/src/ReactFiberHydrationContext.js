@@ -38,7 +38,6 @@ import {
   shouldSetTextContent,
   supportsHydration,
   supportsSingletons,
-  supportsMutation,
   getNextHydratableSibling,
   getNextHydratableSiblingAfterSingleton,
   getFirstHydratableChild,
@@ -65,7 +64,6 @@ import {
   isFormStateMarkerMatching,
   validateHydratableInstance,
   validateHydratableTextInstance,
-  removeChild,
 } from './ReactFiberConfig';
 import {OffscreenLane} from './ReactFiberLane';
 import {
@@ -82,9 +80,6 @@ import {runWithFiberInDEV} from './ReactCurrentFiber';
 let hydrationParentFiber: null | Fiber = null;
 let nextHydratableInstance: null | HydratableInstance = null;
 let isHydrating: boolean = false;
-// Host fiber that started an enableFlightHtmlFirst adopt-on-update pass
-// (static island → real children). Cleared in completeElidedHostAdoption.
-let elidedHostAdoptionFiber: null | Fiber = null;
 
 // This flag allows for warning supression when we expect there to be mismatches
 // due to earlier mismatches or a suspended fiber.
@@ -224,60 +219,6 @@ function reenterHydrationStateFromDehydratedSuspenseInstance(
     restoreSuspendedTreeContext(fiber, treeContext);
   }
   return true;
-}
-
-// enableFlightHtmlFirst: leave a static-island host (empty __html) for real
-// children by hydrating into the DOM that was adopted on the initial load.
-function reenterHydrationStateFromElidedHost(fiber: Fiber): boolean {
-  if (!supportsHydration) {
-    return false;
-  }
-  const instance = fiber.stateNode;
-  if (instance == null) {
-    return false;
-  }
-  nextHydratableInstance = getFirstHydratableChild(instance);
-  hydrationParentFiber = fiber;
-  elidedHostAdoptionFiber = fiber;
-  isHydrating = true;
-  hydrationErrors = null;
-  didSuspendOrErrorDEV = false;
-  hydrationDiffRootDEV = null;
-  rootOrSingletonContext = false;
-  return true;
-}
-
-// Finish an elided-host adopt pass and clear the hydration cursor. Unlike
-// Suspense reenter, this is not nested in an outer hydrate of the document.
-function completeElidedHostAdoption(fiber: Fiber): boolean {
-  if (elidedHostAdoptionFiber !== fiber) {
-    return false;
-  }
-  if (nextHydratableInstance != null) {
-    deleteUnhydratedTailForElidedAdoption(fiber);
-  }
-  elidedHostAdoptionFiber = null;
-  hydrationParentFiber = null;
-  nextHydratableInstance = null;
-  isHydrating = false;
-  didSuspendOrErrorDEV = false;
-  hydrationDiffRootDEV = null;
-  return true;
-}
-
-function deleteUnhydratedTailForElidedAdoption(fiber: Fiber): void {
-  if (!supportsMutation || fiber.stateNode == null) {
-    nextHydratableInstance = null;
-    return;
-  }
-  let node: null | HydratableInstance = nextHydratableInstance;
-  const parent: Instance = fiber.stateNode;
-  while (node !== null) {
-    const toDelete: any = node;
-    node = getNextHydratableSibling(node);
-    removeChild(parent, toDelete);
-  }
-  nextHydratableInstance = null;
 }
 
 function warnNonHydratedInstance(
@@ -534,10 +475,6 @@ function tryToClaimNextHydratableInstance(fiber: Fiber): void {
     if (shouldKeepWarning) {
       warnNonHydratedInstance(fiber, nextInstance);
     }
-    if (elidedHostAdoptionFiber !== null) {
-      // Growing past adopted DOM: insert as a normal client mount.
-      return;
-    }
     throwOnHydrationMismatch(fiber);
   }
 }
@@ -557,10 +494,6 @@ function tryToClaimNextHydratableTextInstance(fiber: Fiber): void {
   if (!nextInstance || !tryHydrateText(fiber, nextInstance)) {
     if (shouldKeepWarning) {
       warnNonHydratedInstance(fiber, nextInstance);
-    }
-    if (elidedHostAdoptionFiber !== null) {
-      // Growing past adopted DOM: insert as a normal client mount.
-      return;
     }
     throwOnHydrationMismatch(fiber);
   }
@@ -848,12 +781,8 @@ function popHydrationState(fiber: Fiber): boolean {
     ) {
       const nextInstance = nextHydratableInstance;
       if (nextInstance) {
-        if (elidedHostAdoptionFiber !== null) {
-          deleteUnhydratedTailForElidedAdoption(fiber);
-        } else {
-          warnIfUnhydratedTailNodes(fiber);
-          throwOnHydrationMismatch(fiber);
-        }
+        warnIfUnhydratedTailNodes(fiber);
+        throwOnHydrationMismatch(fiber);
       }
     }
   } else {
@@ -869,12 +798,8 @@ function popHydrationState(fiber: Fiber): boolean {
     ) {
       const nextInstance = nextHydratableInstance;
       if (nextInstance) {
-        if (elidedHostAdoptionFiber !== null) {
-          deleteUnhydratedTailForElidedAdoption(fiber);
-        } else {
-          warnIfUnhydratedTailNodes(fiber);
-          throwOnHydrationMismatch(fiber);
-        }
+        warnIfUnhydratedTailNodes(fiber);
+        throwOnHydrationMismatch(fiber);
       }
     }
   }
@@ -924,7 +849,6 @@ function resetHydrationState(): void {
 
   hydrationParentFiber = null;
   nextHydratableInstance = null;
-  elidedHostAdoptionFiber = null;
   isHydrating = false;
   didSuspendOrErrorDEV = false;
 }
@@ -1036,8 +960,6 @@ export {
   getIsHydrating,
   reenterHydrationStateFromDehydratedActivityInstance,
   reenterHydrationStateFromDehydratedSuspenseInstance,
-  reenterHydrationStateFromElidedHost,
-  completeElidedHostAdoption,
   resetHydrationState,
   popHydrationStateOnInterruptedWork,
   claimHydratableSingleton,

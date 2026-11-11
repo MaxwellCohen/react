@@ -259,20 +259,32 @@ describe('ReactFlightDOMBrowser host elision', () => {
     });
     expect(button.textContent).toBe('clicks:1');
 
-    // A later full (non-elided) payload for the same App shape: table keeps
-    // its sibling index next to Counter so the update can adopt DOM.
-    const next = await renderApp(1, false);
-    expect(next.main).not.toContain('$J');
-    const nextResponse = consume(next.main);
+    // A later (non elided) payload replaces the adopted region.
+    const next = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(
+          <main>
+            <h1>Report</h1>
+            <table className="data">
+              <tbody>
+                <tr>
+                  <td>only</td>
+                </tr>
+              </tbody>
+            </table>
+          </main>,
+          webpackMap,
+        ),
+      ),
+    );
+    const nextResponse = consume(next);
     await nextResponse;
     await act(() => {
       root.render(<Shell response={nextResponse} />);
     });
     expect(container.querySelectorAll('tr').length).toBe(1);
-    // Same-tag update adopts the existing host DOM (no remount).
-    expect(container.querySelector('table')).toBe(table);
-    expect(button.textContent).toBe('clicks:1');
-    expect(container.querySelector('td').textContent).toBe('name-0');
+    expect(container.querySelector('table')).not.toBe(table);
+    expect(container.textContent).toBe('Reportonly');
   });
 
   // Zero framework opt-in: flag on, no onElidedRow / elidedRows. The server
@@ -374,7 +386,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(htmlB.match(/name-\d+/g).length).toBe(7);
   });
 
-  it('SPA navigation uses onElidedRow: false for a full payload that adopts DOM', async () => {
+  it('SPA navigation uses onElidedRow: false for a full payload', async () => {
     const ROWS = 20;
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
@@ -446,8 +458,99 @@ describe('ReactFlightDOMBrowser host elision', () => {
       root.render(<Shell response={nextResponse} />);
     });
     expect(container.querySelectorAll('tr').length).toBe(ROWS);
-    expect(container.querySelector('table')).toBe(table);
+    // Elided regions are re-created from the payload; client components stay.
+    expect(container.querySelector('table')).not.toBe(table);
     expect(container.querySelector('button')).toBe(button);
+  });
+
+  it('navigation to different content replaces the elided regions', async () => {
+    const Counter = clientExports(function Counter() {
+      const [n, setN] = React.useState(0);
+      return <button onClick={() => setN(n + 1)}>c:{n}</button>;
+    });
+    const Page = ({v}) => (
+      <main>
+        <h1 className={v}>{'Title ' + v}</h1>
+        <Counter />
+        <section>
+          <ul>
+            <li>1</li>
+            {v === 'b' ? <li>2</li> : null}
+          </ul>
+          <a href={'/' + v} className={v}>
+            link
+          </a>
+        </section>
+      </main>
+    );
+    const first = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(<Page v="a" />, webpackMap),
+      ),
+    );
+    const html = await ssr({main: first, rows: undefined});
+    const {container, root, errors} = await hydrate(first, html);
+    const full = await flight(<Page v="b" />, false);
+    const response = consume(full.main);
+    await response;
+    await act(() => root.render(<Shell response={response} />));
+    expect(errors).toEqual([]);
+    expect(container.querySelector('h1').className).toBe('b');
+    expect(container.querySelector('h1').textContent).toBe('Title b');
+    expect(container.querySelectorAll('li').length).toBe(2);
+    expect(container.querySelector('a').getAttribute('href')).toBe('/b');
+  });
+
+  it('elides static output under the entries of a root element map', async () => {
+    function Page() {
+      return (
+        <table>
+          <tbody>
+            {Array.from({length: 100}, (_, i) => (
+              <tr key={i}>
+                <td>{'name-' + i}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    const model = {page: <Page />, later: Promise.resolve(<Page />)};
+    const render = opts =>
+      serverAct(async () =>
+        readAll(
+          ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
+        ),
+      );
+    const full = await render({onElidedRow: false});
+    const main = await render(undefined);
+    expect(main.length).toBeLessThan(full.length / 10);
+    expect(main).not.toContain('name-99');
+    function MapShell({response}) {
+      return use(response).page;
+    }
+    const sResponse = consume(main, undefined);
+    await sResponse;
+    let html;
+    await act(async () => {
+      html = await readAll(
+        await ReactDOMFizzServer.renderToReadableStream(
+          <MapShell response={sResponse} />,
+        ),
+      );
+    });
+    expect(html).toContain('name-99');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const table = container.querySelector('table');
+    const bResponse = consume(main, undefined);
+    await bResponse;
+    await act(() => {
+      ReactDOMClient.hydrateRoot(container, <MapShell response={bResponse} />);
+    });
+    expect(container.querySelector('table')).toBe(table);
+    expect(container.querySelectorAll('tr').length).toBe(100);
   });
 
   // Returns {main, rows}: rendered with or without elision.
@@ -1117,10 +1220,14 @@ describe('ReactFlightDOMBrowser host elision', () => {
       // Nothing was committed while the content is missing.
       expect(container.textContent).toContain('shell-text');
       expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+      const h1 = container.querySelector('h1');
       await renderFullPayload(root, <App />);
       expect(visibleText(container)).toBe(
         'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
       );
+      // The full payload has real elements where the stubs were, so they are
+      // remounted, as on a navigation.
+      expect(container.querySelector('h1')).not.toBe(h1);
       expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
       expect(missing).toHaveBeenCalledTimes(1);
       return {chunks, errors};

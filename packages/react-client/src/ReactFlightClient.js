@@ -99,9 +99,6 @@ import {
   REACT_FRAGMENT_TYPE,
 } from 'shared/ReactSymbols';
 
-// Reserved host prop (string so createElement keeps it; filtered in react-dom).
-export const ELIDED_HOST_RECOVER_PROP = 'unstable_elidedRecover';
-
 import getComponentNameFromType from 'shared/getComponentNameFromType';
 
 import {getOwnerStackByComponentInfoInDev} from 'shared/ReactComponentInfoStack';
@@ -2724,16 +2721,64 @@ function getInferredFunctionApproximate(code: string): () => void {
  * Elided host elements (enableFlightHtmlFirst).
  *
  * The server replaced a static host subtree with "$J<rowId>:<tag>" and the row
- * itself was dropped from the payload inlined in the HTML. We decode that to a
- * same-tag host element with dangerouslySetInnerHTML + suppressHydrationWarning
- * (the static-island idiom): during hydration React matches the existing DOM
- * node by tag/position and does not descend into or patch its children.
+ * itself was dropped from the payload inlined in the HTML. We decode that to
+ * <ElidedHost tag>, which renders an element of the same tag with
+ * dangerouslySetInnerHTML + suppressHydrationWarning. That is the standard
+ * "static island" idiom: during hydration React matches the existing DOM node
+ * by tag/position, does not descend into or patch its children or attributes,
+ * and does not warn. No props are retained.
  *
- * Same tag as a later full-Flight payload so navigation is an update, not a
- * remount. The reconciler adopts existing child DOM when leaving the island
- * (see reenterHydrationStateFromElidedHost). unstable_elidedRecover holds a
- * thenable used if the stub is client-rendered without server HTML.
+ * Why a wrapper component type rather than a bare host element: on navigation
+ * the full payload has a real <tag> at this position. Because the component
+ * type differs React unmounts the stub and mounts fresh DOM. A same-type host
+ * element would instead diff against {dangerouslySetInnerHTML: {__html: ''}}
+ * and append the new children after the stale server HTML.
+ *
+ * This is only correct while hydrating server-rendered HTML. A stub that is
+ * client rendered instead (a boundary or root that React client-renders after
+ * a server error or a hydration mismatch) has no DOM to adopt and no content.
+ * It suspends, so React keeps what is on screen (the server HTML or the
+ * boundary's fallback) instead of committing an empty element, and the
+ * framework is asked once to render the full payload (see
+ * recoverElidedContent). That payload has real elements where the stubs were,
+ * which replace them.
  */
+function ElidedHost(props: {
+  tag: string,
+  recover: () => Promise<empty>,
+}): React$Node {
+  // True while hydrating (React reads the server snapshot), false in a plain
+  // client render.
+  const hydrating = React.useSyncExternalStore(
+    subscribeNever,
+    getFalse,
+    getTrue,
+  );
+  const [adopts] = React.useState(hydrating);
+  if (!adopts) {
+    React.use(props.recover());
+  }
+  return React.createElement(props.tag, {
+    suppressHydrationWarning: true,
+    dangerouslySetInnerHTML: {__html: ''},
+  });
+}
+
+function subscribeNever(): () => void {
+  return noopUnsubscribe;
+}
+function noopUnsubscribe(): void {}
+function getFalse(): boolean {
+  return false;
+}
+function getTrue(): boolean {
+  return true;
+}
+
+// Called when a stub has to render without server HTML. The first call asks
+// the framework (the onElidedContentMissing option) to render the full,
+// non-elided payload. Without that option the page can't get the content
+// back, so it reports an error instead. Either way the stubs stay suspended.
 function recoverElidedContent(response: Response): Promise<empty> {
   let pending = response._elidedRecovery;
   if (pending === null) {
@@ -2766,17 +2811,11 @@ function createElidedHostElement(
   tag: string,
   key: null | string,
 ): React$Element<any> {
-  // Same-tag host so a later full Flight payload updates in place.
-  // unstable_elidedRecover is filtered out of DOM attributes in react-dom.
-  const props: any = {
-    suppressHydrationWarning: true,
-    dangerouslySetInnerHTML: {__html: ''},
-    [ELIDED_HOST_RECOVER_PROP]: recoverElidedContent.bind(null, response),
-  };
-  if (key !== null) {
-    props.key = key;
-  }
-  const element: any = React.createElement(tag, props);
+  const recover = recoverElidedContent.bind(null, response);
+  const element: any = React.createElement(
+    ElidedHost,
+    key === null ? {tag, recover} : {tag, recover, key},
+  );
   if (__DEV__) {
     // Elided elements keep their key if they had one, don't warn about it in lists.
     element._store.validated = 1;
@@ -2816,7 +2855,7 @@ function parseModelString(
       }
       case 'J': {
         if (enableFlightHtmlFirst) {
-          // Elided host element: "$J<rowId>:<tag>[:<key>]".
+          // Elided host element: "$J<rowId>:<tag>[:<key>]". See ElidedHost below.
           const colon = value.indexOf(':');
           const keyColon = value.indexOf(':', colon + 1);
           const ref = value.slice(2, colon);
@@ -5442,7 +5481,7 @@ function processFullStringRow(
         } else {
           const rows = claimElidedRowsRegistry(requestId);
           if (rows !== undefined) {
-            response._elidedRows = rows;
+            response._elidedRows = rows as any;
           }
         }
       }

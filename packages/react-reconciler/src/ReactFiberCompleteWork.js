@@ -164,7 +164,6 @@ import {
   getIsHydrating,
   upgradeHydrationErrorsToRecoverable,
   emitPendingHydrationWarnings,
-  completeElidedHostAdoption,
 } from './ReactFiberHydrationContext';
 import {
   renderHasNotSuspendedYet,
@@ -1362,8 +1361,6 @@ function completeWork(
       popHostContext(workInProgress);
       const type = workInProgress.type;
       if (current !== null && workInProgress.stateNode != null) {
-        // enableFlightHtmlFirst: close adopt-on-update before prop updates.
-        completeElidedHostAdoption(workInProgress);
         updateHostComponent(
           current,
           workInProgress,
