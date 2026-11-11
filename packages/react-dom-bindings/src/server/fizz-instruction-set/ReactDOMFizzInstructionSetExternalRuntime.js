@@ -33,7 +33,7 @@ window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
   revealDeclarativePatches,
 );
 window['$RP'] = patchDeclarativeBoundaries;
-observeDeclarativePatches();
+observeDeclarativePatches(false);
 
 listenToFormSubmissionsForReplaying();
 

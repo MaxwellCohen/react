@@ -729,7 +729,12 @@ function drainDeclarativePatches() {
   }
 }
 
-export function observeDeclarativePatches() {
+// Inline runtime: apply as soon as the patches arrive (patches that land in the same
+// tick are still one batch). The external runtime passes false and keeps the throttle.
+let applyImmediately = false;
+
+export function observeDeclarativePatches(immediate) {
+  applyImmediately = immediate;
   disarmDeclarativeBoundaries(document);
   new MutationObserver(drainDeclarativePatches).observe(document, {
     childList: true,
@@ -740,7 +745,7 @@ export function observeDeclarativePatches() {
 
 export function patchDeclarativeBoundaries() {
   if (arguments.length === 0) {
-    observeDeclarativePatches();
+    observeDeclarativePatches(true);
     // Track the paint time of the shell, like markShellTime does for $RC.
     requestAnimationFrame(() => {
       window['$RT'] = performance.now();
@@ -763,7 +768,9 @@ function enqueueDeclarativePatches(args) {
     return;
   }
   // This is the first patch of the batch. Flush it after the throttle.
-  if (typeof window['$RT'] !== 'number') {
+  if (applyImmediately) {
+    Promise.resolve().then(flushDeclarativePatches);
+  } else if (typeof window['$RT'] !== 'number') {
     // We haven't had our rAF callback yet, so schedule everything for the first paint.
     requestAnimationFrame(flushDeclarativePatches);
   } else {
