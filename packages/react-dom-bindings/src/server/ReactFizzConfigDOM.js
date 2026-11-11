@@ -4798,7 +4798,7 @@ export function writeEndPendingDeclarativeBoundary(
 
 const startDeclarativePatch1 = stringToPrecomputedChunk('<template for="');
 const startDeclarativePatch2 = stringToPrecomputedChunk('">');
-const endDeclarativePatch = stringToPrecomputedChunk('</template><!---->');
+const endDeclarativePatch = stringToPrecomputedChunk('</template>');
 const declarativeStyleOpen1 = stringToPrecomputedChunk(' data-precedence="');
 const declarativeStyleOpen2 = stringToPrecomputedChunk('" data-href="');
 const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
@@ -4951,6 +4951,7 @@ export function writeDeclarativeClientRenderedBoundary(
   return writeChunkAndReturn(destination, clientRenderedSuspenseBoundaryError2);
 }
 
+const declarativeGroupEnd = stringToPrecomputedChunk('<!---->');
 const patchDeclarativeScriptCall = stringToPrecomputedChunk('$RP(');
 const patchDeclarativeScriptEnd = stringToPrecomputedChunk(')</script>');
 const patchDeclarativeFunction = stringToChunk(
@@ -4979,6 +4980,9 @@ export function writeDeclarativePatchScript(
   if (ids.length === 0) {
     return true;
   }
+  // One empty comment after the group: once something follows a template, the observer
+  // knows the parser has closed it (the templates before the last one have a sibling).
+  writeChunk(destination, declarativeGroupEnd);
   const scriptFormat =
     !enableFizzExternalRuntime ||
     resumableState.streamingFormat === ScriptStreamingFormat;
