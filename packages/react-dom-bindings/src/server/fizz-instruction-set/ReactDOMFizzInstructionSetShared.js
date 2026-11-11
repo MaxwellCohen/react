@@ -735,6 +735,9 @@ export function observeDeclarativePatches() {
     childList: true,
     subtree: true,
   });
+  // Once the parser is done every template is closed, even one nothing follows.
+  document.addEventListener('DOMContentLoaded', drainDeclarativePatches);
+  window.addEventListener('load', drainDeclarativePatches);
   drainDeclarativePatches();
 }
 
