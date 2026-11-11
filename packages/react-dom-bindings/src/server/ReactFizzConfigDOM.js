@@ -4798,7 +4798,7 @@ export function writeEndPendingDeclarativeBoundary(
 
 const startDeclarativePatch1 = stringToPrecomputedChunk('<template for="');
 const startDeclarativePatch2 = stringToPrecomputedChunk('">');
-const endDeclarativePatch = stringToPrecomputedChunk('</template>');
+const endDeclarativePatch = stringToPrecomputedChunk('</template><!---->');
 const declarativeStyleOpen1 = stringToPrecomputedChunk(' data-precedence="');
 const declarativeStyleOpen2 = stringToPrecomputedChunk('" data-href="');
 const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
@@ -4983,48 +4983,35 @@ export function writeDeclarativePatchScript(
     !enableFizzExternalRuntime ||
     resumableState.streamingFormat === ScriptStreamingFormat;
   if (scriptFormat) {
-    writeChunk(destination, renderState.startInlineScript);
-    writeChunk(destination, endOfStartTag);
-    if (
+    // $RP() observes the document, so groups are not announced. Only the one-time
+    // function definitions are sent, when they are not already.
+    const needFunction =
       (resumableState.instructions & SentPatchDeclarativeFunction) ===
-      NothingSent
-    ) {
-      resumableState.instructions |= SentPatchDeclarativeFunction;
-      writeChunk(destination, patchDeclarativeFunction);
-    }
-    if (
+      NothingSent;
+    const needUpgrade =
       enableViewTransition &&
       (resumableState.instructions & NeedUpgradeToViewTransitions) !==
         NothingSent &&
       (resumableState.instructions & SentPatchUpgradeToViewTransitions) ===
-        NothingSent
-    ) {
+        NothingSent;
+    if (!needFunction && !needUpgrade) {
+      return true;
+    }
+    writeChunk(destination, renderState.startInlineScript);
+    writeChunk(destination, endOfStartTag);
+    if (needFunction) {
+      resumableState.instructions |= SentPatchDeclarativeFunction;
+      writeChunk(destination, patchDeclarativeFunction);
+    }
+    if (needUpgrade) {
       // Reveals animate with ViewTransitions, same as $RV does for $RC.
       resumableState.instructions |= SentPatchUpgradeToViewTransitions;
       writeChunk(destination, patchDeclarativeUpgradeChunk);
     }
-    writeChunk(destination, patchDeclarativeScriptCall);
-    for (let i = 0; i < ids.length; i++) {
-      if (i > 0) {
-        writeChunk(destination, patchDeclarativeSeparator);
-      }
-      writeChunk(destination, patchDeclarativeQuote);
-      writeChunk(destination, renderState.boundaryPrefix);
-      writeChunk(destination, stringToChunk(ids[i].toString(16)));
-      writeChunk(destination, patchDeclarativeQuote);
-    }
-    return writeChunkAndReturn(destination, patchDeclarativeScriptEnd);
+    return writeChunkAndReturn(destination, endInlineScript);
   }
-  // External runtime already defines $RP; emit a data instruction it observes.
-  writeChunk(destination, patchDeclarativeDataStart);
-  for (let i = 0; i < ids.length; i++) {
-    if (i > 0) {
-      writeChunk(destination, patchDeclarativeSeparator);
-    }
-    writeChunk(destination, renderState.boundaryPrefix);
-    writeChunk(destination, stringToChunk(ids[i].toString(16)));
-  }
-  return writeChunkAndReturn(destination, patchDeclarativeDataEnd);
+  // The external runtime observes the document too.
+  return true;
 }
 
 export function writeEndDeclarativePatch(

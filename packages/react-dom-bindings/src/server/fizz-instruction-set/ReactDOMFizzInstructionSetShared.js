@@ -710,21 +710,53 @@ export function disarmDeclarativeBoundaries(root) {
   }
 }
 
+// Self-driving mode: instead of being told which patches arrived with $RP("B:0",...),
+// find every <template for> that is still in the document (the browser removes the ones
+// it applied itself) and queue it. A template counts once something follows it, which
+// proves the parser has closed it (the server writes an empty comment after each one).
+function drainDeclarativePatches() {
+  const ids = [];
+  const found = document.querySelectorAll('template[for]');
+  for (let i = 0; i < found.length; i++) {
+    const t = found[i];
+    if (!t['_rpq'] && (t.nextSibling || document.readyState !== 'loading')) {
+      t['_rpq'] = true;
+      ids.push(t.getAttribute('for'));
+    }
+  }
+  if (ids.length > 0) {
+    enqueueDeclarativePatches(ids);
+  }
+}
+
+export function observeDeclarativePatches() {
+  disarmDeclarativeBoundaries(document);
+  new MutationObserver(drainDeclarativePatches).observe(document, {
+    childList: true,
+    subtree: true,
+  });
+  drainDeclarativePatches();
+}
+
 export function patchDeclarativeBoundaries() {
   if (arguments.length === 0) {
-    disarmDeclarativeBoundaries(document);
+    observeDeclarativePatches();
     // Track the paint time of the shell, like markShellTime does for $RC.
     requestAnimationFrame(() => {
       window['$RT'] = performance.now();
     });
     return;
   }
+  enqueueDeclarativePatches(Array.prototype.slice.call(arguments));
+}
+
+function enqueueDeclarativePatches(args) {
   const queue = window['$RPQ'];
   const first = queue.length === 0;
   const ids = [];
-  for (let i = 0; i < arguments.length; i++) {
-    ids.push(arguments[i]);
-    queue.push(arguments[i]);
+  for (let i = 0; i < args.length; i++) {
+    ids.push(args[i]);
+    queue.push(args[i]);
   }
   queueDeclarativePatches(ids);
   if (!first) {
