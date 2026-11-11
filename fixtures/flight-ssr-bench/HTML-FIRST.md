@@ -1,10 +1,10 @@
 # [Flight] Don't re-ship static server output on initial load (`enableFlightStaticHostElision`)
 
-An RSC page's first response carries the same static markup twice: as HTML for the browser to paint, and again inside the Flight payload the browser needs to hydrate. For markup that a Server Component renders and that never changes on the client (plain elements, inline CSS, JSON-LD), the second copy is wasted bytes, and it costs the server time to serialize, tee and parse.
+On first load, an RSC page sends its static markup twice: as HTML for the browser to paint, and again inside the Flight payload the browser inlines to hydrate. For markup that a Server Component renders and that never changes on the client (plain elements, inline CSS, JSON-LD), the second copy is wasted bandwidth. It also costs the server time to serialize, tee and parse.
 
-With `enableFlightStaticHostElision` on, Flight leaves that markup out of the payload the browser receives and writes a small `$J` stub in its place. SSR still needs the real content to produce the HTML, so React hands it over separately. The browser hydrates the stub by adopting the DOM that is already on the page.
+With `enableFlightStaticHostElision` on, Flight leaves that markup out of the payload the browser receives and writes a small `$J` stub in its place. SSR still needs the real content to write the HTML, so Flight hands it over separately. The browser hydrates a stub by adopting the DOM that is already on the page.
 
-The flag is off by default and is the only flag. There is no dedupe or lazy-parser flag; payload dedupe is left to the separate upstream work.
+The flag is off by default and is the only one. Payload dedupe is left to the separate upstream work.
 
 ## What gets elided
 
@@ -15,19 +15,19 @@ Static host output in host position:
 - `children` of Client Components (layouts, slots)
 - the entries of a root element map such as `{page, layout}`, which is how Waku shapes its payload
 
-A region is elided only if everything in it is static: primitive props, no `ref`, no client references, no Suspense, no pending promises. Tags that need client identity (`form`, `input`, `img`, `svg`, `title`, `link`, `meta`, and similar) are never elided. A `<style>` without `precedence` and `href`, and JSON or `application/ld+json` `<script>` blocks, can be. Large strings inside an elided region stay in that region and never reach the main stream.
+A region is elided only if everything in it is static: primitive props, no `ref`, no client references, no Suspense and no pending promises. Tags that need client identity (`form`, `input`, `img`, `svg`, `title`, `link`, `meta`, and similar) are never elided. A `<style>` without `precedence` and `href`, and JSON or `application/ld+json` `<script>` blocks, can be. Large strings inside an elided region stay in that region and never reach the main stream.
 
 Client Components are never elided and keep all their props. Props other than `children` (`panels`, `fallback`) stay in the payload, because the client may render them later without any server DOM behind them.
 
 ## How a framework uses it
 
-The framework passes `elideStaticHosts: true` on the Flight render that feeds HTML SSR. Nothing else is needed:
+The framework passes `elideStaticHosts: true` on the Flight render that feeds HTML SSR. Nothing else is needed. From there:
 
 1. Flight stores the elided rows in a registry on `globalThis` and writes a `:Q<id>` row into the stream.
 2. The first in-process `createFrom*` on that stream claims the rows, so Fizz sees the full content and writes complete HTML.
 3. The browser has an empty registry. It sees the stubs and adopts the HTML.
 
-Without the option nothing is elided. Navigation, refetch and action responses therefore need no change, and forgetting the option means no savings, not a broken page. React cannot tell where a stream is going, since the bytes are the same either way, so the framework has to say. It already knows which requests are which: Waku routes RSC requests under an `RSC/` URL prefix, and Next.js sends an `RSC: 1` header.
+Without the option nothing is elided. Navigation, refetch and action responses therefore need no change, and forgetting the option loses the savings but breaks nothing. React cannot tell where a stream is going, because the bytes are identical either way, so the framework has to say. It already knows which requests are which: Waku serves RSC requests under an `RSC/` URL prefix, and Next.js sends an `RSC: 1` header.
 
 For out-of-process or custom consumers, pass `elideStaticHosts: {onRow, onValue}` instead. `onRow(id, json)` receives the row as JSON and `onValue(id, value)` receives the live element. The SSR-side client then takes the rows as the `elidedHostRows` option. The same taint checks apply as on the normal path.
 
