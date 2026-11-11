@@ -24,7 +24,7 @@ Client Components are never elided and keep all their props. Props other than `c
 The framework passes `elideStaticHosts: true` on the Flight render that feeds HTML SSR. Nothing else is needed. From there:
 
 1. Flight stores the elided rows in a registry on `globalThis` and writes a `:Q<id>` row into the stream.
-2. The first in-process `createFrom*` on that stream claims the rows, so Fizz sees the full content and writes complete HTML.
+2. The first in-process `createFrom*` on that stream claims the rows, so Fizz sees the full content and writes complete HTML. Rows that are never claimed (nothing in-process reads the stream) are released when the Flight request is garbage collected, which only happens once no consumer can still read the stream.
 3. The browser has an empty registry. It sees the stubs and adopts the HTML.
 
 Without the option nothing is elided. Navigation, refetch and action responses therefore need no change, and forgetting the option loses the savings but breaks nothing. React cannot tell where a stream is going, because the bytes are identical either way, so the framework has to say. It already knows which requests are which: Waku serves RSC requests under an `RSC/` URL prefix, and Next.js sends an `RSC: 1` header.
@@ -82,7 +82,6 @@ Other checks:
 ## Limits
 
 - The hoisted `<head>` content of a page can differ from stock in which preload links appear. Resources that matter are the same.
-- Rows that nothing in-process consumes are released only if the request is aborted, so a response that is only ever sent to a browser, with the option on, keeps its rows in memory.
 - Next.js has not been tried. The opt-in there would be `elideStaticHosts: true` when the request is not an RSC request.
 - Four Jest tests fail in this environment on the base commit as well (three Node Buffer-pool checks under Node 26 and one Edge outlining timeout).
 - Eliding Client Components themselves is out of scope. It needs a guarantee that the component does nothing in the browser.
