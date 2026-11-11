@@ -1,6 +1,6 @@
 # [Flight] HTML-first initial load: don't re-ship static server output (`enableFlightStaticHostElision`)
 
-Single flag (`enableFlightStaticHostElision`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default. When on, a request elides only if the framework passes `elideStaticHosts: true` on the Flight render that feeds HTML SSR (internal registry, no `elidedRows` side channel); without it nothing is elided, so navigation / refetch / action responses need no change. `elideStaticHosts: {onRow, onValue}` remains for custom / out-of-process sinks.
+Single flag (`enableFlightStaticHostElision`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default. When on, a request elides only if the framework passes `elideStaticHosts: true` on the Flight render that feeds HTML SSR (internal registry, no `elidedHostRows` side channel); without it nothing is elided, so navigation / refetch / action responses need no change. `elideStaticHosts: {onRow, onValue}` remains for custom / out-of-process sinks.
 
 **Scope: static Server Component host output in host position.** That includes Suspense children and Client Component `children` (layouts / slots). Client components themselves are never elided: they keep full props in Flight and hydrate normally. Non-`children` props (e.g. `panels`, `fallback`) stay in the payload.
 
@@ -44,15 +44,15 @@ Navigation/refetch responses simply do not opt in. On navigation the full payloa
 **re-creates** those regions from the payload (the old DOM is not trusted: the new page may differ)
 
 ## Results
-### 41-scenario corpus (tip `8dd5e5f61d`, flag off vs on, full size)
+### 41-scenario corpus (tip `31b26561f1`, flag off vs on, full size)
 Sum across pages (whole-document gzip/brotli; Flight = inlined `<script>` payload bytes):
 
 | Metric | Stock (flag off) | Flag on | Change |
 |---|---:|---:|---:|
-| Gzip download | 1,023,890 | 586,846 | **−42.7%** |
-| Raw HTML | 14,555,561 | 7,252,811 | **−50.2%** |
-| Inlined Flight | 9,280,601 | 1,977,851 | **−78.7%** |
-| Brotli | 479,331 | 286,455 | **−40.2%** |
+| Gzip download | 1,023,906 | 586,852 | **−42.7%** |
+| Raw HTML | 14,555,714 | 7,252,862 | **−50.2%** |
+| Inlined Flight | 9,280,754 | 1,977,902 | **−78.7%** |
+| Brotli | 479,414 | 286,520 | **−40.2%** |
 
 See [SCENARIOS.md](./SCENARIOS.md) and `yarn scenarios:metrics`. Aggregate savings are dominated by a few heavy pages; median per-page gzip change is smaller. Some pages show little or no gzip win (`all-client`, non-`children` props like `tabs-panels-prop`, or gzip-worse cases like `repeated-long-strings`).
 
@@ -62,10 +62,10 @@ Waku's Flight model is a root element map (`{page, layout, …}`); entries of a 
 
 | | stock | flag on, stock Waku | flag on + one-line opt-in (`elideStaticHosts: true`) |
 |---|---:|---:|---:|
-| req/s | 1.00 | 1.01 | **3.19×** (3.15–3.24) |
-| TTFB | 1.00 | 0.99 | **0.48×** |
+| req/s | 1.00 | 1.00 | **3.21×** (3.10–3.24) |
+| TTFB | 1.00 | 0.98 | **0.43×** |
 | inlined Flight | 823,655 B | 823,655 B | 18,978 B (−97.7%) |
-| gzip HTML | 130,459 B | 130,466 B | 60,883 B (−53.3%) |
+| gzip HTML | 130,459 B | 130,460 B | 60,890 B (−53.3%) |
 
 Stock Waku with the flag on is byte-identical to stock and navigates correctly (forgetting the option means no win, not a broken page).
 All variants: hydrate, interactive counters, 0 console errors, SPA navigation fetches the full payload (602,063 B). Waku patch: `MaxwellCohen/wakujs` branch `rsc-html-first-optin`.
@@ -85,7 +85,7 @@ pruning version, and which numbers moved and why. Summary:
 CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Flight (they need their props to hydrate).
 
 ## Correctness
-- Scenario corpus (`yarn scenarios:check --size full --variants off,all --browser chromium|firefox|webkit`): hydrated + interacted DOM vs flags-off, plus SPA navigation with a full (non-opted-in) Flight payload. Chromium is **41/41** at `8dd5e5f61d` — registry SSR applies Flight `:HL` preload hints into Fizz (pinned `currentRequest` across suspended work + duplicate hint forward) matching flags-off / side-channel.
+- Scenario corpus (`yarn scenarios:check --size full --variants off,all --browser chromium|firefox|webkit`): hydrated + interacted DOM vs flags-off, plus SPA navigation with a full (non-opted-in) Flight payload. Chromium is **41/41** at `31b26561f1` — registry SSR applies Flight `:HL` preload hints into Fizz (pinned `currentRequest` across suspended work + duplicate hint forward) matching flags-off / side-channel.
 - Real browser (`yarn e2e`): hydration adopts the **same DOM nodes** (1000/1000 rows, `<style>`, JSON-LD), zero console warnings, zero recoverable errors, interactive counters (top-level and mid-table) work, client navigation fetches full Flight and re-creates the elided regions with the new content.
 - jest (`ReactFlightDOMBrowserStaticHostElision-test`, HostElision suites): leakage, resources/executable scripts not elided, whole-document + Suspense hydration, client components keep full props, interactive hand-off, live rows, keyed array-children rows, taint on live rows, navigation to different content, root element maps.
 - Every binding x entry: `node fixtures/flight-ssr-bench/e2e/bindings-smoke.js` (JSON rows, live rows, inline fallback) for webpack, turbopack, parcel, unbundled, esm.
