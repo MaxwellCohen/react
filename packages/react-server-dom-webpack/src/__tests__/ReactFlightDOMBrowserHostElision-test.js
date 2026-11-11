@@ -9,10 +9,10 @@
 
 'use strict';
 
-// Run the whole file with enableFlightHtmlFirst turned on.
+// Run the whole file with enableFlightStaticHostElision turned on.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightHtmlFirst: true,
+  enableFlightStaticHostElision: true,
 }));
 
 // Polyfills for test environment
@@ -112,11 +112,11 @@ describe('ReactFlightDOMBrowser host elision', () => {
     return encoder.encode(text).length;
   }
 
-  // `elidedRows` is only given to the consumer that renders HTML (SSR). The
+  // `elidedHostRows` is only given to the consumer that renders HTML (SSR). The
   // browser consumer doesn't get them and adopts the server DOM instead.
   function consume(rsc, elidedRows, extraOptions) {
     return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
-      elidedRows,
+      elidedHostRows: elidedRows,
       ...extraOptions,
     });
   }
@@ -144,8 +144,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
   async function renderApp(count, elide) {
     const rows = new Map();
     const options = elide
-      ? {onElidedRow: (id, json) => rows.set(id, json)}
-      : {onElidedRow: false};
+      ? {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}
+      : {elideStaticHosts: false};
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -287,11 +287,11 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toBe('Reportonly');
   });
 
-  // Zero framework opt-in: flag on, no onElidedRow / elidedRows. The server
+  // Zero framework opt-in: flag on, no elideStaticHosts / elidedHostRows. The server
   // registers rows internally; the first createFrom* claims them for SSR.
-  // `flightOpts` is undefined (auto registry) or {onElidedRow: false} (SPA nav).
+  // `flightOpts` is undefined (auto registry) or {elideStaticHosts: false} (SPA nav).
   async function renderSharedApp(count, ...rest) {
-    const flightOpts = rest.length ? rest[0] : {onElidedRow: true};
+    const flightOpts = rest.length ? rest[0] : {elideStaticHosts: true};
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -337,7 +337,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     return main;
   }
 
-  it('SSRs and hydrates with no onElidedRow or elidedRows (internal registry)', async () => {
+  it('SSRs and hydrates with no elideStaticHosts or elidedHostRows (internal registry)', async () => {
     const ROWS = 50;
     const main = await renderSharedApp(ROWS);
     expect(main).toContain(':Q');
@@ -375,7 +375,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(main).not.toContain('$J');
     expect(main).not.toContain(':Q');
     expect(main).toContain('name-9');
-    const off = await renderSharedApp(10, {onElidedRow: false});
+    const off = await renderSharedApp(10, {elideStaticHosts: false});
     expect(off).not.toContain('$J');
     expect(off).not.toContain(':Q');
     expect(off).toContain('name-9');
@@ -398,7 +398,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(htmlB.match(/name-\d+/g).length).toBe(7);
   });
 
-  it('SPA navigation uses onElidedRow: false for a full payload', async () => {
+  it('SPA navigation uses elideStaticHosts: false for a full payload', async () => {
     const ROWS = 20;
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
@@ -442,7 +442,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
 
-    const main = await renderOnce({onElidedRow: true});
+    const main = await renderOnce({elideStaticHosts: true});
     const html = await ssr({main, rows: undefined});
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -461,7 +461,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelectorAll('tr').length).toBe(ROWS);
 
     // Same module identity, full Flight (what /rsc navigation must emit).
-    const nextMain = await renderOnce({onElidedRow: false});
+    const nextMain = await renderOnce({elideStaticHosts: false});
     expect(nextMain).not.toContain('$J');
     expect(nextMain).not.toContain(':Q');
     const nextResponse = consume(nextMain);
@@ -501,7 +501,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
           <Page v="a" />,
           webpackMap,
           {
-            onElidedRow: true,
+            elideStaticHosts: true,
           },
         ),
       ),
@@ -534,13 +534,13 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
     const model = {page: <Page />, later: Promise.resolve(<Page />)};
-    const render = (opts = {onElidedRow: true}) =>
+    const render = (opts = {elideStaticHosts: true}) =>
       serverAct(async () =>
         readAll(
           ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
         ),
       );
-    const full = await render({onElidedRow: false});
+    const full = await render({elideStaticHosts: false});
     const main = await render();
     expect(main.length).toBeLessThan(full.length / 10);
     expect(main).not.toContain('name-99');
@@ -575,8 +575,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
   async function flight(element, elide = true) {
     const rows = new Map();
     const options = elide
-      ? {onElidedRow: (id, json) => rows.set(id, json)}
-      : {onElidedRow: false};
+      ? {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}
+      : {elideStaticHosts: false};
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
@@ -993,7 +993,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
       const response = ReactServerDOMClient.createFromReadableStream(
         ssrStream,
-        {elidedRows: f.rows},
+        {elidedHostRows: f.rows},
       );
       let buffer = '';
       await act(async () => {

@@ -52,11 +52,11 @@ async function start(port) {
       if (kind === 'rsc' && pages[name]) {
         // (html-first-json shares the page; only the SSR hand-off differs.)
         // Navigation response: full Flight. It does not opt in to elision
-        // (onElidedRow: false states that explicitly).
+        // (elideStaticHosts: false states that explicitly).
         res.writeHead(200, {'Content-Type': 'text/x-component'});
         return b
           .renderRSCNode(clientManifest, pages[name], rows, {
-            onElidedRow: false,
+            elideStaticHosts: false,
           })
           .pipe(res);
       }

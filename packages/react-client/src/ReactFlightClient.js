@@ -47,7 +47,7 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
-  enableFlightHtmlFirst,
+  enableFlightStaticHostElision,
 } from 'shared/ReactFeatureFlags';
 import {
   claimElidedRowsRegistry,
@@ -397,9 +397,9 @@ type Response = {
   _encodeFormAction: void | EncodeFormActionCallback,
   _nonce: ?string,
   _chunks: Map<number, SomeChunk<any>>,
-  // enableFlightHtmlFirst: rows the server withheld from the stream.
+  // enableFlightStaticHostElision: rows the server withheld from the stream.
   _elidedRows: null | ElidedRows,
-  // enableFlightHtmlFirst: see recoverElidedContent.
+  // enableFlightStaticHostElision: see recoverElidedContent.
   _onElidedContentMissing: null | (() => void),
   _elidedRecovery: null | Promise<empty>,
   _stringDecoder: StringDecoder,
@@ -439,14 +439,14 @@ function hasGCedResponse(weakResponse: WeakResponse): boolean {
 
 // The side channel for rows the server elided from the stream. Rows are
 // complete JSON strings, so they are never interleaved with stream bytes.
-// A row is JSON, or (enableFlightHtmlFirst, in-process) a ready React node.
+// A row is JSON, or (enableFlightStaticHostElision, in-process) a ready React node.
 export type ElidedRows = {get(id: number): void | string | mixed, ...};
 
 export function attachElidedRows(
   weakResponse: WeakResponse,
   rows: ElidedRows,
 ): void {
-  if (enableFlightHtmlFirst) {
+  if (enableFlightStaticHostElision) {
     unwrapWeakResponse(weakResponse)._elidedRows = rows;
   }
 }
@@ -455,7 +455,7 @@ export function attachElidedContentMissing(
   weakResponse: WeakResponse,
   onElidedContentMissing: () => void,
 ): void {
-  if (enableFlightHtmlFirst) {
+  if (enableFlightStaticHostElision) {
     unwrapWeakResponse(weakResponse)._onElidedContentMissing =
       onElidedContentMissing;
   }
@@ -2718,7 +2718,7 @@ function getInferredFunctionApproximate(code: string): () => void {
 }
 
 /**
- * Elided host elements (enableFlightHtmlFirst).
+ * Elided host elements (enableFlightStaticHostElision).
  *
  * The server replaced a static host subtree with "$J<rowId>:<tag>" and the row
  * itself was dropped from the payload inlined in the HTML. We decode that to
@@ -2854,7 +2854,7 @@ function parseModelString(
         return value.slice(1);
       }
       case 'J': {
-        if (enableFlightHtmlFirst) {
+        if (enableFlightStaticHostElision) {
           // Elided host element: "$J<rowId>:<tag>[:<key>]". See ElidedHost below.
           const colon = value.indexOf(':');
           const keyColon = value.indexOf(':', colon + 1);
@@ -2879,8 +2879,8 @@ function parseModelString(
               throw new Error(
                 'Missing elided row ' +
                   ref +
-                  '. The elidedRows option must contain every row that ' +
-                  'the server handed to onElidedRow for this payload.',
+                  '. The elidedHostRows option must contain every row that ' +
+                  'the server handed to elideStaticHosts for this payload.',
               );
             }
           }
@@ -2904,7 +2904,7 @@ function parseModelString(
         // support. Never parse the id as a lazy reference to an unrelated row.
         // eslint-disable-next-line react-internal/prod-error-codes
         throw new Error(
-          'Received an elided host element but enableFlightHtmlFirst is ' +
+          'Received an elided host element but enableFlightStaticHostElision is ' +
             'off in this client. The server and client builds must match.',
         );
       }
@@ -5472,11 +5472,11 @@ function processFullStringRow(
       return;
     }
     case 81 /* "Q" */: {
-      // enableFlightHtmlFirst: in-process registry id for elided rows.
-      if (enableFlightHtmlFirst) {
+      // enableFlightStaticHostElision: in-process registry id for elided rows.
+      if (enableFlightStaticHostElision) {
         const requestId = parseInt(row, 16);
         if (response._elidedRows !== null) {
-          // Framework already supplied elidedRows; drop the unused registry.
+          // Framework already supplied elidedHostRows; drop the unused registry.
           releaseElidedRowsRegistry(requestId);
         } else {
           const rows = claimElidedRowsRegistry(requestId);

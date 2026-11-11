@@ -17,7 +17,7 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
-  enableFlightHtmlFirst,
+  enableFlightStaticHostElision,
 } from 'shared/ReactFeatureFlags';
 import {
   allocateElidedRowsRegistry,
@@ -558,7 +558,7 @@ type Task = {
   keyPath: ReactKey, // parent server component keys
   implicitSlot: boolean, // true if the root server component of this sequence had a null key
   formatContext: FormatContext, // an approximate parent context from host components
-  hostPosition: boolean, // enableFlightHtmlFirst: the root of this task is in host position
+  hostPosition: boolean, // enableFlightStaticHostElision: the root of this task is in host position
   thenableState: ThenableState | null,
   timed: boolean, // Profiling-only. Whether we need to track the completion time of this task.
   time: number, // Profiling-only. The last time stamp emitted for this task.
@@ -593,6 +593,15 @@ const PRERENDER = 21;
 // entries must be written atomically — see emitTextChunk and
 // emitTypedArrayChunk for why, and flushCompletedChunks for how it's read.
 const NEXT_TWO_CHUNKS_ARE_ATOMIC: symbol = Symbol();
+
+// enableFlightStaticHostElision: `true` uses the internal registry, an object
+// receives the elided rows (JSON) and/or live values instead.
+export type ElideStaticHosts =
+  | boolean
+  | {
+      onRow?: (id: number, json: string) => void,
+      onValue?: (id: number, value: mixed) => void,
+    };
 
 export type Request = {
   status: 10 | 11 | 12 | 13 | 14,
@@ -629,9 +638,9 @@ export type Request = {
   identifierPrefix: string,
   onElidedRow: null | ((id: number, json: string) => void),
   onElidedValue: null | ((id: number, value: mixed) => void),
-  // enableFlightHtmlFirst: internal registry id when no framework callbacks.
+  // enableFlightStaticHostElision: internal registry id when no framework callbacks.
   elidedRequestId: number,
-  // enableFlightHtmlFirst: memoized isStaticHostNode results.
+  // enableFlightStaticHostElision: memoized isStaticHostNode results.
   staticHostCache: null | WeakMap<any, boolean>,
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
@@ -709,8 +718,7 @@ function RequestInstance(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  onElidedRow: void | boolean | ((id: number, json: string) => void),
-  onElidedValue: void | false | ((id: number, value: mixed) => void),
+  elideStaticHosts: void | ElideStaticHosts,
 ) {
   if (
     ReactSharedInternals.A !== null &&
@@ -762,36 +770,36 @@ function RequestInstance(
   this.writtenImportStringsSize = 0;
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
-  // enableFlightHtmlFirst: elision is opt-in per request, so a stream that goes
-  // straight to the browser (navigation, refetch, action result) is never
-  // elided by accident. The framework opts in on the response that feeds SSR:
-  // `onElidedRow: true` collects rows in an internal registry keyed by a request
-  // id emitted in the stream (`:Q…`), which the first in-process createFrom*
-  // claims. A function sink (`onElidedRow` JSON, `onElidedValue` live value)
-  // is the override for out-of-process or custom consumers.
+  // enableFlightStaticHostElision: elision is opt-in per request, so a stream
+  // that goes straight to the browser (navigation, refetch, action result) is
+  // never elided by accident. The framework opts in on the response that feeds
+  // SSR: `elideStaticHosts: true` collects rows in an internal registry keyed
+  // by a request id emitted in the stream (`:Q…`), which the first in-process
+  // createFrom* claims. `{onRow, onValue}` (JSON row / live value) is the
+  // override for out-of-process or custom consumers.
   this.elidedRequestId = 0;
-  if (!enableFlightHtmlFirst) {
-    this.onElidedValue = null;
-    this.onElidedRow = null;
-  } else if (typeof onElidedValue === 'function') {
-    this.onElidedValue = onElidedValue;
-    this.onElidedRow = typeof onElidedRow === 'function' ? onElidedRow : noop;
-  } else if (typeof onElidedRow === 'function') {
-    this.onElidedValue = null;
-    this.onElidedRow = onElidedRow;
-  } else if (onElidedRow === true) {
-    const registry = allocateElidedRowsRegistry();
-    this.elidedRequestId = registry.requestId;
-    this.onElidedValue = (id: number, value: mixed) => {
-      registry.rows.set(id, value);
-    };
-    this.onElidedRow = noop;
-    emitElidedRowsRequestIdChunk(this, registry.requestId);
-  } else {
-    this.onElidedValue = null;
-    this.onElidedRow = null;
+  this.onElidedValue = null;
+  this.onElidedRow = null;
+  if (enableFlightStaticHostElision && elideStaticHosts) {
+    if (elideStaticHosts === true) {
+      const registry = allocateElidedRowsRegistry();
+      this.elidedRequestId = registry.requestId;
+      this.onElidedValue = (id: number, value: mixed) => {
+        registry.rows.set(id, value);
+      };
+      this.onElidedRow = noop;
+      emitElidedRowsRequestIdChunk(this, registry.requestId);
+    } else {
+      const {onRow, onValue} = elideStaticHosts;
+      if (typeof onValue === 'function') {
+        this.onElidedValue = onValue;
+        this.onElidedRow = typeof onRow === 'function' ? onRow : noop;
+      } else if (typeof onRow === 'function') {
+        this.onElidedRow = onRow;
+      }
+    }
   }
-  this.staticHostCache = enableFlightHtmlFirst ? new WeakMap() : null;
+  this.staticHostCache = enableFlightStaticHostElision ? new WeakMap() : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
   this.onError = onError === undefined ? defaultErrorHandler : onError;
@@ -878,8 +886,7 @@ export function createRequest(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  onElidedRow?: boolean | ((id: number, json: string) => void),
-  onElidedValue?: false | ((id: number, value: mixed) => void),
+  elideStaticHosts?: ElideStaticHosts,
 ): Request {
   if (__DEV__) {
     resetOwnerStackLimit();
@@ -899,8 +906,7 @@ export function createRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
-    onElidedRow,
-    onElidedValue,
+    elideStaticHosts,
   );
 }
 
@@ -935,7 +941,6 @@ export function createPrerenderRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
-    undefined,
     undefined,
   );
 }
@@ -3095,7 +3100,7 @@ function resolveModelChildren(
 ): ReactJSONValue {
   if (isArray(rendered)) {
     if (
-      enableFlightHtmlFirst &&
+      enableFlightStaticHostElision &&
       request.onElidedRow !== null &&
       rendered[0] === REACT_ELEMENT_TYPE
     ) {
@@ -3112,7 +3117,7 @@ function resolveModelChildren(
   // assignment would hit Object.prototype's setter instead of creating a key.
   const resolved: {[key: string]: ReactJSONValue} = {} as any;
   const trackHostPosition =
-    enableFlightHtmlFirst && request.onElidedRow !== null;
+    enableFlightStaticHostElision && request.onElidedRow !== null;
   const prevHostPosition = hostPosition;
   const isElementProps =
     trackHostPosition && (rendered as any) === elementProps;
@@ -3803,14 +3808,14 @@ function serializeImportString(request: Request, value: string): string {
 
 let modelRoot: null | ReactClientValue = false;
 
-// --- Host elision (prototype, enableFlightHtmlFirst) ---------------------
+// --- Host elision (prototype, enableFlightStaticHostElision) ---------------------
 // Host elements produced by Server Components whose whole subtree is static
 // (host elements, text, and primitive-only props; no client references,
 // Suspense, lazy, Promises or Server Components still to render) are not
 // serialized into the primary payload. We serialize the full element to JSON,
-// hand (id, json) to the request's onElidedRow callback, and replace it with
+// hand (id, json) to the request's onRow callback, and replace it with
 // the placeholder "$J<id>:<tag>". The framework gives the rows to the Flight
-// client that feeds SSR (the `elidedRows` client option), so HTML contains the
+// client that feeds SSR (the `elidedHostRows` client option), so HTML contains the
 // content, while the main stream, which it can inline for the browser as is,
 // does not. A client without the row renders ElidedHost and adopts the DOM
 // (see ReactFlightClient's "$J" handling).
@@ -3850,7 +3855,7 @@ const nonElidableTags = new Set([
   'details',
 ]);
 
-// enableFlightHtmlFirst: Fizz renders these in place (not hoisted) unless
+// enableFlightStaticHostElision: Fizz renders these in place (not hoisted) unless
 // they are resources, and they carry no behavior the client must re-create:
 // <style> without precedence+href, and non-executable data-block scripts.
 function isElidableStyleOrScript(type: string, props: any): boolean {
@@ -3931,7 +3936,7 @@ function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
   const props = node.props;
   if (nonElidableTags.has(type)) {
     if (
-      !enableFlightHtmlFirst ||
+      !enableFlightStaticHostElision ||
       (type !== 'style' && type !== 'script') ||
       !isElidableStyleOrScript(type, props)
     ) {
@@ -4026,7 +4031,7 @@ function tryElideHostElement(
   return '$J' + id.toString(16) + ':' + element.type + keySuffix;
 }
 
-// A live row (onElidedValue) skips serialization, which is where taint is
+// A live row (onValue) skips serialization, which is where taint is
 // enforced, so apply the same checks to the value before handing it out.
 function assertNoTaint(value: any, seen: Set<any>): void {
   if (typeof value === 'string' || typeof value === 'bigint') {
@@ -4204,7 +4209,7 @@ function renderModelDestructive(
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
         if (
-          enableFlightHtmlFirst &&
+          enableFlightStaticHostElision &&
           request.onElidedRow !== null &&
           hostPosition
         ) {
@@ -5227,7 +5232,7 @@ function emitElidedRowsRequestIdChunk(
   request: Request,
   requestId: number,
 ): void {
-  // enableFlightHtmlFirst: identify the internal row registry across tee().
+  // enableFlightStaticHostElision: identify the internal row registry across tee().
   const row = ':Q' + requestId.toString(16) + '\n';
   request.completedHintChunks.push(stringToChunk(row));
 }
@@ -7331,7 +7336,7 @@ export function abort(request: Request, reason: mixed): void {
   }
   try {
     request.status = ABORTING;
-    if (enableFlightHtmlFirst && request.elidedRequestId !== 0) {
+    if (enableFlightStaticHostElision && request.elidedRequestId !== 0) {
       // No createFrom* claimed the rows (cancelled before SSR). Drop them.
       releaseElidedRowsRegistry(request.elidedRequestId);
       request.elidedRequestId = 0;

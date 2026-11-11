@@ -72,7 +72,7 @@ Client component: `'use client'; import {useState} from 'react'; export default 
 (a) hydrated and post-interaction DOM equal the flags-off DOM; (b) no console error/warning (browser and server render), no recoverable
 hydration error, no page error; (c) `interact` passes on the adopted DOM and again after navigation; (d) a client navigation that swaps in the full,
 non-elided Flight payload (no opt-in) yields the same DOM as the hydrated page.
-Flag-on SSR opts in with `onElidedRow: true` (React's internal registry; no `elidedRows` side channel).
+Flag-on SSR opts in with `elideStaticHosts: true` (React's internal registry; no `elidedHostRows` side channel).
 
 ## knownFailure (only for real React bugs)
 

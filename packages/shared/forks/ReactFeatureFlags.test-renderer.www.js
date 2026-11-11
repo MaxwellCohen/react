@@ -83,7 +83,7 @@ export const enableInternalInstanceMap: boolean = false;
 export const enableOptimisticKey: boolean = false;
 
 
-export const enableFlightHtmlFirst: boolean = false;
+export const enableFlightStaticHostElision: boolean = false;
 
 export const eprh_enableUseKeyedStateCompilerLint: boolean = false;
 export const eprh_enableVerboseNoSetStateInEffectCompilerLint: boolean = false;

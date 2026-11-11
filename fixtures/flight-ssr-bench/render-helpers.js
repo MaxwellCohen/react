@@ -45,7 +45,7 @@ function renderFizzEdge(AppComponent, itemCount) {
 // Returns a Node Readable stream of HTML with injected Flight scripts.
 // ---------------------------------------------------------------------------
 
-// opts.live (enableFlightHtmlFirst): hand SSR the elided rows as live React
+// opts.live (enableFlightStaticHostElision): hand SSR the elided rows as live React
 // nodes (no JSON). Client references in them are resolved with the same
 // manifest the server uses, which a framework has in hand in-process.
 const ELEMENT = Symbol.for('react.transitional.element');
@@ -108,8 +108,8 @@ function renderFlightFizzNode(
   const {renderToPipeableStream} = require('react-dom/server');
   const {createFromNodeStream} = require('react-server-dom-webpack/client');
 
-  // opts.elide: enableFlightHtmlFirst. The SSR render opts in with
-  // `onElidedRow: true` (React's internal registry, no side channel). Pass
+  // opts.elide: enableFlightStaticHostElision. The SSR render opts in with
+  // `elideStaticHosts: true` (React's internal registry, no side channel). Pass
   // opts.sideChannel: true to use an explicit Map (JSON or live) instead.
   const useSideChannel = opts && opts.elide && opts.sideChannel === true;
   const elidedRows = useSideChannel ? new Map() : null;
@@ -121,12 +121,16 @@ function renderFlightFizzNode(
       ? opts.live
         ? (() => {
             const resolve = makeLiveResolver(clientManifest);
-            return {onElidedValue: (id, v) => elidedRows.set(id, resolve(v))};
+            return {
+              elideStaticHosts: {
+                onValue: (id, v) => elidedRows.set(id, resolve(v)),
+              },
+            };
           })()
-        : {onElidedRow: (id, json) => elidedRows.set(id, json)}
+        : {elideStaticHosts: {onRow: (id, json) => elidedRows.set(id, json)}}
       : opts && opts.elide
-        ? {onElidedRow: true}
-        : {onElidedRow: false}
+        ? {elideStaticHosts: true}
+        : {elideStaticHosts: false}
   );
 
   let flightStream;
@@ -159,7 +163,7 @@ function renderFlightFizzNode(
       cachedResult = createFromNodeStream(
         flightStream,
         ssrManifest,
-        elidedRows ? {elidedRows} : undefined
+        elidedRows ? {elidedHostRows: elidedRows} : undefined
       );
     }
     return React.use(cachedResult);

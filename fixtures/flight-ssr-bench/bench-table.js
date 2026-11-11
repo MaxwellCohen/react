@@ -105,7 +105,7 @@ async function main() {
         ssrManifest,
         {elide: true}
       ).pipe(res),
-    // enableFlightHtmlFirst variants: plain flight vs elided (zero opt-in /
+    // enableFlightStaticHostElision variants: plain flight vs elided (zero opt-in /
     // optional sideChannel).
     ...Object.fromEntries(
       Object.entries({

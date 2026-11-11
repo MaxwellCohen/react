@@ -63,7 +63,7 @@ The overhead tables show two comparisons:
 
 Delta is shown as percentage change plus a factor (e.g. `+120% 2.20x` means 2.2x slower).
 
-## HTML-first initial load (`enableFlightHtmlFirst`)
+## HTML-first initial load (`enableFlightStaticHostElision`)
 
 Design, results and contract: [HTML-FIRST.md](./HTML-FIRST.md). Scenario authoring: [SCENARIOS.md](./SCENARIOS.md). Build React with the flag on (see the repo root), then:
 

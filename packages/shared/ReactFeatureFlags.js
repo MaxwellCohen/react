@@ -118,9 +118,9 @@ export const enableOptimisticKey = __EXPERIMENTAL__;
 // Component renders in host position (including inside Suspense children) is
 // left out of the inlined browser payload and adopted from the SSR HTML on
 // hydration. In-process Flight→SSR claims elided rows from an internal
-// registry when the request passes `onElidedRow: true`; out-of-process sinks
+// registry when the request passes `elideStaticHosts: true`; out-of-process sinks
 // pass a function instead.
-export const enableFlightHtmlFirst: boolean = false;
+export const enableFlightStaticHostElision: boolean = false;
 
 /**
  * Switches Fiber creation to a simple object instead of a constructor.

@@ -9,10 +9,10 @@
 
 'use strict';
 
-// Run the whole file with enableFlightHtmlFirst turned on.
+// Run the whole file with enableFlightStaticHostElision turned on.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightHtmlFirst: true,
+  enableFlightStaticHostElision: true,
 }));
 
 // Polyfills for test environment
@@ -102,11 +102,11 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     return encoder.encode(text).length;
   }
 
-  // `elidedRows` is only given to the consumer that renders HTML (SSR). The
+  // `elidedHostRows` is only given to the consumer that renders HTML (SSR). The
   // browser consumer doesn't get them and adopts the server DOM instead.
   function consume(rsc, elidedRows) {
     return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
-      elidedRows,
+      elidedHostRows: elidedRows,
     });
   }
 
@@ -140,8 +140,8 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
   async function flight(element, elide) {
     const rows = new Map();
     const options = elide
-      ? {onElidedRow: (id, json) => rows.set(id, json)}
-      : {onElidedRow: false};
+      ? {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}
+      : {elideStaticHosts: false};
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
@@ -469,8 +469,10 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          onElidedRow: () => {},
-          onElidedValue: (id, value) => live.set(id, value),
+          elideStaticHosts: {
+            onRow: () => {},
+            onValue: (id, value) => live.set(id, value),
+          },
         }),
       ),
     );
@@ -522,8 +524,8 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
           errors.push(e.message);
         },
         ...(live
-          ? {onElidedValue: (id, v) => rows.set(id, v)}
-          : {onElidedRow: (id, json) => rows.set(id, json)}),
+          ? {elideStaticHosts: {onValue: (id, v) => rows.set(id, v)}}
+          : {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}),
       };
       const main = await serverAct(async () =>
         readAll(

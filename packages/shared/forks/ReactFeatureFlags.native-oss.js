@@ -75,7 +75,7 @@ export const enableInternalInstanceMap: boolean = false;
 export const enableOptimisticKey: boolean = false;
 
 
-export const enableFlightHtmlFirst: boolean = false;
+export const enableFlightStaticHostElision: boolean = false;
 
 // Profiling Only
 export const enableProfilerTimer: boolean = __PROFILE__;

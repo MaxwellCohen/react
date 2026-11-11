@@ -15,7 +15,7 @@ import {patchSetImmediate} from '../../../../scripts/jest/patchSetImmediate';
 // into Fizz (needs Node ALS + createFrom* during Fizz render).
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightHtmlFirst: true,
+  enableFlightStaticHostElision: true,
 }));
 
 // Polyfills for test environment
@@ -149,8 +149,8 @@ describe('ReactFlightDOM html-first :HL hints', () => {
 
     const rows = new Map();
     const sideHtml = await renderOnce(
-      {onElidedRow: (id, json) => rows.set(id, json)},
-      {elidedRows: rows},
+      {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}},
+      {elidedHostRows: rows},
     );
     const registryHtml = await renderOnce(undefined, undefined);
 

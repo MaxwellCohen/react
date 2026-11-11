@@ -56,8 +56,8 @@ type EncodeFormActionCallback = <A>(
 ) => ReactCustomFormAction;
 
 export type Options = {
-  // Prototype (enableFlightHtmlFirst): rows withheld by the server.
-  elidedRows?: {get(id: number): void | string, ...},
+  // Prototype (enableFlightStaticHostElision): rows withheld by the server.
+  elidedHostRows?: {get(id: number): void | string, ...},
   nonce?: string,
   encodeFormAction?: EncodeFormActionCallback,
   unstable_allowPartialStream?: boolean,
@@ -126,8 +126,8 @@ function createFromNodeStream<T>(
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
   );
-  if (options && options.elidedRows) {
-    attachElidedRows(response, options.elidedRows);
+  if (options && options.elidedHostRows) {
+    attachElidedRows(response, options.elidedHostRows);
   }
 
   if (__DEV__ && options && options.debugChannel) {

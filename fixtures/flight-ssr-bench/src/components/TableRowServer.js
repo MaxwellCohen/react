@@ -1,5 +1,5 @@
 // Server component with the same markup as TableRowLean: renders to plain host
-// elements, so (with enableFlightHtmlFirst) the browser needs no Flight data for it.
+// elements, so (with enableFlightStaticHostElision) the browser needs no Flight data for it.
 export default function TableRowServer({
   name,
   category,

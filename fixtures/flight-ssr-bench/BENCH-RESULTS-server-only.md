@@ -1,7 +1,7 @@
 # Benchmark results: HTML-first elision, server-component output only
 
 Same machine, same session (Apple Silicon, Node 20+, `NODE_ENV=production`, 1000 rows). React built with
-`enableFlightHtmlFirst` on. Absolute timings are noisier and
+`enableFlightStaticHostElision` on. Absolute timings are noisier and
 slower than the numbers originally quoted in HEAD 1930da7cf8's HTML-FIRST.md (that run: 130 ms "today" hydration;
 this machine/browser: 171 ms for the same arm), so compare within a table, not across machines.
 Historical table (pre zero-optin / one-flag tip); for current 41-scenario aggregates see [HTML-FIRST.md](./HTML-FIRST.md).

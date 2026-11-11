@@ -3,7 +3,7 @@
 // Smoke test for every server binding x entry (webpack, turbopack, parcel,
 // unbundled, esm; node, browser, edge): elided rows as JSON and as live values,
 // zero-opt-in (no callbacks → internal registry), and explicit off
-// (onElidedRow: false). Needs a build with the flags on (see the fixture
+// (elideStaticHosts: false). Needs a build with the flags on (see the fixture
 // README) that also contains react and react-dom in build/node_modules.
 //   node e2e/bindings-smoke.js            (runs every combination)
 //   node --conditions react-server e2e/bindings-smoke.js <pkg> <entry>   (one)
@@ -107,10 +107,14 @@ let failed = false;
       try {
         const rowsJ = new Map(),
           rowsL = new Map();
-        const mJ = await render({onElidedRow: (id, j) => rowsJ.set(id, j)});
-        const mL = await render({onElidedValue: (id, v) => rowsL.set(id, v)});
+        const mJ = await render({
+          elideStaticHosts: {onRow: (id, j) => rowsJ.set(id, j)},
+        });
+        const mL = await render({
+          elideStaticHosts: {onValue: (id, v) => rowsL.set(id, v)},
+        });
         const mAuto = await render({});
-        const mOff = await render({onElidedRow: false});
+        const mOff = await render({elideStaticHosts: false});
         const ok = [
           [
             'json rows',

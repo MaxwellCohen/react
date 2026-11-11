@@ -13,7 +13,9 @@ const DIR = process.env.SCN_DIR;
 const FIXTURE = path.resolve(__dirname, '..');
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, parent, isMain, options) {
-  if (/^(react|react-dom|react-server-dom-webpack|scheduler)(\/|$)/.test(request)) {
+  if (
+    /^(react|react-dom|react-server-dom-webpack|scheduler)(\/|$)/.test(request)
+  ) {
     return origResolve.call(this, request, parent, isMain, {paths: [DIR]});
   }
   return origResolve.call(this, request, parent, isMain, options);
@@ -21,7 +23,8 @@ Module._resolveFilename = function (request, parent, isMain, options) {
 
 let problems = [];
 for (const k of ['error', 'warn']) {
-  console[k] = (...a) => problems.push(k + ': ' + a.map(String).join(' ').slice(0, 500));
+  console[k] = (...a) =>
+    problems.push(k + ': ' + a.map(String).join(' ').slice(0, 500));
 }
 process.on('warning', w => problems.push('node warning: ' + w.message));
 
@@ -63,7 +66,10 @@ async function init({files, clientMode}) {
       "const React = require('react');",
       "const {renderToPipeableStream} = require('react-server-dom-webpack/server');",
       'exports.roots = {',
-      ...files.map(([id, f]) => `  ${JSON.stringify(id)}: require(${JSON.stringify(f)}).Root,`),
+      ...files.map(
+        ([id, f]) =>
+          `  ${JSON.stringify(id)}: require(${JSON.stringify(f)}).Root,`
+      ),
       '};',
       'exports.renderRSCNode = (manifest, Root, size, options) =>',
       '  renderToPipeableStream(React.createElement(Root, {size}), manifest, options);',
@@ -74,7 +80,9 @@ async function init({files, clientMode}) {
     Object.assign({}, base, {
       entry,
       context: FIXTURE,
-      output: Object.assign({}, base.output, {path: path.join(DIR, 'build-rsc')}),
+      output: Object.assign({}, base.output, {
+        path: path.join(DIR, 'build-rsc'),
+      }),
       resolve: Object.assign({}, base.resolve, {modules}),
     })
   );
@@ -83,17 +91,32 @@ async function init({files, clientMode}) {
   if (clientMode !== 'none') {
     const wanted = new Set(files.map(([id]) => id));
     const reg = Object.entries(clientFiles)
-      .filter(([, f]) => path.basename(f).includes('.client.') && wanted.has(path.basename(f).split('.')[0]))
+      .filter(
+        ([, f]) =>
+          path.basename(f).includes('.client.') &&
+          wanted.has(path.basename(f).split('.')[0])
+      )
       .map(([, f]) => `  require(${JSON.stringify(f)}),`);
-    fs.writeFileSync(path.join(DIR, 'registry.js'), 'window.__clientModules = [\n' + reg.join('\n') + '\n];\n');
+    fs.writeFileSync(
+      path.join(DIR, 'registry.js'),
+      'window.__clientModules = [\n' + reg.join('\n') + '\n];\n'
+    );
     await build({
       name: 'client',
       context: FIXTURE,
       target: 'web',
       mode: clientMode,
-      optimization: {minimize: false, moduleIds: 'named', concatenateModules: false},
+      optimization: {
+        minimize: false,
+        moduleIds: 'named',
+        concatenateModules: false,
+      },
       entry: path.join(__dirname, 'client-entry.js'),
-      output: {path: path.join(DIR, 'build-client'), filename: 'client.js', clean: true},
+      output: {
+        path: path.join(DIR, 'build-client'),
+        filename: 'client.js',
+        clean: true,
+      },
       module: {rules: [babelRule]},
       resolve: {
         extensions: ['.js', '.jsx'],
@@ -111,19 +134,26 @@ async function render({id, size, recoverErrors}) {
   const optIn = VARIANT !== 'off';
   const t = process.hrtime.bigint();
   const html = await nodeStreamToString(
-    renderFlightFizzNode(bundle.renderRSCNode, roots[id], size, clientManifest, ssrManifest, {
-      // The SSR render opts in with onElidedRow: true; React's internal
-      // registry feeds SSR. No framework side channel.
-      elide: optIn,
-      recoverErrors: !!recoverErrors,
-    })
+    renderFlightFizzNode(
+      bundle.renderRSCNode,
+      roots[id],
+      size,
+      clientManifest,
+      ssrManifest,
+      {
+        // The SSR render opts in with elideStaticHosts: true; React's internal
+        // registry feeds SSR. No framework side channel.
+        elide: optIn,
+        recoverErrors: !!recoverErrors,
+      }
+    )
   );
   const ms = Number(process.hrtime.bigint() - t) / 1e6;
   return {html, ms, problems: problems.splice(0)};
 }
 
 // Full (non-elided) Flight payload: what a client navigation / refetch receives.
-// Responses that go straight to the browser never opt in (onElidedRow: false
+// Responses that go straight to the browser never opt in (elideStaticHosts: false
 // states it explicitly), so they carry full content.
 function flight({id, size}) {
   problems = [];
@@ -131,10 +161,15 @@ function flight({id, size}) {
     const chunks = [];
     const out = new PassThrough();
     out.on('data', c => chunks.push(c));
-    out.on('end', () => resolve({flight: Buffer.concat(chunks).toString('utf8'), problems: problems.splice(0)}));
+    out.on('end', () =>
+      resolve({
+        flight: Buffer.concat(chunks).toString('utf8'),
+        problems: problems.splice(0),
+      })
+    );
     out.on('error', reject);
     bundle
-      .renderRSCNode(clientManifest, roots[id], size, {onElidedRow: false})
+      .renderRSCNode(clientManifest, roots[id], size, {elideStaticHosts: false})
       .pipe(out);
   });
 }
