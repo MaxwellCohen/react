@@ -1464,10 +1464,11 @@ function fatalError(
     onFatalError(error);
   }
   endRenderLifetime(request);
-  if (request.destination !== null) {
+  const destination = request.destination;
+  if (destination !== null) {
     request.status = CLOSED;
     clearCurrentRequest(request);
-    closeWithError(request.destination, error);
+    closeWithError(destination, error);
   } else {
     request.status = CLOSING;
     // abort() already stored the reason that every remaining task must
