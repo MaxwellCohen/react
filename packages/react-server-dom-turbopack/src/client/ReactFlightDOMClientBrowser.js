@@ -20,6 +20,8 @@ import type {ReactServerValue} from 'react-client/src/ReactFlightReplyClient';
 
 import {
   createResponse,
+  attachElidedRows,
+  attachElidedContentMissing,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -45,6 +47,9 @@ export type {TemporaryReferenceSet};
 type CallServerCallback = <A, T>(string, args: A) => Promise<T>;
 
 export type Options = {
+  // Prototype (enableFlightStaticHostElision): rows withheld by the server.
+  elidedHostRows?: {get(id: number): void | string, ...},
+  onElidedContentMissing?: () => void,
   callServer?: CallServerCallback,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},
   temporaryReferences?: TemporaryReferenceSet,
@@ -88,7 +93,7 @@ function createResponseFromOptions(options: void | Options) {
         }
       : undefined;
 
-  return createResponse(
+  const response = createResponse(
     null,
     null,
     null,
@@ -114,6 +119,13 @@ function createResponseFromOptions(options: void | Options) {
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
   );
+  if (options && options.elidedHostRows) {
+    attachElidedRows(response, options.elidedHostRows);
+  }
+  if (options && options.onElidedContentMissing) {
+    attachElidedContentMissing(response, options.onElidedContentMissing);
+  }
+  return response;
 }
 
 function startReadingFromUniversalStream(

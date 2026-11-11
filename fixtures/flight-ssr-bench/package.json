@@ -26,10 +26,14 @@
     "prebench:server": "yarn copy-modules",
     "prestart": "yarn copy-modules",
     "start": "NODE_ENV=production node bench-server.js",
+    "e2e": "NODE_ENV=production node e2e/run.js",
+    "bench:inproc": "NODE_ENV=production node bench-inproc.js",
     "bench": "NODE_ENV=production node --expose-gc bench.js",
     "bench:profile": "NODE_ENV=production node --expose-gc bench.js --profile",
     "bench:bare": "NODE_ENV=production node --expose-gc bench.js --no-injection",
     "bench:concurrent": "NODE_ENV=production node --expose-gc bench.js --concurrent",
-    "bench:server": "NODE_ENV=production node bench-server.js --bench"
+    "bench:server": "NODE_ENV=production node bench-server.js --bench",
+    "scenarios:check": "NODE_ENV=production node scenarios-check.js",
+    "scenarios:metrics": "NODE_ENV=production node scenarios-metrics.js"
   }
 }

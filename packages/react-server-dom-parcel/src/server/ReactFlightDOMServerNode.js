@@ -156,6 +156,14 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
+  // enableFlightStaticHostElision: `true` elides static hosts for in-process SSR
+  // (internal registry); {onRow, onValue} receive the rows instead.
+  elideStaticHosts?:
+    | boolean
+    | {
+        onRow?: (id: number, json: string) => void,
+        onValue?: (id: number, value: mixed) => void,
+      },
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -203,6 +211,7 @@ export function renderToPipeableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.elideStaticHosts : undefined,
   );
   let hasStartedFlowing = false;
   startWork(request);
