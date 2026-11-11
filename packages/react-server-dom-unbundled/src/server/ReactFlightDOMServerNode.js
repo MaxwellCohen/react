@@ -149,8 +149,9 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // Prototype (enableFlightHtmlFirst): receive elided host rows.
-  onElidedRow?: (id: number, json: string) => void,
+  // enableFlightHtmlFirst: `true` elides static hosts for in-process SSR (internal
+  // registry), a function receives the elided rows. Omit for full hosts.
+  onElidedRow?: boolean | ((id: number, json: string) => void),
   onElidedValue?: (id: number, value: mixed) => void,
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),

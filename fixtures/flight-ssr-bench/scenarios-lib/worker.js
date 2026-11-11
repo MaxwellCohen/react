@@ -112,8 +112,8 @@ async function render({id, size, recoverErrors}) {
   const t = process.hrtime.bigint();
   const html = await nodeStreamToString(
     renderFlightFizzNode(bundle.renderRSCNode, roots[id], size, clientManifest, ssrManifest, {
-      // Zero opt-in: flag-on variants omit onElidedRow/elidedRows; React's
-      // internal registry feeds SSR. No framework side channel.
+      // The SSR render opts in with onElidedRow: true; React's internal
+      // registry feeds SSR. No framework side channel.
       elide: optIn,
       recoverErrors: !!recoverErrors,
     })
@@ -123,8 +123,8 @@ async function render({id, size, recoverErrors}) {
 }
 
 // Full (non-elided) Flight payload: what a client navigation / refetch receives.
-// Must pass onElidedRow: false — with the flag on, omitting options would
-// auto-elide, and the browser has no HTML to adopt for those stubs.
+// Responses that go straight to the browser never opt in (onElidedRow: false
+// states it explicitly), so they carry full content.
 function flight({id, size}) {
   problems = [];
   return new Promise((resolve, reject) => {

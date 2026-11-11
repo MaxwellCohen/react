@@ -118,7 +118,8 @@ export const enableOptimisticKey = __EXPERIMENTAL__;
 // Component renders in host position (including inside Suspense children) is
 // left out of the inlined browser payload and adopted from the SSR HTML on
 // hydration. In-process Flight→SSR claims elided rows from an internal
-// registry (no onElidedRow/elidedRows); out-of-process sinks still use those.
+// registry when the request passes `onElidedRow: true`; out-of-process sinks
+// pass a function instead.
 export const enableFlightHtmlFirst: boolean = false;
 
 /**

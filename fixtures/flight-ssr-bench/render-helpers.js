@@ -108,9 +108,9 @@ function renderFlightFizzNode(
   const {renderToPipeableStream} = require('react-dom/server');
   const {createFromNodeStream} = require('react-server-dom-webpack/client');
 
-  // opts.elide: enableFlightHtmlFirst. Default is zero framework opt-in
-  // (React's internal registry). Pass opts.sideChannel: true to use an
-  // explicit Map (JSON or live) for out-of-process / legacy demos.
+  // opts.elide: enableFlightHtmlFirst. The SSR render opts in with
+  // `onElidedRow: true` (React's internal registry, no side channel). Pass
+  // opts.sideChannel: true to use an explicit Map (JSON or live) instead.
   const useSideChannel = opts && opts.elide && opts.sideChannel === true;
   const elidedRows = useSideChannel ? new Map() : null;
   const {pipe: rscPipe} = renderRSCNode(
@@ -125,7 +125,7 @@ function renderFlightFizzNode(
           })()
         : {onElidedRow: (id, json) => elidedRows.set(id, json)}
       : opts && opts.elide
-        ? undefined
+        ? {onElidedRow: true}
         : {onElidedRow: false}
   );
 

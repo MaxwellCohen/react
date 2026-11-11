@@ -709,7 +709,7 @@ function RequestInstance(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  onElidedRow: void | false | ((id: number, json: string) => void),
+  onElidedRow: void | boolean | ((id: number, json: string) => void),
   onElidedValue: void | false | ((id: number, value: mixed) => void),
 ) {
   if (
@@ -762,19 +762,15 @@ function RequestInstance(
   this.writtenImportStringsSize = 0;
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
-  // enableFlightHtmlFirst: in-process consumers can take the live value of an
-  // elided row instead of JSON (no stringify here, no parse in the client).
-  // When the framework passes no callbacks, collect into an internal registry
-  // keyed by a request id emitted in the stream (`:Q…`) so createFrom* on
-  // the same isolate can claim the rows without a side channel.
-  // Pass `onElidedRow: false` (or onElidedValue: false) to keep full host
-  // rows in the stream even when the flag is on.
+  // enableFlightHtmlFirst: elision is opt-in per request, so a stream that goes
+  // straight to the browser (navigation, refetch, action result) is never
+  // elided by accident. The framework opts in on the response that feeds SSR:
+  // `onElidedRow: true` collects rows in an internal registry keyed by a request
+  // id emitted in the stream (`:Q…`), which the first in-process createFrom*
+  // claims. A function sink (`onElidedRow` JSON, `onElidedValue` live value)
+  // is the override for out-of-process or custom consumers.
   this.elidedRequestId = 0;
-  if (
-    !enableFlightHtmlFirst ||
-    onElidedRow === false ||
-    onElidedValue === false
-  ) {
+  if (!enableFlightHtmlFirst) {
     this.onElidedValue = null;
     this.onElidedRow = null;
   } else if (typeof onElidedValue === 'function') {
@@ -783,7 +779,7 @@ function RequestInstance(
   } else if (typeof onElidedRow === 'function') {
     this.onElidedValue = null;
     this.onElidedRow = onElidedRow;
-  } else {
+  } else if (onElidedRow === true) {
     const registry = allocateElidedRowsRegistry();
     this.elidedRequestId = registry.requestId;
     this.onElidedValue = (id: number, value: mixed) => {
@@ -791,6 +787,9 @@ function RequestInstance(
     };
     this.onElidedRow = noop;
     emitElidedRowsRequestIdChunk(this, registry.requestId);
+  } else {
+    this.onElidedValue = null;
+    this.onElidedRow = null;
   }
   this.staticHostCache = enableFlightHtmlFirst ? new WeakMap() : null;
   this.identifierCount = 1;
@@ -879,7 +878,7 @@ export function createRequest(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  onElidedRow?: false | ((id: number, json: string) => void),
+  onElidedRow?: boolean | ((id: number, json: string) => void),
   onElidedValue?: false | ((id: number, value: mixed) => void),
 ): Request {
   if (__DEV__) {

@@ -290,7 +290,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
   // Zero framework opt-in: flag on, no onElidedRow / elidedRows. The server
   // registers rows internally; the first createFrom* claims them for SSR.
   // `flightOpts` is undefined (auto registry) or {onElidedRow: false} (SPA nav).
-  async function renderSharedApp(count, flightOpts) {
+  async function renderSharedApp(count, ...rest) {
+    const flightOpts = rest.length ? rest[0] : {onElidedRow: true};
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -369,6 +370,17 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(button.textContent).toBe('clicks:1');
   });
 
+  it('does not elide unless the request opts in', async () => {
+    const main = await renderSharedApp(10, undefined);
+    expect(main).not.toContain('$J');
+    expect(main).not.toContain(':Q');
+    expect(main).toContain('name-9');
+    const off = await renderSharedApp(10, {onElidedRow: false});
+    expect(off).not.toContain('$J');
+    expect(off).not.toContain(':Q');
+    expect(off).toContain('name-9');
+  });
+
   it('isolates concurrent zero-opt-in requests', async () => {
     const a = await renderSharedApp(3);
     const b = await renderSharedApp(7);
@@ -430,7 +442,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
 
-    const main = await renderOnce(undefined);
+    const main = await renderOnce({onElidedRow: true});
     const html = await ssr({main, rows: undefined});
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -485,7 +497,13 @@ describe('ReactFlightDOMBrowser host elision', () => {
     );
     const first = await serverAct(async () =>
       readAll(
-        ReactServerDOMServer.renderToReadableStream(<Page v="a" />, webpackMap),
+        ReactServerDOMServer.renderToReadableStream(
+          <Page v="a" />,
+          webpackMap,
+          {
+            onElidedRow: true,
+          },
+        ),
       ),
     );
     const html = await ssr({main: first, rows: undefined});
@@ -516,14 +534,14 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
     const model = {page: <Page />, later: Promise.resolve(<Page />)};
-    const render = opts =>
+    const render = (opts = {onElidedRow: true}) =>
       serverAct(async () =>
         readAll(
           ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
         ),
       );
     const full = await render({onElidedRow: false});
-    const main = await render(undefined);
+    const main = await render();
     expect(main.length).toBeLessThan(full.length / 10);
     expect(main).not.toContain('name-99');
     function MapShell({response}) {

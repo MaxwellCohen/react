@@ -51,9 +51,8 @@ async function start(port) {
       }
       if (kind === 'rsc' && pages[name]) {
         // (html-first-json shares the page; only the SSR hand-off differs.)
-        // Navigation response: full Flight. onElidedRow: false is required when
-        // the flag is on — otherwise React auto-elides and the browser has no
-        // HTML to adopt for those stubs.
+        // Navigation response: full Flight. It does not opt in to elision
+        // (onElidedRow: false states that explicitly).
         res.writeHead(200, {'Content-Type': 'text/x-component'});
         return b
           .renderRSCNode(clientManifest, pages[name], rows, {

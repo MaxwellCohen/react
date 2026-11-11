@@ -18,10 +18,13 @@ server (serialize, tee, parse).
    identity (`form`, `input`, `img`, `svg`, `title`, `link`, `meta`, …) are never
    elided; `<style>` without precedence+href and JSON/ld+json data `<script>` blocks
    may be. Big strings inside an elided row stay in that row, never in the main stream.
-2. **Zero opt-in for in-process SSR:** with the flag on and no callbacks, Flight
-   stores elided rows in a `globalThis` registry, emits a `:Q<id>` row, and the
-   first in-process `createFrom*` claims them for SSR. The browser isolate has an
-   empty registry and adopts HTML stubs (hydration).
+2. **One request option, no side channel for in-process SSR:** with the flag on, a
+   request elides only if the framework passes `onElidedRow: true` (the response that
+   feeds SSR). Flight then stores elided rows in a `globalThis` registry, emits a
+   `:Q<id>` row, and the first in-process `createFrom*` claims them for SSR. The
+   browser isolate has an empty registry and adopts HTML stubs (hydration). Without
+   the option nothing is elided, so a response that goes straight to the browser
+   can never be elided by accident.
 3. **`onElidedValue(id, value)` / `onElidedRow(id, json)`:** overrides for
    out-of-process or custom sinks (live node vs JSON). Same taint checks as the
    JSON path.
@@ -32,12 +35,11 @@ A host region is elided only if everything in it is static host output. A region
 component keeps its host skeleton and the client component keeps its props; only its static
 host siblings / `children` slots are elided when they qualify.
 
-Initial-load: with the flag on, Flight auto-elides into an internal registry keyed by a
-`:Q…` row in the stream; the first in-process `createFrom*` claims it for SSR, later
-consumers (browser) get stubs and adopt HTML. Frameworks may still pass
-`onElidedRow`/`onElidedValue` for out-of-process sinks. **Pass `onElidedRow: false` on
-navigation/refetch** while the flag is compiled in — otherwise the response carries
-stubs with no HTML to adopt. On navigation the full payload has real elements where the stubs were, so react-dom
+Initial-load: the framework passes `onElidedRow: true` on the Flight render that feeds SSR.
+Flight elides into an internal registry keyed by a `:Q…` row in the stream; the first
+in-process `createFrom*` claims it for SSR, later consumers (browser) get stubs and adopt
+HTML. Function sinks `onElidedRow`/`onElidedValue` remain for out-of-process consumers.
+Navigation/refetch responses simply do not opt in. On navigation the full payload has real elements where the stubs were, so react-dom
 **re-creates** those regions from the payload (the old DOM is not trusted: the new page may differ)
 
 ## Results
@@ -73,12 +75,12 @@ CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Fli
 - Every binding x entry: `node fixtures/flight-ssr-bench/e2e/bindings-smoke.js` (JSON rows, live rows, inline fallback) for webpack, turbopack, parcel, unbundled, esm.
 
 ## Contract (what a framework has to know)
-- **Zero opt-in (in-process):** ship a React build with the flag on. `renderToReadableStream` → tee → `createFrom*` → Fizz works with no `onElidedRow` / `elidedRows`. The stream carries a `:Q<id>` row; SSR claims the registry; the browser isolate has an empty registry and adopts HTML.
-- **SPA navigation / refetch must pass `onElidedRow: false`** (or `onElidedValue: false`) so the response is a full Flight payload. Without that, stubs have no HTML to adopt.
-- `onElidedValue` / `onElidedRow` remain for out-of-process or custom sinks.
+- **The one framework change:** ship a React build with the flag on and pass `onElidedRow: true` on the Flight render that feeds HTML SSR. `renderToReadableStream` → tee → `createFrom*` → Fizz then needs no `elidedRows`. The stream carries a `:Q<id>` row; SSR claims the registry; the browser isolate has an empty registry and adopts HTML.
+- **Everything else is unchanged and safe by default:** navigation, refetch and action responses do not opt in, so they are full Flight payloads. The framework already distinguishes them (Waku: the `RSC/` URL prefix; Next.js: the `RSC: 1` header).
+- `onElidedValue` / `onElidedRow` as functions remain for out-of-process or custom sinks.
 - Stubs adopt server DOM. If a boundary is client-rendered instead (e.g. deferred mount, regenerated after a hydration mismatch), call `onElidedContentMissing` to recover (typically refetch). Without that callback, the stub suspends and reports an uncaught error rather than rendering blank content.
 - Large strings passed as client props are ordinary Flight strings. To keep CSS/JSON-LD out of Flight, render it from a Server Component as a direct `<style>` / `<script type="application/ld+json">`.
-- Wired into webpack / edge / browser / Node (and turbopack, parcel, unbundled, esm) server bindings. Prefer webpack Flow types for `onElidedRow?: false | …`; other packages share the runtime but may still type the callback without `false`.
+- Wired into webpack / edge / browser / Node (and turbopack, parcel, unbundled, esm) server bindings. All bundler packages type the option as `boolean | (id, json) => void`.
 
 ## Not in scope / next
 Eliding client components (needs an author or build-time guarantee that the component does nothing in the browser, deliberately not part of this PR); collapsing runs of server-rendered sibling rows into one elided row (each server row is its own `$J` ref today).
