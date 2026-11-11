@@ -14,6 +14,7 @@ const SUSPENSE_QUEUED_START_DATA = '$~';
 const SUSPENSE_FALLBACK_START_DATA = '$!';
 
 const FALLBACK_THROTTLE_MS = 300;
+const FIRST_PAINT_FALLBACK_MS = 250;
 
 const SUSPENSEY_FONT_AND_IMAGE_TIMEOUT = 500;
 
@@ -836,7 +837,17 @@ function enqueueDeclarativePatches(args) {
     Promise.resolve().then(flushDeclarativePatches);
   } else if (typeof window['$RT'] !== 'number') {
     // We haven't had our rAF callback yet, so schedule everything for the first paint.
-    requestAnimationFrame(flushDeclarativePatches);
+    // Frames are throttled in iframes, background tabs and some headless browsers, so
+    // do not wait for one for more than FIRST_PAINT_FALLBACK_MS.
+    let flushed = false;
+    const flushOnce = () => {
+      if (!flushed) {
+        flushed = true;
+        flushDeclarativePatches();
+      }
+    };
+    requestAnimationFrame(flushOnce);
+    setTimeout(flushOnce, FIRST_PAINT_FALLBACK_MS);
   } else {
     const currentTime = performance.now();
     const msUntilTimeout =
