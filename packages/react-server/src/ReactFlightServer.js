@@ -22,6 +22,7 @@ import {
 import {
   allocateElidedRowsRegistry,
   releaseElidedRowsRegistry,
+  releaseElidedRowsWhenCollected,
 } from 'shared/ReactFlightElidedRowsRegistry';
 
 import {
@@ -784,6 +785,7 @@ function RequestInstance(
     if (elideStaticHosts === true) {
       const registry = allocateElidedRowsRegistry();
       this.elidedRequestId = registry.requestId;
+      releaseElidedRowsWhenCollected(this, registry.requestId);
       this.onElidedValue = (id: number, value: mixed) => {
         registry.rows.set(id, value);
       };

@@ -381,6 +381,65 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(off).toContain('name-9');
   });
 
+  describe('registry lifetime', () => {
+    // A real GC is needed to observe the FinalizationRegistry release.
+    let gc;
+    try {
+      require('v8').setFlagsFromString('--expose-gc');
+      gc = require('vm').runInNewContext('gc');
+    } catch (e) {}
+    const maybeIt = typeof gc === 'function' ? it : it.skip;
+
+    // The store is created on first use.
+    const pending = () => {
+      const store = globalThis.__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__;
+      return store === undefined ? new Map() : store.pending;
+    };
+
+    // Node's own timers: the test environment's setImmediate may be faked.
+    async function collect() {
+      for (let i = 0; i < 20; i++) {
+        gc();
+        await new Promise(resolve => require('timers').setImmediate(resolve));
+      }
+    }
+
+    function render() {
+      const App = () => <article>{'important '.repeat(10)}</article>;
+      return ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+        elideStaticHosts: true,
+      });
+    }
+
+    maybeIt(
+      'releases rows that nothing claimed once the stream is gone',
+      async () => {
+        const before = pending().size;
+        await serverAct(async () => {
+          // Drained by a consumer that never runs createFrom* (a browser).
+          await readAll(render());
+        });
+        await collect();
+        expect(pending().size).toBe(before);
+      },
+    );
+
+    maybeIt('keeps rows for a stream that has not been read yet', async () => {
+      const before = pending().size;
+      let stream;
+      await serverAct(async () => {
+        stream = render();
+      });
+      await collect();
+      // The consumer still holds the stream, so it can still claim the rows.
+      expect(pending().size).toBe(before + 1);
+      const main = await readAll(stream);
+      const html = await ssr({main, rows: undefined});
+      expect(html).toContain('important');
+      expect(pending().size).toBe(before);
+    });
+  });
+
   it('isolates concurrent zero-opt-in requests', async () => {
     const a = await renderSharedApp(3);
     const b = await renderSharedApp(7);

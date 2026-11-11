@@ -60,3 +60,26 @@ export function claimElidedRowsRegistry(
 export function releaseElidedRowsRegistry(requestId: number): void {
   getStore().pending.delete(requestId);
 }
+
+// An entry is normally removed when a createFrom* claims it. If nothing ever
+// does (the response only goes to a browser, or SSR failed before it read the
+// first bytes) the rows, which are live React elements, would stay here forever.
+// So the entry is also released once the Flight request that owns it has been
+// garbage collected. The request stays reachable for as long as the stream it
+// feeds can still be read, so this cannot drop rows a consumer still needs.
+// The owner must not be referenced from the entry.
+const releaseWhenCollected: null | FinalizationRegistry<number> =
+  // $FlowFixMe[cannot-resolve-name]
+  typeof FinalizationRegistry === 'function'
+    ? // $FlowFixMe[cannot-resolve-name]
+      new FinalizationRegistry(releaseElidedRowsRegistry)
+    : null;
+
+export function releaseElidedRowsWhenCollected(
+  owner: interface {},
+  requestId: number,
+): void {
+  if (releaseWhenCollected !== null) {
+    releaseWhenCollected.register(owner, requestId);
+  }
+}
