@@ -4,7 +4,7 @@
 // into several chunk sizes, inline and external runtime. PLAYWRIGHT_MODULE=/path/to/
 // playwright-core uses another Playwright install.
 const pw = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const scenarios = ['basic', 'nested', 'many', 'svg', 'style', 'vt'];
+const scenarios = ['basic', 'nested', 'many', 'svg', 'style', 'vt', 'prefix'];
 const chunks = [0, 1, 3, 17, 64, 500];
 (async () => {
   const port = process.argv[2] || 3010;
@@ -37,6 +37,35 @@ const chunks = [0, 1, 3, 17, 64, 500];
         await page.close();
       }
     }
+  }
+  // A proxy that strips comments removes the group terminator: patches must still apply
+  // (on DOMContentLoaded / load).
+  for (const s of ['basic', 'many', 'svg']) {
+    for (const e of [0, 1]) {
+      total++;
+      const page = await browser.newPage();
+      await page.goto(`http://localhost:${port}/page?scenario=${s}&external=${e}&chunk=17&strip=1`);
+      let result;
+      try {
+        await page.waitForFunction(() => /^(PASS|FAIL)/.test(document.title), null, {timeout: 120000});
+        result = await page.textContent('#result');
+      } catch (err) {
+        result = 'TIMEOUT';
+      }
+      if (result !== 'PASS') {
+        failed++;
+        console.log(`FAIL ${s} external=${e} strip=1: ${String(result).slice(0, 200)}`);
+      }
+      await page.close();
+    }
+  }
+  // Batching: how many separate reveal bursts 100 boundaries produce.
+  for (const e of [0, 1]) {
+    const page = await browser.newPage();
+    await page.goto(`http://localhost:${port}/page?scenario=many&external=${e}`);
+    await page.waitForFunction(() => /^(PASS|FAIL)/.test(document.title), null, {timeout: 120000});
+    console.log(`many external=${e}: reveal batches=${await page.getAttribute('#result', 'data-batches')}`);
+    await page.close();
   }
   console.log(`DONE ${total - failed}/${total} passed`);
   await browser.close();
