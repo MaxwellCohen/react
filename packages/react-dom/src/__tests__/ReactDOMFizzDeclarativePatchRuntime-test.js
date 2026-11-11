@@ -140,9 +140,16 @@ describe('$RP runtime (polyfill path)', () => {
     expect(document.querySelectorAll('template').length).toBe(0);
   });
 
-  it('is a no-op when the browser already applied the patch', async () => {
-    // Native support consumes the template and the markers.
+  it('only completes the boundary when the browser already applied the patch', async () => {
+    // Native support consumes the template and the markers. The content stays and the
+    // boundary is marked completed, like $RC does.
     setBody('<!--B:a--><!--$?-->done<!--/$-->');
+    await patch('B:a');
+    expect(document.body.innerHTML).toBe('<!--B:a--><!--$-->done<!--/$-->');
+  });
+
+  it('leaves a pending boundary alone when no patch has arrived yet', async () => {
+    setBody(pending('B:a', 'fallback'));
     const before = document.body.innerHTML;
     await patch('B:a');
     expect(document.body.innerHTML).toBe(before);

@@ -4805,6 +4805,7 @@ const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
 
 export function writeStartDeclarativePatch(
   destination: Destination,
+  resumableState: ResumableState,
   renderState: RenderState,
   id: number,
   hoistableState: HoistableState,
@@ -4834,6 +4835,23 @@ export function writeStartDeclarativePatch(
     resource.state = LATE;
   });
 
+  // The inline runtime applies a patch as soon as it is parsed, so the View Transitions
+  // upgrade has to be in the document before the template, not after the group.
+  if (
+    enableViewTransition &&
+    (!enableFizzExternalRuntime ||
+      resumableState.streamingFormat === ScriptStreamingFormat) &&
+    (resumableState.instructions & NeedUpgradeToViewTransitions) !==
+      NothingSent &&
+    (resumableState.instructions & SentPatchUpgradeToViewTransitions) ===
+      NothingSent
+  ) {
+    resumableState.instructions |= SentPatchUpgradeToViewTransitions;
+    writeChunk(destination, renderState.startInlineScript);
+    writeChunk(destination, endOfStartTag);
+    writeChunk(destination, patchDeclarativeUpgradeChunk);
+    writeChunk(destination, endInlineScript);
+  }
   writeChunk(destination, startDeclarativePatch1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));

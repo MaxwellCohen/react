@@ -743,7 +743,7 @@ function drainNativelyAppliedPatches() {
   while ((anchor = comments.nextNode())) {
     const start = anchor.nextSibling;
     if (
-      anchor.data.indexOf('B:') === 0 &&
+      /B:[0-9a-f]+$/.test(anchor.data) &&
       start &&
       start.nodeType === COMMENT_NODE &&
       start.data === SUSPENSE_PENDING_START_DATA

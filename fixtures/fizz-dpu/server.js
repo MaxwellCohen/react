@@ -11,7 +11,7 @@ const React = require(path.join(build, 'react'));
 const {renderToPipeableStream} = require(path.join(build, 'react-dom/cjs/react-dom-server.node.development.js'));
 const h = React.createElement;
 const {Suspense} = React;
-const ViewTransition = React.unstable_ViewTransition;
+const ViewTransition = React.ViewTransition || React.unstable_ViewTransition;
 
 const cache = new Map();
 function wait(key, ms) {
@@ -96,7 +96,11 @@ const scenarios = {
             ),
           ],
         ]
-      : [],
+      : [['vt-unavailable', null]],
+  prefix: () => [
+    ['pa', h(Boundary, {id: 'pa', ms: 100})],
+    ['pb', h(Boundary, {id: 'pb', ms: 250})],
+  ],
 };
 function SvgSlow() {
   wait('svg', 150);
@@ -115,12 +119,23 @@ const checker = `(${function () {
     want.forEach(function (id) {
       if (!document.querySelector('[data-done="' + id + '"]')) errors.push('missing ' + id);
     });
+    if (want.indexOf('vt-unavailable') >= 0) errors.push('React.ViewTransition is not exported by this build');
+    if (want.indexOf('vt') >= 0 && document.startViewTransition && !window.__vt) errors.push('no startViewTransition call');
+    if (want.indexOf('sty') >= 0) {
+      var st = document.head.querySelector('style[data-href="dpu-s1"]');
+      if (!st) errors.push('late style was not hoisted into <head>');
+      if (document.body.querySelector('style[data-href="dpu-s1"]')) errors.push('late style left in <body>');
+    }
+    var batches = 0, last = -1e9;
+    window.__t.forEach(function (t) { if (t - last > 40) batches++; last = t; });
     var svg = document.querySelector('svg circle[data-done]');
     if (want.indexOf('svg') >= 0 && (!svg || svg.namespaceURI !== 'http://www.w3.org/2000/svg')) errors.push('circle not in SVG namespace');
     var r = {ok: errors.length === 0, errors: errors};
     document.title = r.ok ? 'PASS' : 'FAIL';
     var el = document.getElementById('result');
     el.textContent = r.ok ? 'PASS' : 'FAIL: ' + errors.join('; ');
+    el.setAttribute('data-batches', batches);
+    r.batches = batches;
     el.className = r.ok ? 'pass' : 'fail';
     parent.postMessage(Object.assign({type: 'dpu'}, r), '*');
   }
@@ -132,6 +147,8 @@ function page(res, q) {
   const external = q.get('external') === '1';
   const chunk = +q.get('chunk') || 0;
   const delay = +q.get('delay') || 0;
+  const strip = q.get('strip') === '1';
+  const prefix = name === 'prefix' ? 'p' : undefined;
   const defs = (scenarios[name] || scenarios.basic)();
   cache.clear();
   const ids = [];
@@ -148,6 +165,7 @@ function page(res, q) {
       'head',
       null,
       h('title', null, 'dpu ' + name),
+      h('script', {dangerouslySetInnerHTML: {__html: `window.__vt=0;window.__t=[];if(document.startViewTransition){var o=document.startViewTransition.bind(document);document.startViewTransition=function(){window.__vt++;return o.apply(null,arguments)}}new MutationObserver(function(ms){ms.forEach(function(m){m.addedNodes.forEach(function(n){if(n.nodeType===1&&(n.hasAttribute('data-done')||n.querySelector('[data-done]')))window.__t.push(performance.now())})})}).observe(document,{childList:true,subtree:true});`}}),
       h('style', {href: 'base', precedence: 'default'}, 'body{font:14px sans-serif}.pass{color:green}.fail{color:red}'),
     ),
     h(
@@ -162,6 +180,10 @@ function page(res, q) {
   res.socket.setNoDelay(true);
   const out = new Writable({
     write(buf, _enc, cb) {
+      if (strip) {
+        // Simulate a proxy that drops comments: the group terminator disappears.
+        buf = Buffer.from(buf.toString().split('<!---->').join(''));
+      }
       if (!chunk) {
         res.write(buf);
         return cb();
@@ -181,6 +203,7 @@ function page(res, q) {
   });
   const {pipe} = renderToPipeableStream(app, {
     unstable_declarativePatching: true,
+    identifierPrefix: prefix,
     unstable_externalRuntimeSrc: external ? '/external-runtime.js' : undefined,
     onShellReady() {
       pipe(out);
