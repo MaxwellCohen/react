@@ -31,7 +31,7 @@ Without the option nothing is elided. Navigation, refetch and action responses t
 
 For out-of-process or custom consumers, pass `elideStaticHosts: {onRow, onValue}` instead. `onRow(id, json)` receives the row as JSON and `onValue(id, value)` receives the live element. The SSR-side client then takes the rows as the `elidedHostRows` option. The same taint checks apply as on the normal path.
 
-If a stub ends up client-rendered with no server DOM behind it (a modal or `ClientOnly` wrapper mounted after hydration, or a boundary that client-renders after a server error), React cannot recreate the content. Pass `onElidedContentMissing` to `createFromReadableStream` or `createFromFetch` and refetch a full payload there. Without it the stub suspends and reports an uncaught error.
+If a stub ends up client-rendered with no server DOM behind it (a modal or `ClientOnly` wrapper mounted after hydration, or a boundary that client-renders after a server error), React cannot recreate the content. Pass `onElidedContentMissing` to `createFromReadableStream` or `createFromFetch` and refetch a full payload there. Without it the stub suspends and reports an uncaught error that names the element.
 
 On a client navigation the response is an ordinary full payload with real elements where the stubs were. React unmounts the stubs and creates fresh DOM for those regions. It does not try to reuse the old DOM, because the new page's content can differ from it. Client components keep their state.
 
@@ -56,14 +56,16 @@ Waku was used because it is easy to patch and has good RSC support; nothing here
 
 | | Stock | Flag on, stock Waku | Flag on, Waku passes `elideStaticHosts: true` |
 |---|---:|---:|---:|
-| requests/s | 1.00 | 1.00 | 3.21× (3.10–3.24) |
-| TTFB | 1.00 | 0.98 | 0.43× |
+| requests/s | 1.00 | 1.00 | 3.18× (3.13–3.22) |
+| TTFB | 1.00 | 0.97 | 0.45× |
 | inlined Flight | 823,655 B | 823,655 B | 18,978 B |
-| gzip HTML | 130,459 B | 130,460 B | 60,890 B |
+| gzip HTML | 130,459 B | 130,460 B | 60,889 B |
 
-With the flag on and no opt-in, Waku's output is byte-identical to stock. A second page whose rows are Client Components gets 1.10×. On every variant the page hydrates, the counters work, there are no console errors, and a client navigation fetches the full payload (602,063 B) and renders all 1000 rows. The patch is the `rsc-html-first-optin` branch of `MaxwellCohen/wakujs`: the HTML render passes `elideStaticHosts: true` and nothing else changes.
+With the flag on and no opt-in, Waku's output is byte-identical to stock. A second page whose rows are Client Components gets 1.10×. On every variant the page hydrates, the counters work, there are no console errors, and a client navigation fetches the full payload (602,063 B) and renders all 1000 rows. The patch is the `rsc-html-first-optin` branch of `MaxwellCohen/wakujs`. It has two parts: the HTML render passes `elideStaticHosts: true`, and `Root` passes `onElidedContentMissing` for the initial payload and refetches that payload in full when React asks (about 15 lines).
 
 ## Correctness
+
+With the recovery wired, a modal whose static children mount only after a click shows its content, the same as stock. Without the recovery, the same page reports an uncaught error and never shows the content. (`waku-htmlfirst-bench`, page `late-modal`, three variants.)
 
 The corpus (`yarn scenarios:check --size full --variants off,all --browser chromium`) loads each page with and without the flag and checks that:
 

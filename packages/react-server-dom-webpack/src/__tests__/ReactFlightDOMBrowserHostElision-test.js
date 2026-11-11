@@ -797,6 +797,34 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toContain('modal-body');
   });
 
+  it('names the missing element when late-mounted content has no recovery callback', async () => {
+    const Panel = clientExports(function Panel({children}) {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <div>
+          <button onClick={() => setOpen(!open)}>toggle</button>
+          {open ? <aside>{children}</aside> : null}
+        </div>
+      );
+    });
+    const App = () => (
+      <Panel>
+        <section>modal-body</section>
+      </Panel>
+    );
+    const f = await flight(<App />);
+    const html = await ssr(f);
+    const {container} = await hydrate(f.main, html);
+    await act(() => container.querySelector('button').click());
+    await act(async () => {});
+    expect(reportedErrors).toHaveLength(1);
+    expect(reportedErrors[0]).toContain('a <section>');
+    expect(reportedErrors[0]).toContain('mounts after hydration');
+    expect(reportedErrors[0]).toContain('onElidedContentMissing');
+    reportedErrors.length = 0;
+    expect(container.textContent).not.toContain('modal-body');
+  });
+
   it('keeps the key on the stub of an elided element', async () => {
     const Client = clientExports(function Client() {
       return <i>c</i>;

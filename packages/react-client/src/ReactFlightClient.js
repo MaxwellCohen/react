@@ -2779,7 +2779,7 @@ function getTrue(): boolean {
 // the framework (the onElidedContentMissing option) to render the full,
 // non-elided payload. Without that option the page can't get the content
 // back, so it reports an error instead. Either way the stubs stay suspended.
-function recoverElidedContent(response: Response): Promise<empty> {
+function recoverElidedContent(response: Response, tag: string): Promise<empty> {
   let pending = response._elidedRecovery;
   if (pending === null) {
     pending = response._elidedRecovery = new Promise(noop);
@@ -2793,10 +2793,15 @@ function recoverElidedContent(response: Response): Promise<empty> {
               // eslint-disable-next-line react-internal/prod-error-codes
               new Error(
                 'Static content that the server left out of this payload ' +
-                  'is needed on the client, because a boundary was client ' +
-                  'rendered after a server error or a hydration mismatch. ' +
-                  'Pass onElidedContentMissing to createFromReadableStream ' +
-                  'or createFromFetch to render the full payload.',
+                  'is needed on the client (for example a <' +
+                  tag +
+                  '>), but there is no server HTML to adopt it from. This ' +
+                  'happens when content passed as children mounts after ' +
+                  'hydration (a modal or a client-only wrapper), or when a ' +
+                  'boundary is client rendered after a server error or a ' +
+                  'hydration mismatch. Pass onElidedContentMissing to ' +
+                  'createFromReadableStream or createFromFetch and use it ' +
+                  'to render the full payload.',
               ),
             ),
     );
@@ -2811,7 +2816,7 @@ function createElidedHostElement(
   tag: string,
   key: null | string,
 ): React$Element<any> {
-  const recover = recoverElidedContent.bind(null, response);
+  const recover = recoverElidedContent.bind(null, response, tag);
   const element: any = React.createElement(
     ElidedHost,
     key === null ? {tag, recover} : {tag, recover, key},
