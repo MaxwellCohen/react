@@ -1,13 +1,10 @@
-# Benchmark results: HTML-first elision, server-component output only
+# Benchmark results: 1000-row page, server-component output only
 
-Same machine, same session (Apple Silicon, Node 20+, `NODE_ENV=production`, 1000 rows). React built with
-`enableFlightStaticHostElision` on. Absolute timings are noisier and
-slower than the numbers originally quoted in HEAD 1930da7cf8's HTML-FIRST.md (that run: 130 ms "today" hydration;
-this machine/browser: 171 ms for the same arm), so compare within a table, not across machines.
-Historical table (pre zero-optin / one-flag tip); for current 41-scenario aggregates see [HTML-FIRST.md](./HTML-FIRST.md).
+An earlier measurement of a single 1000-row page, taken before the flag was reduced to its current form. It is kept for the render-time and hydration numbers, which the corpus does not measure. The current byte results for all 41 pages are in [HTML-FIRST.md](./HTML-FIRST.md).
 
-"Before" = HEAD 1930da7cf8 (`unstable_pruneForBrowser`, client rows pruned). "After" = this change (no pruning; client
-components untouched; the page's rows are server components that render plain `<tr>`).
+Same machine and session throughout (Apple Silicon, Node 20+, `NODE_ENV=production`, 1000 rows), with `enableFlightStaticHostElision` on for the "after" rows. Timings are noisy, so compare rows within a table, not across machines or against other runs.
+
+"Before" = an earlier version that also pruned client component props from the browser payload (that behaviour has been removed). "After" = the current behaviour: client components are left untouched, and the page's rows are server components that render plain `<tr>`.
 
 ## Full page (inline CSS 244KB + JSON-LD 143KB + chrome + 1000 rows, every 100th row interactive), real Chromium
 

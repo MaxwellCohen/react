@@ -1,107 +1,88 @@
-# [Flight] HTML-first initial load: don't re-ship static server output (`enableFlightStaticHostElision`)
+# [Flight] Don't re-ship static server output on initial load (`enableFlightStaticHostElision`)
 
-Single flag (`enableFlightStaticHostElision`). Orthogonal to upstream Flight dedupe work; this branch does not include a separate dedupe or lazy-parser flag. Off by default. When on, a request elides only if the framework passes `elideStaticHosts: true` on the Flight render that feeds HTML SSR (internal registry, no `elidedHostRows` side channel); without it nothing is elided, so navigation / refetch / action responses need no change. `elideStaticHosts: {onRow, onValue}` remains for custom / out-of-process sinks.
+An RSC page's first response carries the same static markup twice: as HTML for the browser to paint, and again inside the Flight payload the browser needs to hydrate. For markup that a Server Component renders and that never changes on the client (plain elements, inline CSS, JSON-LD), the second copy is wasted bytes, and it costs the server time to serialize, tee and parse.
 
-**Scope: static Server Component host output in host position.** That includes Suspense children and Client Component `children` (layouts / slots). Client components themselves are never elided: they keep full props in Flight and hydrate normally. Non-`children` props (e.g. `panels`, `fallback`) stay in the payload.
+With `enableFlightStaticHostElision` on, Flight leaves that markup out of the payload the browser receives and writes a small `$J` stub in its place. SSR still needs the real content to produce the HTML, so React hands it over separately. The browser hydrates the stub by adopting the DOM that is already on the page.
 
-## Problem
-An RSC page's first response carries the same content twice: Fizz HTML for the
-browser to paint, and an inlined Flight payload the browser needs to hydrate. For
-static markup that a Server Component renders (inline CSS, JSON-LD, plain
-host elements) the second copy is dead weight, and it is also work for the
-server (serialize, tee, parse).
+The flag is off by default and is the only flag. There is no dedupe or lazy-parser flag; payload dedupe is left to the separate upstream work.
 
-## What this adds (all behind `enableFlightStaticHostElision`)
-1. **Elide static host subtrees in host position** — direct host children of host
-   elements, Suspense children, Client Component `children`, and the entries of a root
-   element map (`{page, layout, …}`), only when every
-   node in the region is static (primitive props, no `ref`). Tags that need client
-   identity (`form`, `input`, `img`, `svg`, `title`, `link`, `meta`, …) are never
-   elided; `<style>` without precedence+href and JSON/ld+json data `<script>` blocks
-   may be. Big strings inside an elided row stay in that row, never in the main stream.
-2. **One request option, no side channel for in-process SSR:** with the flag on, a
-   request elides only if the framework passes `elideStaticHosts: true` (the response that
-   feeds SSR). Flight then stores elided rows in a `globalThis` registry, emits a
-   `:Q<id>` row, and the first in-process `createFrom*` claims them for SSR. The
-   browser isolate has an empty registry and adopts HTML stubs (hydration). Without
-   the option nothing is elided, so a response that goes straight to the browser
-   can never be elided by accident.
-3. **`elideStaticHosts: {onValue(id, value), onRow(id, json)}`:** overrides for
-   out-of-process or custom sinks (live node vs JSON). Same taint checks as the
-   JSON path.
-4. Fix: elided rows of keyed Server Components with array children no longer recurse forever
-   (the key context is consumed by the row root, like a finished render does).
+## What gets elided
 
-A host region is elided only if everything in it is static host output. A region that contains a client
-component keeps its host skeleton and the client component keeps its props; only its static
-host siblings / `children` slots are elided when they qualify.
+Static host output in host position:
 
-Initial-load: the framework passes `elideStaticHosts: true` on the Flight render that feeds SSR.
-Flight elides into an internal registry keyed by a `:Q…` row in the stream; the first
-in-process `createFrom*` claims it for SSR, later consumers (browser) get stubs and adopt
-HTML. `elideStaticHosts: {onRow, onValue}` remains for out-of-process consumers.
-Navigation/refetch responses simply do not opt in. On navigation the full payload has real elements where the stubs were, so react-dom
-**re-creates** those regions from the payload (the old DOM is not trusted: the new page may differ)
+- children of host elements
+- children of Suspense boundaries
+- `children` of Client Components (layouts, slots)
+- the entries of a root element map such as `{page, layout}`, which is how Waku shapes its payload
+
+A region is elided only if everything in it is static: primitive props, no `ref`, no client references, no Suspense, no pending promises. Tags that need client identity (`form`, `input`, `img`, `svg`, `title`, `link`, `meta`, and similar) are never elided. A `<style>` without `precedence` and `href`, and JSON or `application/ld+json` `<script>` blocks, can be. Large strings inside an elided region stay in that region and never reach the main stream.
+
+Client Components are never elided and keep all their props. Props other than `children` (`panels`, `fallback`) stay in the payload, because the client may render them later without any server DOM behind them.
+
+## How a framework uses it
+
+The framework passes `elideStaticHosts: true` on the Flight render that feeds HTML SSR. Nothing else is needed:
+
+1. Flight stores the elided rows in a registry on `globalThis` and writes a `:Q<id>` row into the stream.
+2. The first in-process `createFrom*` on that stream claims the rows, so Fizz sees the full content and writes complete HTML.
+3. The browser has an empty registry. It sees the stubs and adopts the HTML.
+
+Without the option nothing is elided. Navigation, refetch and action responses therefore need no change, and forgetting the option means no savings, not a broken page. React cannot tell where a stream is going, since the bytes are the same either way, so the framework has to say. It already knows which requests are which: Waku routes RSC requests under an `RSC/` URL prefix, and Next.js sends an `RSC: 1` header.
+
+For out-of-process or custom consumers, pass `elideStaticHosts: {onRow, onValue}` instead. `onRow(id, json)` receives the row as JSON and `onValue(id, value)` receives the live element. The SSR-side client then takes the rows as the `elidedHostRows` option. The same taint checks apply as on the normal path.
+
+If a stub ends up client-rendered with no server DOM behind it (a modal or `ClientOnly` wrapper mounted after hydration, or a boundary that client-renders after a server error), React cannot recreate the content. Pass `onElidedContentMissing` to `createFromReadableStream` or `createFromFetch` and refetch a full payload there. Without it the stub suspends and reports an uncaught error.
+
+On a client navigation the response is an ordinary full payload with real elements where the stubs were. React unmounts the stubs and creates fresh DOM for those regions. It does not try to reuse the old DOM, because the new page's content can differ from it. Client components keep their state.
 
 ## Results
-### 41-scenario corpus (tip `31b26561f1`, flag off vs on, full size)
-Sum across pages (whole-document gzip/brotli; Flight = inlined `<script>` payload bytes):
 
-| Metric | Stock (flag off) | Flag on | Change |
+### 41-scenario corpus
+
+Flag off against flag on at full size, summed over the 41 pages. Measured at `31b26561f1`. Gzip and brotli are of the whole document, and Flight is the inlined `<script>` payload.
+
+| Metric | Flag off | Flag on | Change |
 |---|---:|---:|---:|
-| Gzip download | 1,023,906 | 586,852 | **−42.7%** |
-| Raw HTML | 14,555,714 | 7,252,862 | **−50.2%** |
-| Inlined Flight | 9,280,754 | 1,977,902 | **−78.7%** |
-| Brotli | 479,414 | 286,520 | **−40.2%** |
+| Gzip | 1,023,906 | 586,852 | −42.7% |
+| Raw HTML | 14,555,714 | 7,252,862 | −50.2% |
+| Inlined Flight | 9,280,754 | 1,977,902 | −78.7% |
+| Brotli | 479,414 | 286,520 | −40.2% |
 
-See [SCENARIOS.md](./SCENARIOS.md) and `yarn scenarios:metrics`. Aggregate savings are dominated by a few heavy pages; median per-page gzip change is smaller. Some pages show little or no gzip win (`all-client`, non-`children` props like `tabs-panels-prop`, or gzip-worse cases like `repeated-long-strings`).
+A few heavy pages account for most of this. The five biggest (`data-grid-server-cells`, `wide-tree`, `huge-inline-svg`, `marketing-style-jsonld`, `docs-sidebar-toc`) make up about 80% of the gzip bytes saved. The median page saves 7.8%, nine pages are within ±1%, and seven pages get slightly larger: `repeated-long-strings` (+12.4%), `tabs-panels-prop`, `nested-suspense-waterfall`, `all-client`, `suspense-fallback-shown-late`, `full-refresh-focus` and `server-element-via-props` (each under +2%). `all-client` has nothing to elide and pays for the `:Q` row. See [SCENARIOS.md](./SCENARIOS.md) and `yarn scenarios:metrics`.
 
-### Framework throughput (Waku host-row page, 1000 rows, 5 rotated rounds)
-Waku was the measurement vehicle because it is easy to patch and has strong RSC support; nothing here is Waku-specific.
-Waku's Flight model is a root element map (`{page, layout, …}`); entries of a root plain-object model stay in host position, so it elides.
+### Waku
 
-| | stock | flag on, stock Waku | flag on + one-line opt-in (`elideStaticHosts: true`) |
+Waku was used because it is easy to patch and has good RSC support; nothing here depends on it. The test page has 1000 rows. The numbers are medians over 5 rounds, with the order of the variants rotated each round.
+
+| | Stock | Flag on, stock Waku | Flag on, Waku passes `elideStaticHosts: true` |
 |---|---:|---:|---:|
-| req/s | 1.00 | 1.00 | **3.21×** (3.10–3.24) |
-| TTFB | 1.00 | 0.98 | **0.43×** |
-| inlined Flight | 823,655 B | 823,655 B | 18,978 B (−97.7%) |
-| gzip HTML | 130,459 B | 130,460 B | 60,890 B (−53.3%) |
+| requests/s | 1.00 | 1.00 | 3.21× (3.10–3.24) |
+| TTFB | 1.00 | 0.98 | 0.43× |
+| inlined Flight | 823,655 B | 823,655 B | 18,978 B |
+| gzip HTML | 130,459 B | 130,460 B | 60,890 B |
 
-Stock Waku with the flag on is byte-identical to stock and navigates correctly (forgetting the option means no win, not a broken page).
-All variants: hydrate, interactive counters, 0 console errors, SPA navigation fetches the full payload (602,063 B). Waku patch: `MaxwellCohen/wakujs` branch `rsc-html-first-optin`.
-Not measured: Next.js (the opt-in there would be `elideStaticHosts: true` when the request is not an RSC request).
-
-### 1000-row page (historical Chromium table)
-See [BENCH-RESULTS-server-only.md](./BENCH-RESULTS-server-only.md) for the full tables, before/after against the
-pruning version, and which numbers moved and why. Summary:
-
-| rows are... | flag | HTML bytes | gzip | inlined Flight |
-|---|---|---|---|---|
-| client components | off | 1,697,853 | 141,102 | 627,528 |
-| client components | on | 1,284,218 | 96,943 | 213,894 |
-| server components | off | 2,801,334 | 156,090 | 1,729,029 |
-| server components | on | **1,087,295** (visual-only Fizz floor: 1,068,303) | **74,282** | **16,971** |
-
-CSS and JSON-LD elide in both on-rows (server-rendered); client rows stay in Flight (they need their props to hydrate).
+With the flag on and no opt-in, Waku's output is byte-identical to stock. A second page whose rows are Client Components gets 1.10×. On every variant the page hydrates, the counters work, there are no console errors, and a client navigation fetches the full payload (602,063 B) and renders all 1000 rows. The patch is the `rsc-html-first-optin` branch of `MaxwellCohen/wakujs`: the HTML render passes `elideStaticHosts: true` and nothing else changes.
 
 ## Correctness
-- Scenario corpus (`yarn scenarios:check --size full --variants off,all --browser chromium|firefox|webkit`): hydrated + interacted DOM vs flags-off, plus SPA navigation with a full (non-opted-in) Flight payload. Chromium is **41/41** at `31b26561f1` — registry SSR applies Flight `:HL` preload hints into Fizz (pinned `currentRequest` across suspended work + duplicate hint forward) matching flags-off / side-channel.
-- Real browser (`yarn e2e`): hydration adopts the **same DOM nodes** (1000/1000 rows, `<style>`, JSON-LD), zero console warnings, zero recoverable errors, interactive counters (top-level and mid-table) work, client navigation fetches full Flight and re-creates the elided regions with the new content.
-- jest (`ReactFlightDOMBrowserStaticHostElision-test`, HostElision suites): leakage, resources/executable scripts not elided, whole-document + Suspense hydration, client components keep full props, interactive hand-off, live rows, keyed array-children rows, taint on live rows, navigation to different content, root element maps.
-- Every binding x entry: `node fixtures/flight-ssr-bench/e2e/bindings-smoke.js` (JSON rows, live rows, inline fallback) for webpack, turbopack, parcel, unbundled, esm.
 
-## Contract (what a framework has to know)
-- **The one framework change:** ship a React build with the flag on and pass `elideStaticHosts: true` on the Flight render that feeds HTML SSR. `renderToReadableStream` → tee → `createFrom*` → Fizz then needs no `elidedRows`. The stream carries a `:Q<id>` row; SSR claims the registry; the browser isolate has an empty registry and adopts HTML.
-- **Everything else is unchanged and safe by default:** navigation, refetch and action responses do not opt in, so they are full Flight payloads. The framework already distinguishes them (Waku: the `RSC/` URL prefix; Next.js: the `RSC: 1` header).
-- `elideStaticHosts: {onRow, onValue}` remains for out-of-process or custom sinks (the client takes the rows as `elidedHostRows`).
-- Stubs adopt server DOM. If a boundary is client-rendered instead (e.g. deferred mount, regenerated after a hydration mismatch), call `onElidedContentMissing` to recover (typically refetch). Without that callback, the stub suspends and reports an uncaught error rather than rendering blank content.
-- Large strings passed as client props are ordinary Flight strings. To keep CSS/JSON-LD out of Flight, render it from a Server Component as a direct `<style>` / `<script type="application/ld+json">`.
-- Wired into webpack / edge / browser / Node (and turbopack, parcel, unbundled, esm) server bindings. All bundler packages type the option as `boolean | (id, json) => void`.
+The corpus (`yarn scenarios:check --size full --variants off,all --browser chromium`) loads each page with and without the flag and checks that:
 
-## Not in scope / next
-Eliding client components (needs an author or build-time guarantee that the component does nothing in the browser, deliberately not part of this PR); collapsing runs of server-rendered sibling rows into one elided row (each server row is its own `$J` ref today).
+- the hydrated DOM and the DOM after interaction are equal,
+- there are no console or hydration errors,
+- the page still works after a client navigation to a full payload.
 
-## Known limits
-- Corpus browsers: Chromium re-verified at tip (**41/41** including `head-hoistables`); Firefox/WebKit were green on earlier tips — re-run after the `:HL` fix. The fixture mixes a production RSC bundle with a dev client in dev mode, so its key warnings are fixture noise (the baseline emits them too).
-- 3 `ReactFlightDOMNode-test` Buffer-pool tests fail on the stack base as well (Node 26). `ReactFlightAsyncDebugInfo-test` ("can track async file reads") failed intermittently on the base and on this branch.
-- Framework host-page throughput: tip + zero-optin Waku (`3ae8a1410b` / `908ab031`) is **≈1.02×** vs stock (within noise) — host rows / CSS / JSON-LD are not elided under Waku’s elements-map after host-position scoping. The older ~3× (`6ed2e62d21`, multi-flag + explicit opt-in) does not reproduce; do not quote it as current.
+All 41 pass in Chromium at `31b26561f1`. The DOM comparison normalizes style spacing, zero-length CSS units (`0px` against `0`) and attribute order. Firefox and WebKit passed on earlier commits and have not been run on this one.
+
+Other checks:
+
+- `yarn e2e`: hydration adopts the same DOM nodes (1000 of 1000 rows, `<style>`, JSON-LD) with no warnings, and the counters work.
+- Jest: `ReactFlightDOMBrowserStaticHostElision-test` and `ReactFlightDOMBrowserHostElision-test` cover leakage, hydration inside Suspense, keyed children, taint on live rows, navigation to different content, root element maps, and the flag with no option leaving the stream alone.
+- `node e2e/bindings-smoke.js` runs every bundler binding (webpack, turbopack, parcel, unbundled, esm).
+
+## Limits
+
+- The hoisted `<head>` content of a page can differ from stock in which preload links appear. Resources that matter are the same.
+- Rows that nothing in-process consumes are released only if the request is aborted, so a response that is only ever sent to a browser, with the option on, keeps its rows in memory.
+- Next.js has not been tried. The opt-in there would be `elideStaticHosts: true` when the request is not an RSC request.
+- Four Jest tests fail in this environment on the base commit as well (three Node Buffer-pool checks under Node 26 and one Edge outlining timeout).
+- Eliding Client Components themselves is out of scope. It needs a guarantee that the component does nothing in the browser.
