@@ -729,9 +729,75 @@ function drainDeclarativePatches() {
   }
 }
 
-export function observeDeclarativePatches() {
+// Inline runtime: apply as soon as the patches arrive (patches that land in the same
+// tick are still one batch). The external runtime passes false and keeps the throttle.
+let applyImmediately = false;
+
+// A runtime that loads late (the external one) can miss the markers: the browser has
+// already applied those patches natively. The anchor is still followed by <!--$?--> but
+// the <?start> range marker is gone. They still need the SVG reparse and style hoist.
+function drainNativelyAppliedPatches() {
+  const ids = [];
+  const comments = document.createNodeIterator(document, 128);
+  let anchor;
+  while ((anchor = comments.nextNode())) {
+    const start = anchor.nextSibling;
+    if (
+      anchor.data.indexOf('B:') === 0 &&
+      start &&
+      start.nodeType === COMMENT_NODE &&
+      start.data === SUSPENSE_PENDING_START_DATA
+    ) {
+      const marker = start.nextSibling;
+      // The marker is still there (a comment, or a PI that has not been disarmed yet)
+      // unless the browser applied the patch.
+      if (
+        !marker ||
+        (marker.nodeType === 7 && marker['target'] !== 'start') ||
+        (marker.nodeType !== 7 &&
+          (marker.nodeType !== COMMENT_NODE ||
+            marker.data !== '?start name="' + anchor.data + '"'))
+      ) {
+        ids.push(anchor.data);
+      }
+    }
+  }
+  if (ids.length > 0) {
+    enqueueDeclarativePatches(ids);
+  }
+}
+
+export function observeDeclarativePatches(immediate) {
+  applyImmediately = immediate;
   disarmDeclarativeBoundaries(document);
-  new MutationObserver(drainDeclarativePatches).observe(document, {
+  drainNativelyAppliedPatches();
+  new MutationObserver(records => {
+    let nativelyApplied = false;
+    for (let i = 0; i < records.length; i++) {
+      const added = records[i].addedNodes;
+      for (let j = 0; j < added.length; j++) {
+        // A range marker that streams in after this runtime loaded must not be left
+        // armed either.
+        if (added[j].nodeType === 7 && added[j]['target'] === 'start') {
+          added[j].parentNode.replaceChild(
+            document.createComment('?start ' + added[j].data),
+            added[j],
+          );
+        }
+      }
+      const removed = records[i].removedNodes;
+      for (let j = 0; j < removed.length; j++) {
+        // The browser removes the range markers when it applies a patch itself.
+        if (removed[j].nodeType === 7) {
+          nativelyApplied = true;
+        }
+      }
+    }
+    if (nativelyApplied) {
+      drainNativelyAppliedPatches();
+    }
+    drainDeclarativePatches();
+  }).observe(document, {
     childList: true,
     subtree: true,
   });
@@ -743,7 +809,7 @@ export function observeDeclarativePatches() {
 
 export function patchDeclarativeBoundaries() {
   if (arguments.length === 0) {
-    observeDeclarativePatches();
+    observeDeclarativePatches(false);
     // Track the paint time of the shell, like markShellTime does for $RC.
     requestAnimationFrame(() => {
       window['$RT'] = performance.now();
@@ -766,7 +832,9 @@ function enqueueDeclarativePatches(args) {
     return;
   }
   // This is the first patch of the batch. Flush it after the throttle.
-  if (typeof window['$RT'] !== 'number') {
+  if (applyImmediately) {
+    Promise.resolve().then(flushDeclarativePatches);
+  } else if (typeof window['$RT'] !== 'number') {
     // We haven't had our rAF callback yet, so schedule everything for the first paint.
     requestAnimationFrame(flushDeclarativePatches);
   } else {
@@ -897,6 +965,19 @@ function patchBoundary(anchor, template) {
   if (!start || start.nodeType !== COMMENT_NODE) {
     return;
   }
+  if (!template) {
+    // Nothing to apply. If the range marker is still there, the boundary is just still
+    // waiting for its patch (this id was queued before its markup was complete).
+    const marker = start.nextSibling;
+    if (
+      marker &&
+      (marker.nodeType === 7 ||
+        (marker.nodeType === COMMENT_NODE &&
+          marker.data === '?start name="' + anchor.data + '"'))
+    ) {
+      return;
+    }
+  }
   if (template) {
     // Only a boundary that is still pending, and whose range marker carries this
     // anchor's name, may be replaced. An orphaned anchor (its boundary was removed)
@@ -964,6 +1045,12 @@ function patchBoundary(anchor, template) {
       }
     }
     template.parentNode.removeChild(template);
+  } else if (!owned && start.data === SUSPENSE_PENDING_START_DATA) {
+    // The browser applied the patch itself. Complete the boundary like $RC does.
+    start.data = SUSPENSE_START_DATA;
+    if (start['_reactRetry']) {
+      requestAnimationFrame(start['_reactRetry']);
+    }
   }
   // Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
   // parsed again in their parent's namespace (HTML integration points excluded).
