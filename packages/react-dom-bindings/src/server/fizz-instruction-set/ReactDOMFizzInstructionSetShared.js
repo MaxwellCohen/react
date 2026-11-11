@@ -713,7 +713,7 @@ export function disarmDeclarativeBoundaries(root) {
 // Self-driving mode: instead of being told which patches arrived with $RP("B:0",...),
 // find every <template for> that is still in the document (the browser removes the ones
 // it applied itself) and queue it. A template counts once something follows it, which
-// proves the parser has closed it (the server writes an empty comment after each one).
+// proves the parser has closed it (the server writes an empty comment after each group).
 function drainDeclarativePatches() {
   const ids = [];
   const found = document.querySelectorAll('template[for]');
