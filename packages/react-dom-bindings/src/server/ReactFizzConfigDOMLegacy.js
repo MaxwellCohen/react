@@ -85,6 +85,8 @@ export type RenderState = {
   },
   stylesToHoist: boolean,
   declarativePatching: boolean,
+  needDeclarativeNamespaceFix: boolean,
+  needDeclarativeStyleHoist: boolean,
   // This is an extra field for the legacy renderer
   generateStaticMarkup: boolean,
 };
@@ -130,6 +132,8 @@ export function createRenderState(
     nonce: renderState.nonce,
     stylesToHoist: renderState.stylesToHoist,
     declarativePatching: false,
+    needDeclarativeNamespaceFix: false,
+    needDeclarativeStyleHoist: false,
 
     // This is an extra field for the legacy renderer
     generateStaticMarkup,

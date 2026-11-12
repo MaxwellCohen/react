@@ -46,6 +46,14 @@ const config = [
     wrap: true,
   },
   {
+    entry: 'ReactDOMFizzInlinePatchBoundaryNamespaces.js',
+    exportName: 'fixDeclarativeNamespaces',
+  },
+  {
+    entry: 'ReactDOMFizzInlinePatchBoundaryStyles.js',
+    exportName: 'hoistDeclarativePatchStyles',
+  },
+  {
     entry: 'ReactDOMFizzInlinePatchBoundaryUpgradeToViewTransitions.js',
     exportName: 'patchDeclarativeBoundariesUpgradeToViewTransitions',
   },
@@ -88,7 +96,7 @@ async function main() {
 
       const trimmed = code.trim().replace('\n', '');
       return `export const ${exportName} = ${JSON.stringify(
-        wrap ? '(function(){' + trimmed + '})();' : trimmed,
+        wrap ? '(function(){' + trimmed + '})();' : trimmed
       )};`;
     })
   );
@@ -105,8 +113,10 @@ async function main() {
   // couldn't figure it out. Good enough for now. This only affects the inline
   // Fizz runtime, and should break immediately if there were a mistake, so I'm
   // not too worried about it.
+  // Keep window.$RPN / window.$RPH: they are optional helpers and a bare
+  // `$RPN` read throws when the server has not emitted them yet.
   outputCode = outputCode.replace(
-    /window\.(\$[A-z0-9_]*|matchMedia)/g,
+    /window\.(\$(?!RPN\b|RPH\b)[A-z0-9_]*|matchMedia)/g,
     (_, variableName) => variableName
   );
 

@@ -88,6 +88,8 @@ import {
   formReplaying as formReplayingRuntime,
   markShellTime,
   patchDeclarativeBoundaries as patchDeclarativeBoundariesFunction,
+  fixDeclarativeNamespaces as fixDeclarativeNamespacesFunction,
+  hoistDeclarativePatchStyles as hoistDeclarativePatchStylesFunction,
   patchDeclarativeBoundariesUpgradeToViewTransitions as patchDeclarativeUpgradeToViewTransitionsInstruction,
 } from './fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings';
 
@@ -140,6 +142,8 @@ const NeedUpgradeToViewTransitions /*     */ = 0b010000000;
 const SentUpgradeToViewTransitions /*     */ = 0b100000000;
 const SentPatchDeclarativeFunction /*     */ = 0b1000000000;
 const SentPatchUpgradeToViewTransitions /**/ = 0b10000000000;
+const SentPatchNamespaceFunction /*       */ = 0b100000000000;
+const SentPatchStyleHoistFunction /*      */ = 0b1000000000000;
 
 type NonceOption =
   | string
@@ -237,6 +241,11 @@ export type RenderState = {
   // Opt-in: stream pending boundaries as <?start>/<?end> ranges and completions
   // as <template for>. Always false unless enableFizzDeclarativePatching.
   declarativePatching: boolean,
+
+  // Set while flushing declarative patches that need the optional $RP helpers;
+  // consumed when the group's $RP(...) script is written.
+  needDeclarativeNamespaceFix: boolean,
+  needDeclarativeStyleHoist: boolean,
 
   // We allow the legacy renderer to extend this object.
 
@@ -568,6 +577,8 @@ export function createRenderState(
     stylesToHoist: false,
     declarativePatching:
       enableFizzDeclarativePatching && declarativePatching === true,
+    needDeclarativeNamespaceFix: false,
+    needDeclarativeStyleHoist: false,
   };
 
   // Persist the opt-in on resumable state so prerender → resume keeps the same wire.
@@ -4802,6 +4813,7 @@ export function writeStartDeclarativePatch(
   renderState: RenderState,
   id: number,
   hoistableState: HoistableState,
+  formatContext: FormatContext,
 ): boolean {
   // Stylesheets that gate reveal on the script path ($RR waits for them to load) are
   // emitted as render-blocking links BEFORE the <template for>, at the top level of
@@ -4828,6 +4840,14 @@ export function writeStartDeclarativePatch(
     resource.state = LATE;
   });
 
+  if (
+    formatContext.insertionMode === SVG_MODE ||
+    formatContext.insertionMode === MATHML_MODE
+  ) {
+    // $RP will need the namespace reparse helper for this patch.
+    renderState.needDeclarativeNamespaceFix = true;
+  }
+
   writeChunk(destination, startDeclarativePatch1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));
@@ -4841,6 +4861,7 @@ export function writeStartDeclarativePatch(
     if (hrefs.length === 0) {
       return;
     }
+    renderState.needDeclarativeStyleHoist = true;
     writeChunk(destination, renderState.startInlineStyle);
     writeChunk(destination, declarativeStyleOpen1);
     writeChunk(destination, styleQueue.precedence);
@@ -4950,6 +4971,12 @@ const patchDeclarativeScriptEnd = stringToPrecomputedChunk(')</script>');
 const patchDeclarativeFunction = stringToChunk(
   patchDeclarativeBoundariesFunction,
 );
+const patchDeclarativeNamespaceFunction = stringToChunk(
+  fixDeclarativeNamespacesFunction,
+);
+const patchDeclarativeStyleHoistFunction = stringToChunk(
+  hoistDeclarativePatchStylesFunction,
+);
 const patchDeclarativeSeparator = stringToPrecomputedChunk(',');
 const patchDeclarativeUpgradeChunk = stringToChunk(
   patchDeclarativeUpgradeToViewTransitionsInstruction,
@@ -4986,6 +5013,23 @@ export function writeDeclarativePatchScript(
       resumableState.instructions |= SentPatchDeclarativeFunction;
       writeChunk(destination, patchDeclarativeFunction);
     }
+    if (
+      renderState.needDeclarativeNamespaceFix &&
+      (resumableState.instructions & SentPatchNamespaceFunction) === NothingSent
+    ) {
+      resumableState.instructions |= SentPatchNamespaceFunction;
+      writeChunk(destination, patchDeclarativeNamespaceFunction);
+    }
+    if (
+      renderState.needDeclarativeStyleHoist &&
+      (resumableState.instructions & SentPatchStyleHoistFunction) ===
+        NothingSent
+    ) {
+      resumableState.instructions |= SentPatchStyleHoistFunction;
+      writeChunk(destination, patchDeclarativeStyleHoistFunction);
+    }
+    renderState.needDeclarativeNamespaceFix = false;
+    renderState.needDeclarativeStyleHoist = false;
     if (
       enableViewTransition &&
       (resumableState.instructions & NeedUpgradeToViewTransitions) !==

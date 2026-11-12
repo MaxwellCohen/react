@@ -187,6 +187,10 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).not.toContain('$RB=');
     expect(out).not.toContain('$RC(');
     expect(out).not.toContain('<div hidden id="S:');
+    // Plain HTML patches do not pull in the optional SVG/style helpers.
+    expect(out).not.toContain('$RPN=');
+    expect(out).not.toContain('$RPH=');
+    expect(out).not.toContain('outerHTML');
   });
 
   it('is smaller than the script path for 250 boundaries', async () => {
@@ -269,7 +273,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['svg', 'math', 'item-0']);
-    // All three stay on <template for> + $RP. $RP reparses SVG/MathML via outerHTML.
+    // All three stay on <template for> + $RP. SVG/MathML patches pull in $RPN.
     expect(occurrences(out, '<template for=')).toBe(3);
     expect(occurrences(out, '<?start')).toBe(3);
     expect(out).toContain(
@@ -281,6 +285,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain('$RP("B:0"');
     expect(out).not.toContain('$RP(1,');
     expect(out).not.toContain('$RC(');
+    expect(out).toContain('$RPN=');
     expect(out).toContain('outerHTML');
   });
 
@@ -520,10 +525,11 @@ describe('ReactDOMFizzServer declarative patching', () => {
     const container = document.getElementById('container');
     container.innerHTML = r.shell();
     const out = await r.finish(['styled']);
-    // The late style is written inline, at the start of the patch.
+    // The late style is written inline, at the start of the patch, and $RPH is emitted.
     expect(out).toContain(
       '<template for="B:0"><style data-precedence="default"',
     );
+    expect(out).toContain('$RPH=');
     container.innerHTML = out;
     applyPatches(container);
     const node = container.querySelector('.item');

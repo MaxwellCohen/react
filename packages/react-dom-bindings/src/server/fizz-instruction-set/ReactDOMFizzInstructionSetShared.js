@@ -690,18 +690,6 @@ const PROCESSING_INSTRUCTION_NODE = 7;
 // in the right namespace. After a successful replace the script flips $? to $ and
 // calls _reactRetry (native / no-script hydration watches the marker with a
 // MutationObserver instead).
-function ensureDeclarativeMaps() {
-  if (!window['$RPS']) {
-    window['$RPS'] = new Map();
-  }
-  if (!window['$RPI']) {
-    window['$RPI'] = new WeakMap();
-  }
-  if (!window['$RPT']) {
-    window['$RPT'] = new Map();
-  }
-}
-
 function isDeclarativeStartMarker(node) {
   if (node == null) {
     return false;
@@ -727,7 +715,6 @@ function registerAndBlankMarker(marker, inPatch) {
   if (id === '') {
     return;
   }
-  ensureDeclarativeMaps();
   if (marker.nodeType !== PROCESSING_INSTRUCTION_NODE) {
     marker.data = '?start name=""';
   } else if (inPatch) {
@@ -744,7 +731,6 @@ function registerAndBlankMarker(marker, inPatch) {
 // Collect every named <?start> under root into $RPS/$RPI and blank the name so native
 // <template for> cannot match. Already-blanked markers are left alone.
 export function collectDeclarativeBoundaries(root) {
-  ensureDeclarativeMaps();
   // One walk for both shapes: a processing instruction in browsers with native
   // support, a comment everywhere else. A TreeWalker and not a NodeIterator, because a
   // document has to update every live NodeIterator each time a node is removed.
@@ -945,8 +931,10 @@ export function flushDeclarativePatches() {
   const batch = [];
   batch['ids'] = ids;
   if (window['$RW'] !== revealDeclarativePatches) {
-    // Upgraded to View Transitions. Hand it the boundaries to animate, as $RV gets them:
-    // the start of each fallback range and the content that replaces it.
+    // Upgraded to View Transitions (or the external runtime, which always
+    // ships the VT-capable reveal). Hand it the boundaries to animate, as
+    // $RV gets them: the start of each fallback range and the content that
+    // replaces it. getPatchTemplate also collects nested markers.
     for (let i = 0; i < ids.length; i++) {
       const template = getPatchTemplate(ids[i]);
       const marker = window['$RPS'].get(ids[i]);
@@ -1090,28 +1078,18 @@ function patchBoundary(marker, template, id) {
     template.parentNode.removeChild(template);
   }
   window['$RPS'].delete(id);
-  // Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
-  // parsed again in their parent's namespace (HTML integration points excluded).
-  // Needed even when native DPU already applied the template.
-  const parent = start.parentNode;
-  if (
-    !owned &&
-    parent &&
-    parent.namespaceURI !== XHTML_NAMESPACE &&
-    parent.localName !== 'foreignObject' &&
-    parent.localName !== 'desc' &&
-    parent.localName !== 'title'
-  ) {
-    for (let node = start.nextSibling, next; node !== end; node = next) {
-      next = node.nextSibling;
-      if (parent.namespaceURI === SVG_NAMESPACE) {
-        node = restoreSvgImages(node);
-      }
-      node.outerHTML = node.outerHTML;
-    }
-  }
+  // SVG/MathML reparse and late-style hoist are optional helpers the server emits
+  // only when a patch needs them (like $RR for classic), so the base $RP bootstrap
+  // stays smaller on plain HTML pages.
   if (!owned) {
-    hoistPatchStyles(start, end);
+    const fixNamespaces = window['$RPN'];
+    if (typeof fixNamespaces === 'function') {
+      fixNamespaces(start, end);
+    }
+    const hoistStyles = window['$RPH'];
+    if (typeof hoistStyles === 'function') {
+      hoistStyles(start, end);
+    }
   }
 }
 
@@ -1151,10 +1129,32 @@ function restoreSvgImages(node) {
   return node;
 }
 
+// Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
+// parsed again in their parent's namespace (HTML integration points excluded).
+export function fixDeclarativeNamespaces(start, end) {
+  const parent = start.parentNode;
+  if (
+    !parent ||
+    parent.namespaceURI === XHTML_NAMESPACE ||
+    parent.localName === 'foreignObject' ||
+    parent.localName === 'desc' ||
+    parent.localName === 'title'
+  ) {
+    return;
+  }
+  for (let node = start.nextSibling, next; node !== end; node = next) {
+    next = node.nextSibling;
+    if (parent.namespaceURI === SVG_NAMESPACE) {
+      node = restoreSvgImages(node);
+    }
+    node.outerHTML = node.outerHTML;
+  }
+}
+
 // Late <style data-precedence> rules arrive inside the patch. Move them to where a
 // hoisted style of that precedence belongs: after the last resource with the same
 // precedence, or after the last resource of all, like $RR does for a new precedence.
-function hoistPatchStyles(start, end) {
+export function hoistDeclarativePatchStyles(start, end) {
   for (let node = start.nextSibling, next; node !== end; node = next) {
     next = node.nextSibling;
     if (

@@ -6283,6 +6283,7 @@ function flushSegmentContainer(
       request.renderState,
       segment.id,
       hoistableState,
+      segment.parentFormatContext,
     );
     flushSegment(request, destination, segment, hoistableState);
     return writeEndDeclarativePatch(destination, request.renderState);

@@ -15,6 +15,8 @@
 
 let JSDOM;
 let patchDeclarativeBoundaries;
+let fixDeclarativeNamespaces;
+let hoistDeclarativePatchStyles;
 let upgradeToViewTransitions;
 
 describe('$RP runtime (polyfill path)', () => {
@@ -23,16 +25,20 @@ describe('$RP runtime (polyfill path)', () => {
 
   beforeEach(() => {
     JSDOM = require('jsdom').JSDOM;
-    patchDeclarativeBoundaries =
-      require('react-dom-bindings/src/server/fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings').patchDeclarativeBoundaries;
+    const strings = require('react-dom-bindings/src/server/fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings');
+    patchDeclarativeBoundaries = strings.patchDeclarativeBoundaries;
+    fixDeclarativeNamespaces = strings.fixDeclarativeNamespaces;
+    hoistDeclarativePatchStyles = strings.hoistDeclarativePatchStyles;
     upgradeToViewTransitions =
-      require('react-dom-bindings/src/server/fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings').patchDeclarativeBoundariesUpgradeToViewTransitions;
+      strings.patchDeclarativeBoundariesUpgradeToViewTransitions;
     const jsdom = new JSDOM(
       '<!DOCTYPE html><html><head></head><body></body></html>',
       {runScripts: 'outside-only', pretendToBeVisual: true},
     );
     window = jsdom.window;
     document = window.document;
+    // Base bootstrap only — SVG/style helpers are installed by tests that need them,
+    // matching the server emitting $RPN/$RPH only when a patch requires them.
     window.eval(patchDeclarativeBoundaries);
   });
 
@@ -141,6 +147,7 @@ describe('$RP runtime (polyfill path)', () => {
   });
 
   it('reparses patched children into the SVG namespace', async () => {
+    window.eval(fixDeclarativeNamespaces);
     setBody(
       '<svg>' +
         pending('B:a', '<circle r="1"></circle>') +
@@ -155,6 +162,7 @@ describe('$RP runtime (polyfill path)', () => {
   });
 
   it('restores <image> that the HTML parser turned into <img> inside SVG', async () => {
+    window.eval(fixDeclarativeNamespaces);
     setBody(
       '<svg>' +
         pending('B:a', '<circle r="1"></circle>') +
@@ -168,6 +176,7 @@ describe('$RP runtime (polyfill path)', () => {
   });
 
   it('hoists late styles to their precedence position in the head', async () => {
+    window.eval(hoistDeclarativePatchStyles);
     document.head.innerHTML =
       '<style data-precedence="a" data-href="x">x{}</style>' +
       '<style data-precedence="b" data-href="y">y{}</style>';

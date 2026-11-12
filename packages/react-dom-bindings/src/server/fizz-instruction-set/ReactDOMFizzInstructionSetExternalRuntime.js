@@ -9,7 +9,9 @@ import {
   completeBoundaryWithStyles,
   completeSegment,
   ensureDeclarativeCollector,
+  fixDeclarativeNamespaces,
   flushDeclarativePatches,
+  hoistDeclarativePatchStyles,
   listenToFormSubmissionsForReplaying,
   patchDeclarativeBoundaries,
   revealCompletedBoundaries,
@@ -38,6 +40,8 @@ window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
   revealDeclarativePatches,
 );
 window['$RPF'] = flushDeclarativePatches;
+window['$RPN'] = fixDeclarativeNamespaces;
+window['$RPH'] = hoistDeclarativePatchStyles;
 window['$RP'] = patchDeclarativeBoundaries;
 collectDeclarativeBoundaries(document);
 ensureDeclarativeCollector();
