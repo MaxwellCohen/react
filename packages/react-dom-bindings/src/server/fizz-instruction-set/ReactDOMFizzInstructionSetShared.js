@@ -697,6 +697,9 @@ function ensureDeclarativeMaps() {
   if (!window['$RPI']) {
     window['$RPI'] = new WeakMap();
   }
+  if (!window['$RPT']) {
+    window['$RPT'] = new Map();
+  }
 }
 
 function isDeclarativeStartMarker(node) {
@@ -716,105 +719,153 @@ function getDeclarativeStartName(node) {
 
 // Register one named <?start> into $RPS/$RPI and blank its name so native
 // <template for> cannot match. Already-blanked markers are left alone.
-function registerAndBlankMarker(marker) {
+// A marker that is still inside a patch (inPatch) is also swapped for the comment a
+// browser without native support parses it as: inserting a processing instruction
+// into the document is far slower than inserting a comment.
+function registerAndBlankMarker(marker, inPatch) {
   const id = getDeclarativeStartName(marker);
   if (id === '') {
     return;
   }
   ensureDeclarativeMaps();
+  if (marker.nodeType !== PROCESSING_INSTRUCTION_NODE) {
+    marker.data = '?start name=""';
+  } else if (inPatch) {
+    const comment = document.createComment('?start name=""');
+    marker.parentNode.replaceChild(comment, marker);
+    marker = comment;
+  } else {
+    marker.data = 'name=""';
+  }
   window['$RPS'].set(id, marker);
   window['$RPI'].set(marker, id);
-  if (marker.nodeType === PROCESSING_INSTRUCTION_NODE) {
-    marker.data = 'name=""';
-  } else {
-    marker.data = '?start name=""';
-  }
 }
 
 // Collect every named <?start> under root into $RPS/$RPI and blank the name so native
 // <template for> cannot match. Already-blanked markers are left alone.
 export function collectDeclarativeBoundaries(root) {
   ensureDeclarativeMaps();
+  // One walk for both shapes: a processing instruction in browsers with native
+  // support, a comment everywhere else. A TreeWalker and not a NodeIterator, because a
+  // document has to update every live NodeIterator each time a node is removed.
+  const walker = document.createTreeWalker(root, 192);
   const markers = [];
   let node;
-  // Native browsers: processing instructions.
-  const instructions = document.createNodeIterator(root, 64);
-  while ((node = instructions.nextNode())) {
-    if (node['target'] === 'start') {
-      markers.push(node);
-    }
-  }
-  // Everyone else parses <?start …> as a comment.
-  const comments = document.createNodeIterator(root, 128);
-  while ((node = comments.nextNode())) {
-    if (node.data.indexOf('?start') === 0) {
+  const inPatch = root !== document;
+  while ((node = walker.nextNode())) {
+    if (
+      isDeclarativeStartMarker(node) ||
+      (inPatch &&
+        node.nodeType === PROCESSING_INSTRUCTION_NODE &&
+        node['target'] === 'end')
+    ) {
       markers.push(node);
     }
   }
   for (let i = 0; i < markers.length; i++) {
-    registerAndBlankMarker(markers[i]);
+    node = markers[i];
+    if (node['target'] === 'end') {
+      // Same reason as the start marker of a patch: see registerAndBlankMarker.
+      node.parentNode.replaceChild(document.createComment('?end'), node);
+    } else {
+      registerAndBlankMarker(node, inPatch);
+    }
   }
 }
 
-// Collect-only observer: blank/register late <?start> markers as the parser adds them.
-// This is NOT the apply path — patches still go through $RP("B:n") announce. Without it
-// every $RP call would have to re-walk the document, which cliffs at hundreds of
-// boundaries when the server does not hold flushes.
+// Collect-only observer, for the external runtime: it can load while the shell is
+// still being parsed, so markers keep arriving after its first collect. The inline
+// $RP() runs after the whole shell and needs none. Stops with the parser, so that it
+// does not run for every later mutation of the page.
 export function ensureDeclarativeCollector() {
-  if (window['$RPO']) {
+  if (document.readyState !== 'loading') {
     return;
   }
-  ensureDeclarativeMaps();
-  window['$RPO'] = new MutationObserver(records => {
+  const collect = records => {
     for (let i = 0; i < records.length; i++) {
       const added = records[i].addedNodes;
       for (let j = 0; j < added.length; j++) {
         const node = added[j];
         if (isDeclarativeStartMarker(node)) {
-          registerAndBlankMarker(node);
+          registerAndBlankMarker(node, false);
         }
       }
     }
+  };
+  const observer = new MutationObserver(collect);
+  observer.observe(document, {childList: true, subtree: true});
+  document.addEventListener('DOMContentLoaded', () => {
+    collect(observer.takeRecords());
+    observer.disconnect();
   });
-  window['$RPO'].observe(document, {childList: true, subtree: true});
 }
 
-function findDeclarativeTemplate(id) {
-  // Ids are React-generated (prefix + hex); quote them for the attribute selector.
-  return document.querySelector('template[for="' + id + '"]');
-}
-
-// If any id is missing from $RPS (observer has not run yet, or the marker still lives
-// inside another patch's <template> content), do one collect of the document and of
-// every pending template's content. Avoids a full walk on the common (already-mapped)
-// path; nested parents-before-children still need the template.content pass.
+// Every marker is normally collected by now: the ones of the shell by $RP(), the ones
+// nested in a patch when that patch was announced. If an id is still unknown (the
+// shell call was skipped), walk the document once.
 function ensureMarkersFor(ids) {
   const starts = window['$RPS'];
   for (let i = 0; i < ids.length; i++) {
-    if (!starts || !starts.has(ids[i])) {
+    if (!starts.has(ids[i])) {
       collectDeclarativeBoundaries(document);
-      const found = document.querySelectorAll('template[for]');
-      for (let j = 0; j < found.length; j++) {
-        collectDeclarativeBoundaries(found[j].content);
-      }
       return;
     }
   }
 }
 
+// Register one <template for> patch in $RPT (id → template) and collect the <?start>
+// markers of the boundaries nested in its content, which no observer can see.
+function registerPatchTemplate(template) {
+  window['$RPT'].set(template.getAttribute('for'), template);
+  collectDeclarativeBoundaries(template.content);
+}
+
+// The patches of a group are written right before the instruction that announces them,
+// so they are found by walking back from it: no selector and no document walk. Stops
+// at the patches of an earlier group, or at anything that is not part of a group.
+function collectPatchTemplates(anchor, count) {
+  const templates = window['$RPT'];
+  let node = anchor ? anchor.previousSibling : null;
+  for (; count && node; node = node.previousSibling) {
+    if (node.nodeType !== ELEMENT_NODE) {
+      continue;
+    }
+    const name = node.nodeName;
+    if (name === 'TEMPLATE' && node.hasAttribute('for')) {
+      if (templates.get(node.getAttribute('for')) === node) {
+        return;
+      }
+      registerPatchTemplate(node);
+      count--;
+    } else if (name !== 'SCRIPT' && name !== 'LINK' && name !== 'TEMPLATE') {
+      return;
+    }
+  }
+}
+
+// The template of a queued patch. Looked up in the document only when the walk back
+// from the instruction did not find it.
+function getPatchTemplate(id) {
+  let template = window['$RPT'].get(id);
+  if (!template) {
+    // Ids are React-generated (prefix + hex); quote them for the attribute selector.
+    template = document.querySelector('template[for="' + id + '"]');
+    if (template) {
+      registerPatchTemplate(template);
+    }
+  }
+  return template;
+}
+
 export function patchDeclarativeBoundaries() {
   if (arguments.length === 0) {
     collectDeclarativeBoundaries(document);
-    ensureDeclarativeCollector();
     // Track the paint time of the shell, like markShellTime does for $RC.
     requestAnimationFrame(() => {
       window['$RT'] = performance.now();
     });
     return;
   }
-  // Late markers must be registered even when the shell $RP() was skipped (e.g. the
-  // external runtime loaded after the shell).
-  ensureDeclarativeCollector();
   const queue = window['$RPQ'];
   const first = queue.length === 0;
   const ids = [];
@@ -822,6 +873,11 @@ export function patchDeclarativeBoundaries() {
     ids.push(arguments[i]);
     queue.push(arguments[i]);
   }
+  // The external runtime passes its instruction node as `this`.
+  collectPatchTemplates(
+    this && this.nodeType ? this : document.currentScript,
+    ids.length,
+  );
   queueDeclarativePatches(ids);
   if (!first) {
     return;
@@ -853,41 +909,6 @@ export function patchDeclarativeBoundaries() {
   }
 }
 
-// Calls fn(marker, template, id) for each queued id whose start marker is currently in
-// the document (parents), then for markers that only live inside other patches' template
-// content (children). Lookups are O(ids) via $RPS + per-id template query — no document walk.
-function forEachPatch(ids, fn) {
-  ensureMarkersFor(ids);
-  const wanted = {};
-  for (let i = 0; i < ids.length; i++) {
-    wanted[ids[i]] = 1;
-  }
-  const starts = window['$RPS'];
-  for (let i = 0; i < ids.length; i++) {
-    const id = ids[i];
-    if (wanted[id] !== 1) {
-      continue;
-    }
-    const marker = starts.get(id);
-    if (marker && document.contains(marker)) {
-      wanted[id] = 2;
-      fn(marker, findDeclarativeTemplate(id), id);
-    }
-  }
-  for (let i = 0; i < ids.length; i++) {
-    const id = ids[i];
-    if (wanted[id] !== 1) {
-      continue;
-    }
-    const marker = starts.get(id);
-    if (marker) {
-      wanted[id] = 2;
-      fn(marker, findDeclarativeTemplate(id), id);
-    }
-  }
-  return wanted;
-}
-
 // Like $RC does when it queues a boundary: mark it as queued so React does not client
 // render it while the reveal waits for the throttle. Template lookup and orphan cleanup
 // wait for the flush — every completion emits $RP(ids), so work here must stay O(ids)
@@ -896,7 +917,7 @@ function queueDeclarativePatches(ids) {
   ensureMarkersFor(ids);
   const starts = window['$RPS'];
   for (let i = 0; i < ids.length; i++) {
-    const marker = starts && starts.get(ids[i]);
+    const marker = starts.get(ids[i]);
     if (!marker) {
       continue;
     }
@@ -926,38 +947,39 @@ export function flushDeclarativePatches() {
   if (window['$RW'] !== revealDeclarativePatches) {
     // Upgraded to View Transitions. Hand it the boundaries to animate, as $RV gets them:
     // the start of each fallback range and the content that replaces it.
-    forEachPatch(ids, (marker, template) => {
-      const start = marker.previousSibling;
+    for (let i = 0; i < ids.length; i++) {
+      const template = getPatchTemplate(ids[i]);
+      const marker = window['$RPS'].get(ids[i]);
+      const start = marker && marker.previousSibling;
       if (
         template &&
         start &&
         start.nodeType === COMMENT_NODE &&
         isDeclarativeStartMarker(marker) &&
-        document.contains(marker)
+        marker.isConnected
       ) {
         batch.push(marker, template.content);
       }
-    });
+    }
   }
   window['$RW'](batch);
 }
 
 function patchDeclarativeGroup(args) {
-  ensureMarkersFor(args);
+  const templates = {};
   const wanted = {};
   let remaining = 0;
   for (let i = 0; i < args.length; i++) {
     if (wanted[args[i]] !== 1) {
       wanted[args[i]] = 1;
       remaining++;
+      // Registered when the group was announced. This also collects the markers
+      // nested in a patch that was not, before any of them is looked up below.
+      templates[args[i]] = getPatchTemplate(args[i]);
+      window['$RPT'].delete(args[i]);
     }
   }
-  // Index templates once per flush, not per boundary.
-  const templates = {};
-  const found = document.querySelectorAll('template[for]');
-  for (let i = 0; i < found.length; i++) {
-    templates[found[i].getAttribute('for')] = found[i];
-  }
+  ensureMarkersFor(args);
   // Parents (markers in the document) first. Replacing a parent inserts its children,
   // which are then collected and become document-visible on the next pass.
   let safety = remaining + 1;
@@ -969,7 +991,7 @@ function patchDeclarativeGroup(args) {
         continue;
       }
       const marker = window['$RPS'].get(id);
-      if (marker && document.contains(marker)) {
+      if (marker && marker.isConnected) {
         wanted[id] = 2;
         remaining--;
         progress = true;
@@ -1058,8 +1080,6 @@ function patchBoundary(marker, template, id) {
       while ((node = start.nextSibling) !== end) {
         node.parentNode.removeChild(node);
       }
-      // Nested boundaries in the content must not be matched natively either.
-      collectDeclarativeBoundaries(template.content);
       start.after(template.content);
       // Revealed. Let React know, like $RC does.
       start.data = SUSPENSE_START_DATA;

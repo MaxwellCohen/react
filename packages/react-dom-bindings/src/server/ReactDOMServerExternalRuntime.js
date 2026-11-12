@@ -98,7 +98,8 @@ function handleNode(node_: Node) {
   } else if (dataset['rpi'] != null) {
     // data-ids is a comma-separated list of boundary ids (B:0,B:1,…).
     const ids = dataset['ids'] ? dataset['ids'].split(',') : [];
-    window['$RP'].apply(null, ids);
+    // The patches of the group are the previous siblings of this instruction.
+    window['$RP'].apply(node, ids);
     node.remove();
   }
 }

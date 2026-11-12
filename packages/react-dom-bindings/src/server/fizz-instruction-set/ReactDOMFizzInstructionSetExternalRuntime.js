@@ -31,7 +31,7 @@ window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
 window['$RPS'] = new Map();
 window['$RPI'] = new WeakMap();
-window['$RPO'] = null;
+window['$RPT'] = new Map();
 window['$RPQ'] = [];
 window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
   null,

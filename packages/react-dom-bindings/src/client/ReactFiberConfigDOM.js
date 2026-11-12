@@ -4337,28 +4337,30 @@ function isDeclarativePendingMarker(node: ?Node): boolean {
 // The server signals an errored declarative boundary with <template data-rcr id="E:<name>">
 // (see writeDeclarativeClientRenderedBoundary). Without scripts the name is still on the
 // pending range marker; after $RP() blanks names the id lives in $RPI (node → id).
+function getDeclarativeBoundaryName(marker: Node): null | string {
+  const ids: void | WeakMap<Node, string> = (window as any).$RPI;
+  if (ids != null) {
+    const collected = ids.get(marker);
+    if (collected != null && collected !== '') {
+      return collected;
+    }
+  }
+  const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
+  if (match !== null && match[1] !== '') {
+    return match[1];
+  }
+  return null;
+}
+
 function findDeclarativeErrorMarker(
   instance: SuspenseInstance,
 ): null | HTMLElement {
   const marker = instance.nextSibling;
-  if (!isDeclarativePendingMarker(marker)) {
+  if (marker == null || !isDeclarativePendingMarker(marker)) {
     return null;
   }
-  let name = null;
-  const ids: void | WeakMap<Node, string> = (window: any)['$RPI'];
-  if (ids != null) {
-    const collected = ids.get((marker: any));
-    if (collected != null && collected !== '') {
-      name = collected;
-    }
-  }
-  if (name == null) {
-    const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
-    if (match !== null && match[1] !== '') {
-      name = match[1];
-    }
-  }
-  if (name == null) {
+  const name = getDeclarativeBoundaryName(marker);
+  if (name === null) {
     return null;
   }
   return instance.ownerDocument.getElementById('E:' + name);
@@ -4443,14 +4445,16 @@ export function getSuspenseInstanceFallbackErrorDetails(
   stack?: string,
   componentStack?: string,
 } {
-  const errorSource =
-    enableFizzDeclarativePatching &&
-    (instance._reactError !== undefined ||
-      findDeclarativeErrorMarker(instance) !== null)
-      ? instance._reactError !== undefined
+  let errorSource: ?Node = instance.nextSibling;
+  if (enableFizzDeclarativePatching) {
+    const errorMarker =
+      instance._reactError !== undefined
         ? instance._reactError
-        : findDeclarativeErrorMarker(instance)
-      : instance.nextSibling;
+        : findDeclarativeErrorMarker(instance);
+    if (errorMarker !== null) {
+      errorSource = errorMarker;
+    }
+  }
   const dataset = errorSource && (errorSource as any as HTMLElement).dataset;
   let digest, message, stack, componentStack;
   if (dataset) {
@@ -4501,45 +4505,128 @@ export function registerSuspenseInstanceRetry(
     // We're still in pending status and the document is still loading so we attach
     // a listener to the document load even and expose the retry on the instance for
     // the Fizz runtime to trigger if it ends up resolving this boundary
-    let observer: null | MutationObserver = null;
+    let unwatch: null | (() => void) = null;
     const listener = () => {
-      if (observer !== null) {
-        observer.disconnect();
-        observer = null;
+      if (unwatch !== null) {
+        unwatch();
+        unwatch = null;
       }
       callback();
       ownerDocument.removeEventListener('DOMContentLoaded', listener);
     };
     ownerDocument.addEventListener('DOMContentLoaded', listener);
     instance._reactRetry = listener;
-    const parentNode = instance.parentNode;
-    if (
-      enableFizzDeclarativePatching &&
-      parentNode != null &&
-      isDeclarativePendingMarker(instance.nextSibling) &&
-      typeof MutationObserver === 'function'
-    ) {
+    if (enableFizzDeclarativePatching) {
       // Native / no-script <template for> patches never call _reactRetry, so watch
-      // the siblings for the marker disappearing instead of waiting for DOMContentLoaded.
+      // for the marker disappearing instead of waiting for DOMContentLoaded.
       // The $RP script path calls _reactRetry itself after it replaces the range.
-      const patchObserver = (observer = new MutationObserver(() => {
-        if (
-          !isDeclarativePendingMarker(instance.nextSibling) ||
-          findDeclarativeErrorMarker(instance) !== null
-        ) {
-          syncDeclarativelyPatchedBoundary(instance);
-          listener();
-        }
-      }));
-      patchObserver.observe(parentNode, {childList: true});
-      // The error marker is written where the parser is, which is the body level
-      // and not necessarily the boundary's own parent.
-      const body = ownerDocument.body;
-      if (body !== null && body !== parentNode) {
-        patchObserver.observe(body, {childList: true});
-      }
+      unwatch = watchDeclarativeBoundary(instance, listener);
     }
   }
+}
+
+// One MutationObserver per document watches every pending declarative boundary. An
+// observer per boundary gets a record (and a callback) for every mutation of the
+// parent they share and of the body the patches stream into, which is quadratic.
+type DeclarativeBoundaryWatcher = {
+  observer: MutationObserver,
+  observed: Set<Node>,
+  // What to call when a boundary's <?start> marker is removed (it was patched)...
+  byMarker: Map<Node, () => void>,
+  // ...or when its <template data-rcr id="E:<name>"> is added (it errored).
+  byName: Map<string, () => void>,
+};
+const declarativeBoundaryWatchers: WeakMap<
+  Document,
+  DeclarativeBoundaryWatcher,
+> = new WeakMap();
+
+function watchDeclarativeBoundary(
+  instance: SuspenseInstance,
+  listener: () => void,
+): null | (() => void) {
+  const ownerDocument = instance.ownerDocument;
+  const parentNode = instance.parentNode;
+  const marker = instance.nextSibling;
+  if (
+    parentNode == null ||
+    marker == null ||
+    !isDeclarativePendingMarker(marker) ||
+    typeof MutationObserver !== 'function'
+  ) {
+    return null;
+  }
+  let watcher = declarativeBoundaryWatchers.get(ownerDocument);
+  if (watcher === undefined) {
+    const byMarker: Map<Node, () => void> = new Map();
+    const byName: Map<string, () => void> = new Map();
+    const observer = new MutationObserver(records => {
+      for (let i = 0; i < records.length; i++) {
+        const removed = records[i].removedNodes;
+        for (let j = 0; j < removed.length; j++) {
+          const notify = byMarker.get(removed[j]);
+          if (notify !== undefined) {
+            notify();
+          }
+        }
+        const added = records[i].addedNodes;
+        for (let j = 0; j < added.length; j++) {
+          const node = added[j];
+          if (node.nodeType === ELEMENT_NODE && node.nodeName === 'TEMPLATE') {
+            const id = (node as any as HTMLElement).id;
+            if (id.startsWith('E:')) {
+              const notify = byName.get(id.slice(2));
+              if (notify !== undefined) {
+                notify();
+              }
+            }
+          }
+        }
+      }
+    });
+    watcher = {observer, observed: new Set(), byMarker, byName};
+    declarativeBoundaryWatchers.set(ownerDocument, watcher);
+  }
+  const currentWatcher = watcher;
+  const name = getDeclarativeBoundaryName(marker);
+  const notify = () => {
+    if (
+      !isDeclarativePendingMarker(instance.nextSibling) ||
+      findDeclarativeErrorMarker(instance) !== null
+    ) {
+      syncDeclarativelyPatchedBoundary(instance);
+      listener();
+    }
+  };
+  currentWatcher.byMarker.set(marker, notify);
+  if (name !== null) {
+    currentWatcher.byName.set(name, notify);
+  }
+  if (!currentWatcher.observed.has(parentNode)) {
+    currentWatcher.observed.add(parentNode);
+    currentWatcher.observer.observe(parentNode, {childList: true});
+  }
+  // The error marker is written where the parser is, which is the body level
+  // and not necessarily the boundary's own parent.
+  const body = ownerDocument.body;
+  if (body !== null && !currentWatcher.observed.has(body)) {
+    currentWatcher.observed.add(body);
+    currentWatcher.observer.observe(body, {childList: true});
+  }
+  return () => {
+    if (currentWatcher.byMarker.get(marker) !== notify) {
+      // A later registration for the same boundary took over.
+      return;
+    }
+    currentWatcher.byMarker.delete(marker);
+    if (name !== null) {
+      currentWatcher.byName.delete(name);
+    }
+    if (currentWatcher.byMarker.size === 0) {
+      currentWatcher.observer.disconnect();
+      currentWatcher.observed.clear();
+    }
+  };
 }
 
 export function canHydrateFormStateMarker(
