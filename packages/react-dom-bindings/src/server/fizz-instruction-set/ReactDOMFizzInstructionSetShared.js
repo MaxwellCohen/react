@@ -889,25 +889,24 @@ function forEachPatch(ids, fn) {
 }
 
 // Like $RC does when it queues a boundary: mark it as queued so React does not client
-// render it while the reveal waits for the throttle, and drop the patch of a boundary
-// that is gone.
+// render it while the reveal waits for the throttle. Template lookup and orphan cleanup
+// wait for the flush — every completion emits $RP(ids), so work here must stay O(ids)
+// Map gets, not querySelector.
 function queueDeclarativePatches(ids) {
-  const wanted = forEachPatch(ids, (marker, template) => {
-    const start = marker.previousSibling;
-    // A patch the browser already applied has no template and nothing to wait for.
-    if (template && start && start.nodeType === COMMENT_NODE) {
-      if (start.data === SUSPENSE_PENDING_START_DATA) {
-        start.data = SUSPENSE_QUEUED_START_DATA;
-      }
-    }
-  });
+  ensureMarkersFor(ids);
+  const starts = window['$RPS'];
   for (let i = 0; i < ids.length; i++) {
-    const id = ids[i];
-    if (wanted[id] === 1) {
-      const template = findDeclarativeTemplate(id);
-      if (template && template.parentNode) {
-        template.parentNode.removeChild(template);
-      }
+    const marker = starts && starts.get(ids[i]);
+    if (!marker) {
+      continue;
+    }
+    const start = marker.previousSibling;
+    if (
+      start &&
+      start.nodeType === COMMENT_NODE &&
+      start.data === SUSPENSE_PENDING_START_DATA
+    ) {
+      start.data = SUSPENSE_QUEUED_START_DATA;
     }
   }
 }
