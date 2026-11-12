@@ -95,5 +95,11 @@ function handleNode(node_: Node) {
   } else if (dataset['rsi'] != null) {
     window['$RS'](dataset['sid'], dataset['pid']);
     node.remove();
+  } else if (dataset['rpi'] != null) {
+    // Written after the shell of a request with declarative patching. The patches
+    // are appended where this instruction is.
+    const parent = node.parentNode;
+    node.remove();
+    window['$RP'](parent);
   }
 }

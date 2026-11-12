@@ -35,6 +35,7 @@ import {
   enableFizzExternalRuntime,
   enableSrcObject,
   enableFizzBlockingRender,
+  enableFizzDeclarativePatching,
   enableViewTransition,
   enableViewTransitionParentEnterExit,
 } from 'shared/ReactFeatureFlags';
@@ -86,6 +87,9 @@ import {
   completeSegment as completeSegmentFunction,
   formReplaying as formReplayingRuntime,
   markShellTime,
+  patchDeclarativeBoundaries as patchDeclarativeBoundariesFunction,
+  fixDeclarativeNamespaces as fixDeclarativeNamespacesFunction,
+  hoistDeclarativePatchStyles as hoistDeclarativePatchStylesFunction,
 } from './fizz-instruction-set/ReactDOMFizzInstructionSetInlineCodeStrings';
 
 import {getValueDescriptorExpectingObjectForWarning} from '../shared/ReactDOMResourceValidation';
@@ -135,6 +139,9 @@ const SentCompletedShellId /*             */ = 0b000100000;
 const SentMarkShellTime /*                */ = 0b001000000;
 const NeedUpgradeToViewTransitions /*     */ = 0b010000000;
 const SentUpgradeToViewTransitions /*     */ = 0b100000000;
+const SentPatchDeclarativeFunction /*     */ = 0b1000000000;
+const SentPatchNamespaceFunction /*       */ = 0b10000000000;
+const SentPatchStyleHoistFunction /*      */ = 0b100000000000;
 
 type NonceOption =
   | string
@@ -229,6 +236,17 @@ export type RenderState = {
   // without sending an instruction to hoist them. we do that here
   stylesToHoist: boolean,
 
+  // Opt-in: stream pending boundaries as <?start>/<?end> ranges and completions
+  // as <template for>. Always false unless enableFizzDeclarativePatching.
+  declarativePatching: boolean,
+
+  // Set while flushing declarative patches that need the optional $RP helpers, or
+  // that have to wait for a stylesheet. Consumed when the group is ended: these
+  // groups end with a script instead of the sentinel.
+  needDeclarativeNamespaceFix: boolean,
+  needDeclarativeStyleHoist: boolean,
+  needDeclarativeStylesheets: boolean,
+
   // We allow the legacy renderer to extend this object.
 
   ...
@@ -265,6 +283,9 @@ export type ResumableState = {
   nextFormID: number,
   streamingFormat: StreamingFormat,
   externalRuntimeConfig: string | BootstrapScriptDescriptor | void,
+  // Opt-in carried across prerender → resume so resumeRenderState can recreate
+  // the same declarative patching RenderState.
+  declarativePatching: boolean,
 
   // We carry the bootstrap intializers in resumable state in case we postpone in the shell
   // of a prerender. On resume we will reinitialize the bootstrap scripts if necessary.
@@ -396,6 +417,7 @@ export function createRenderState(
   importMap: ImportMap | void,
   onHeaders: void | ((headers: HeadersDescriptor) => void),
   maxHeadersLength: void | number,
+  declarativePatching?: boolean,
 ): RenderState {
   const nonceScript = typeof nonce === 'string' ? nonce : nonce && nonce.script;
   const inlineScriptWithNonce =
@@ -553,7 +575,17 @@ export function createRenderState(
     // like a module global for currently rendering boundary
     hoistableState: null,
     stylesToHoist: false,
+    declarativePatching:
+      enableFizzDeclarativePatching && declarativePatching === true,
+    needDeclarativeNamespaceFix: false,
+    needDeclarativeStyleHoist: false,
+    needDeclarativeStylesheets: false,
   };
+
+  // Persist the opt-in on resumable state so prerender → resume keeps the same wire.
+  if (enableFizzDeclarativePatching) {
+    resumableState.declarativePatching = declarativePatching === true;
+  }
 
   if (bootstrapScripts !== undefined) {
     for (let i = 0; i < bootstrapScripts.length; i++) {
@@ -685,6 +717,7 @@ export function resumeRenderState(
     undefined,
     undefined,
     undefined,
+    resumableState.declarativePatching,
   );
 }
 
@@ -708,6 +741,7 @@ export function createResumableState(
     nextFormID: 0,
     streamingFormat,
     externalRuntimeConfig,
+    declarativePatching: false,
     bootstrapScriptContent,
     bootstrapScripts,
     bootstrapModules,
@@ -4562,6 +4596,10 @@ function writeBootstrap(
   return true;
 }
 
+const patchDeclarativeCall = stringToPrecomputedChunk('$RP()');
+const armDeclarativePatchesData = stringToPrecomputedChunk(
+  '<template data-rpi=""></template><script></script>',
+);
 const shellTimeRuntimeScript = stringToPrecomputedChunk(markShellTime);
 
 function writeShellTimeInstruction(
@@ -4573,8 +4611,42 @@ function writeShellTimeInstruction(
     enableFizzExternalRuntime &&
     resumableState.streamingFormat !== ScriptStreamingFormat
   ) {
+    if (
+      enableFizzDeclarativePatching &&
+      renderState.declarativePatching &&
+      (resumableState.instructions & SentPatchDeclarativeFunction) ===
+        NothingSent
+    ) {
+      // Tells the external runtime to set up $RP where the patches will be appended.
+      // An empty script is never executed, but the parser delivers pending mutation
+      // records when it closes one, so the runtime sees the instruction, and takes
+      // the <?start> ranges away from the parser, before any patch is parsed.
+      resumableState.instructions |= SentPatchDeclarativeFunction;
+      return writeChunkAndReturn(destination, armDeclarativePatchesData);
+    }
     // External runtime always tracks the shell time in the runtime.
     return true;
+  }
+  if (enableFizzDeclarativePatching && renderState.declarativePatching) {
+    // $RP() takes the <?start> ranges away from the parser (so that reveals can be
+    // batched), observes the patches that follow and tracks the paint time of the
+    // shell.
+    if ((resumableState.instructions & SentMarkShellTime) !== NothingSent) {
+      return true;
+    }
+    resumableState.instructions |= SentMarkShellTime;
+    writeChunk(destination, renderState.startInlineScript);
+    writeCompletedShellIdAttribute(destination, resumableState);
+    writeChunk(destination, endOfStartTag);
+    if (
+      (resumableState.instructions & SentPatchDeclarativeFunction) ===
+      NothingSent
+    ) {
+      resumableState.instructions |= SentPatchDeclarativeFunction;
+      writeChunk(destination, patchDeclarativeFunction);
+    }
+    writeChunk(destination, patchDeclarativeCall);
+    return writeChunkAndReturn(destination, endInlineScript);
   }
   if ((resumableState.instructions & SentMarkShellTime) !== NothingSent) {
     // We already sent this instruction.
@@ -4705,20 +4777,140 @@ export function writeStartPendingSuspenseBoundary(
   writeChunk(destination, stringToChunk(id.toString(16)));
   return writeChunkAndReturn(destination, startPendingSuspenseBoundary2);
 }
-export function writeStartClientRenderedSuspenseBoundary(
+// Declarative patching (experimental). Pending boundaries emit their fallback as a
+// <?start name="B:n">…<?end> range and completion is a <template for="B:n"> that the
+// HTML parser applies itself, so no inline script (or nonce) is needed. The
+// <!--$?--> and <!--/$--> comments stay OUTSIDE the range so the comment node React
+// holds on to during hydration is never replaced. When scripts run, $RP takes the
+// ranges away from the parser to batch the reveals (see the instruction set).
+const startPendingDeclarativeBoundary1 = stringToPrecomputedChunk(
+  '<!--$?--><?start name="',
+);
+const startPendingDeclarativeBoundary2 = stringToPrecomputedChunk('">');
+const endPendingDeclarativeBoundary =
+  stringToPrecomputedChunk('<?end><!--/$-->');
+
+export function supportsDeclarativePatching(
+  resumableState: ResumableState,
+  renderState: RenderState,
+  formatContext: FormatContext,
+): boolean {
+  // Every boundary of an opted-in request is declarative, including the ones inside
+  // SVG/MathML (the $RP script reparses those in the right namespace) and inside a
+  // ViewTransition. resumableState and formatContext are unused for now.
+  return enableFizzDeclarativePatching && renderState.declarativePatching;
+}
+
+export function writeStartPendingDeclarativeBoundary(
   destination: Destination,
   renderState: RenderState,
+  id: number,
+): boolean {
+  writeChunk(destination, startPendingDeclarativeBoundary1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  return writeChunkAndReturn(destination, startPendingDeclarativeBoundary2);
+}
+
+export function writeEndPendingDeclarativeBoundary(
+  destination: Destination,
+): boolean {
+  return writeChunkAndReturn(destination, endPendingDeclarativeBoundary);
+}
+
+const startDeclarativePatch1 = stringToPrecomputedChunk('<template for="');
+const startDeclarativePatch2 = stringToPrecomputedChunk('">');
+const endDeclarativePatch = stringToPrecomputedChunk('</template>');
+const declarativeStyleOpen1 = stringToPrecomputedChunk(' data-precedence="');
+const declarativeStyleOpen2 = stringToPrecomputedChunk('" data-href="');
+const declarativeStyleOpen3 = stringToPrecomputedChunk('">');
+
+export function writeStartDeclarativePatch(
+  destination: Destination,
+  renderState: RenderState,
+  id: number,
+  hoistableState: HoistableState,
+  formatContext: FormatContext,
+): boolean {
+  // Stylesheets that gate reveal on the script path ($RR waits for them to load) are
+  // emitted as render-blocking links BEFORE the <template for>, at the top level of
+  // the document. Verified in Chrome 156: the parser stalls at a body stylesheet link
+  // until it has loaded (with or without blocking="render"), so the patch that follows
+  // is only applied once the CSS is ready and the fallback stays visible meanwhile.
+  // Putting the link inside the template instead stalls the parser mid-patch, after
+  // the fallback range was already cleared, which shows an empty gap for the whole
+  // load. Boundaries patched after this one queue behind the stylesheet.
+  hoistableState.stylesheets.forEach(resource => {
+    if (resource.state === PREAMBLE || resource.state === LATE) {
+      // Already in the shell, or already emitted by an earlier boundary.
+      return;
+    }
+    // Same attributes as a stylesheet in the shell (crossorigin, integrity, media…).
+    pushLinkImpl(stylesheetFlushingQueue, {
+      ...resource.props,
+      blocking: 'render',
+    });
+    for (let i = 0; i < stylesheetFlushingQueue.length; i++) {
+      writeChunk(destination, stylesheetFlushingQueue[i]);
+    }
+    stylesheetFlushingQueue.length = 0;
+    resource.state = LATE;
+    // The group must not be revealed before this has loaded. A script waits for it
+    // in every browser, where the parser itself only does in some.
+    renderState.needDeclarativeStylesheets = true;
+  });
+
+  if (
+    formatContext.insertionMode === SVG_MODE ||
+    formatContext.insertionMode === MATHML_MODE
+  ) {
+    // $RP will need the namespace reparse helper for this patch.
+    renderState.needDeclarativeNamespaceFix = true;
+  }
+
+  writeChunk(destination, startDeclarativePatch1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  writeChunk(destination, startDeclarativePatch2);
+
+  // Late <style> tags are written inline (no media="not all" + hoisting script).
+  // They are inserted at the patch location instead of in precedence order.
+  hoistableState.styles.forEach(styleQueue => {
+    const rules = styleQueue.rules;
+    const hrefs = styleQueue.hrefs;
+    if (hrefs.length === 0) {
+      return;
+    }
+    renderState.needDeclarativeStyleHoist = true;
+    writeChunk(destination, renderState.startInlineStyle);
+    writeChunk(destination, declarativeStyleOpen1);
+    writeChunk(destination, styleQueue.precedence);
+    writeChunk(destination, declarativeStyleOpen2);
+    let i = 0;
+    for (; i < hrefs.length - 1; i++) {
+      writeChunk(destination, hrefs[i]);
+      writeChunk(destination, spaceSeparator);
+    }
+    writeChunk(destination, hrefs[i]);
+    writeChunk(destination, declarativeStyleOpen3);
+    for (i = 0; i < rules.length; i++) {
+      writeChunk(destination, rules[i]);
+    }
+    writeChunk(destination, lateStyleTagTemplateClose);
+    rules.length = 0;
+    hrefs.length = 0;
+  });
+
+  return true;
+}
+
+function writeClientRenderedErrorAttributes(
+  destination: Destination,
   errorDigest: ?string,
   errorMessage: ?string,
   errorStack: ?string,
   errorComponentStack: ?string,
-): boolean {
-  let result;
-  result = writeChunkAndReturn(
-    destination,
-    startClientRenderedSuspenseBoundary,
-  );
-  writeChunk(destination, clientRenderedSuspenseBoundaryError1);
+): void {
   if (errorDigest != null) {
     writeChunk(destination, clientRenderedSuspenseBoundaryError1A);
     writeChunk(destination, stringToChunk(escapeTextForBrowser(errorDigest)));
@@ -4759,6 +4951,156 @@ export function writeStartClientRenderedSuspenseBoundary(
       );
     }
   }
+}
+
+// There is no $RX script to flip a pending boundary to client rendered, and the
+// <?start> range can't be told to stop waiting, so an errored declarative boundary is
+// signalled by an inert marker that carries the same data-* error attributes as the
+// <template data-dgst> a shell-time client rendered boundary has. The client's
+// hydration observer picks it up by id; before hydration it changes nothing visible.
+const declarativeClientRenderedMarker1 = stringToPrecomputedChunk(
+  '<template data-rcr id="E:',
+);
+const declarativeClientRenderedMarker2 = stringToPrecomputedChunk('"');
+
+export function writeDeclarativeClientRenderedBoundary(
+  destination: Destination,
+  renderState: RenderState,
+  id: number,
+  errorDigest: ?string,
+  errorMessage: ?string,
+  errorStack: ?string,
+  errorComponentStack: ?string,
+): boolean {
+  writeChunk(destination, declarativeClientRenderedMarker1);
+  writeChunk(destination, renderState.boundaryPrefix);
+  writeChunk(destination, stringToChunk(id.toString(16)));
+  writeChunk(destination, declarativeClientRenderedMarker2);
+  writeClientRenderedErrorAttributes(
+    destination,
+    errorDigest,
+    errorMessage,
+    errorStack,
+    errorComponentStack,
+  );
+  return writeChunkAndReturn(destination, clientRenderedSuspenseBoundaryError2);
+}
+
+const patchDeclarativeFunction = stringToChunk(
+  patchDeclarativeBoundariesFunction,
+);
+const patchDeclarativeNamespaceFunction = stringToChunk(
+  fixDeclarativeNamespacesFunction,
+);
+const patchDeclarativeStyleHoistFunction = stringToChunk(
+  hoistDeclarativePatchStylesFunction,
+);
+// An empty comment. Everything before it has been parsed completely.
+const patchDeclarativeSentinel = stringToPrecomputedChunk('<!---->');
+const patchDeclarativeSeparator = stringToPrecomputedChunk(';');
+
+// Ends a group of <template for> patches. The $RP runtime observes the patches
+// themselves, so most groups end with a sentinel and need no script (and no nonce).
+// A group ends with a script that calls $RP() instead when it has to wait for a
+// stylesheet, which a script does in every browser, or when that script has to
+// define a helper that the group needs first.
+export function writeDeclarativePatchSentinel(
+  destination: Destination,
+  resumableState: ResumableState,
+  renderState: RenderState,
+): boolean {
+  const scriptFormat =
+    !enableFizzExternalRuntime ||
+    resumableState.streamingFormat === ScriptStreamingFormat;
+  const instructions = resumableState.instructions;
+  const needFunction =
+    (instructions & SentPatchDeclarativeFunction) === NothingSent;
+  const needNamespaceFix =
+    renderState.needDeclarativeNamespaceFix &&
+    (instructions & SentPatchNamespaceFunction) === NothingSent;
+  const needStyleHoist =
+    renderState.needDeclarativeStyleHoist &&
+    (instructions & SentPatchStyleHoistFunction) === NothingSent;
+  const needViewTransitions =
+    enableViewTransition &&
+    (instructions & NeedUpgradeToViewTransitions) !== NothingSent &&
+    (instructions & SentUpgradeToViewTransitions) === NothingSent;
+  const needStylesheets = renderState.needDeclarativeStylesheets;
+  renderState.needDeclarativeNamespaceFix = false;
+  renderState.needDeclarativeStyleHoist = false;
+  renderState.needDeclarativeStylesheets = false;
+  if (
+    !scriptFormat ||
+    !(
+      needFunction ||
+      needNamespaceFix ||
+      needStyleHoist ||
+      needViewTransitions ||
+      needStylesheets
+    )
+  ) {
+    // The external runtime has every helper, and can not run an inline script.
+    return writeChunkAndReturn(destination, patchDeclarativeSentinel);
+  }
+  writeChunk(destination, renderState.startInlineScript);
+  writeChunk(destination, endOfStartTag);
+  if (needFunction) {
+    // The shell did not set up $RP (it was flushed by a prerender without this
+    // instruction). The first call sets up, the one below queues the group.
+    resumableState.instructions |= SentPatchDeclarativeFunction;
+    writeChunk(destination, patchDeclarativeFunction);
+    writeChunk(destination, patchDeclarativeCall);
+    writeChunk(destination, patchDeclarativeSeparator);
+  }
+  if (needNamespaceFix) {
+    resumableState.instructions |= SentPatchNamespaceFunction;
+    writeChunk(destination, patchDeclarativeNamespaceFunction);
+  }
+  if (needStyleHoist) {
+    resumableState.instructions |= SentPatchStyleHoistFunction;
+    writeChunk(destination, patchDeclarativeStyleHoistFunction);
+  }
+  if (needViewTransitions) {
+    // $RP reveals with $RV, so this is the same upgrade as for $RC.
+    resumableState.instructions |= SentUpgradeToViewTransitions;
+    writeChunk(
+      destination,
+      completeBoundaryUpgradeToViewTransitionsInstruction,
+    );
+  }
+  writeChunk(destination, patchDeclarativeCall);
+  return writeChunkAndReturn(destination, endInlineScript);
+}
+
+export function writeEndDeclarativePatch(
+  destination: Destination,
+  renderState: RenderState,
+): boolean {
+  const writeMore = writeChunkAndReturn(destination, endDeclarativePatch);
+  return writeBootstrap(destination, renderState) && writeMore;
+}
+
+export function writeStartClientRenderedSuspenseBoundary(
+  destination: Destination,
+  renderState: RenderState,
+  errorDigest: ?string,
+  errorMessage: ?string,
+  errorStack: ?string,
+  errorComponentStack: ?string,
+): boolean {
+  let result;
+  result = writeChunkAndReturn(
+    destination,
+    startClientRenderedSuspenseBoundary,
+  );
+  writeChunk(destination, clientRenderedSuspenseBoundaryError1);
+  writeClientRenderedErrorAttributes(
+    destination,
+    errorDigest,
+    errorMessage,
+    errorStack,
+    errorComponentStack,
+  );
   result = writeChunkAndReturn(
     destination,
     clientRenderedSuspenseBoundaryError2,
@@ -5044,6 +5386,16 @@ export function writeCompletedBoundaryInstruction(
         resumableState.instructions |= SentCompleteBoundaryFunction;
         writeChunk(destination, completeBoundaryScriptFunctionOnly);
       }
+      // Keep $RP in this same <script> when declarative patching is on.
+      if (
+        enableFizzDeclarativePatching &&
+        renderState.declarativePatching &&
+        (resumableState.instructions & SentPatchDeclarativeFunction) ===
+          NothingSent
+      ) {
+        resumableState.instructions |= SentPatchDeclarativeFunction;
+        writeChunk(destination, patchDeclarativeFunction);
+      }
       if (
         requiresViewTransitions &&
         (resumableState.instructions & SentUpgradeToViewTransitions) ===
@@ -5071,6 +5423,15 @@ export function writeCompletedBoundaryInstruction(
       ) {
         resumableState.instructions |= SentCompleteBoundaryFunction;
         writeChunk(destination, completeBoundaryScriptFunctionOnly);
+      }
+      if (
+        enableFizzDeclarativePatching &&
+        renderState.declarativePatching &&
+        (resumableState.instructions & SentPatchDeclarativeFunction) ===
+          NothingSent
+      ) {
+        resumableState.instructions |= SentPatchDeclarativeFunction;
+        writeChunk(destination, patchDeclarativeFunction);
       }
       if (
         requiresViewTransitions &&

@@ -7,7 +7,10 @@ import {
   completeBoundary,
   completeBoundaryWithStyles,
   completeSegment,
+  fixDeclarativeNamespaces,
+  hoistDeclarativePatchStyles,
   listenToFormSubmissionsForReplaying,
+  patchDeclarativeBoundaries,
   revealCompletedBoundaries,
   revealCompletedBoundariesWithViewTransitions,
 } from './ReactDOMFizzInstructionSetShared';
@@ -24,6 +27,9 @@ window['$RV'] = revealCompletedBoundariesWithViewTransitions.bind(
 window['$RC'] = completeBoundary;
 window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
+window['$RPN'] = fixDeclarativeNamespaces;
+window['$RPH'] = hoistDeclarativePatchStyles;
+window['$RP'] = patchDeclarativeBoundaries;
 
 listenToFormSubmissionsForReplaying();
 
