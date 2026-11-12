@@ -89,8 +89,8 @@ export const writeStartDeclarativePatch = $$$config.writeStartDeclarativePatch;
 export const writeEndDeclarativePatch = $$$config.writeEndDeclarativePatch;
 export const writeDeclarativeClientRenderedBoundary =
   $$$config.writeDeclarativeClientRenderedBoundary;
-export const writeDeclarativePatchScript =
-  $$$config.writeDeclarativePatchScript;
+export const writeDeclarativePatchSentinel =
+  $$$config.writeDeclarativePatchSentinel;
 export const writeEndClientRenderedSuspenseBoundary =
   $$$config.writeEndClientRenderedSuspenseBoundary;
 export const writeStartSegment = $$$config.writeStartSegment;

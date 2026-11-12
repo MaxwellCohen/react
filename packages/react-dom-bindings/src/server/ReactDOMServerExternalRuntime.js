@@ -96,10 +96,10 @@ function handleNode(node_: Node) {
     window['$RS'](dataset['sid'], dataset['pid']);
     node.remove();
   } else if (dataset['rpi'] != null) {
-    // data-ids is a comma-separated list of boundary ids (B:0,B:1,…).
-    const ids = dataset['ids'] ? dataset['ids'].split(',') : [];
-    // The patches of the group are the previous siblings of this instruction.
-    window['$RP'].apply(node, ids);
+    // Written after the shell of a request with declarative patching. The patches
+    // are appended where this instruction is.
+    const parent = node.parentNode;
     node.remove();
+    window['$RP'](parent);
   }
 }

@@ -40,9 +40,9 @@ const config = [
   {
     entry: 'ReactDOMFizzInlinePatchBoundary.js',
     exportName: 'patchDeclarativeBoundaries',
-    // Its helpers are top-level functions. Keep them out of the global scope so the
-    // View Transitions upgrade script (also minified to top-level names) cannot
-    // overwrite them.
+    // Its helpers and its state are top-level names. Keep them out of the global
+    // scope so the View Transitions upgrade script (also minified to top-level
+    // names) cannot overwrite them.
     wrap: true,
   },
   {
@@ -52,10 +52,6 @@ const config = [
   {
     entry: 'ReactDOMFizzInlinePatchBoundaryStyles.js',
     exportName: 'hoistDeclarativePatchStyles',
-  },
-  {
-    entry: 'ReactDOMFizzInlinePatchBoundaryUpgradeToViewTransitions.js',
-    exportName: 'patchDeclarativeBoundariesUpgradeToViewTransitions',
   },
   {
     entry: 'ReactDOMFizzInlineFormReplaying.js',

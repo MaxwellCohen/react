@@ -163,7 +163,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(occurrences(out, '<template id="B:')).toBe(BOUNDARIES);
   });
 
-  it('emits <?start> ranges, <template for> patches and a $RP script per group', async () => {
+  it('emits <?start> ranges and <template for> patches that need no script', async () => {
     const r = await render(<App count={BOUNDARIES} />, {
       unstable_declarativePatching: true,
     });
@@ -180,17 +180,20 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(out).toContain(
       '<template for="B:0"><p class="item">item-0</p></template>',
     );
-    expect(out).toContain('$RP("B:0"');
-    // The declarative runtime is the only one inlined: no $RC or $RB bootstrap.
+    // A group of patches ends with a sentinel. The only script is the one after
+    // the shell, which defines $RP and the reveal it shares with the script path.
+    expect(out).toContain('</template><!---->');
+    expect(occurrences(out, '<script')).toBe(1);
+    expect(occurrences(out, '$RP()</script>')).toBe(1);
     expect(occurrences(out, '$RP=')).toBe(1);
+    expect(occurrences(out, '$RV=')).toBe(1);
     expect(out).not.toContain('$RC=');
-    expect(out).not.toContain('$RB=');
     expect(out).not.toContain('$RC(');
     expect(out).not.toContain('<div hidden id="S:');
     // Plain HTML patches do not pull in the optional SVG/style helpers.
     expect(out).not.toContain('$RPN=');
     expect(out).not.toContain('$RPH=');
-    expect(out).not.toContain('outerHTML');
+    expect(out).not.toContain('innerHTML');
   });
 
   it('is smaller than the script path for 250 boundaries', async () => {
@@ -273,7 +276,8 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['svg', 'math', 'item-0']);
-    // All three stay on <template for> + $RP. SVG/MathML patches pull in $RPN.
+    // All three stay on <template for>. The SVG/MathML patches pull in $RPN, in a
+    // script that ends their group in the place of the sentinel.
     expect(occurrences(out, '<template for=')).toBe(3);
     expect(occurrences(out, '<?start')).toBe(3);
     expect(out).toContain(
@@ -281,12 +285,12 @@ describe('ReactDOMFizzServer declarative patching', () => {
     );
     expect(out).toContain('<template for="B:1"><mi>x</mi></template>');
     expect(out).toContain('<template for="B:2"><p class="item">');
-    expect(out).toContain('$RP(');
-    expect(out).toContain('$RP("B:0"');
-    expect(out).not.toContain('$RP(1,');
     expect(out).not.toContain('$RC(');
-    expect(out).toContain('$RPN=');
-    expect(out).toContain('outerHTML');
+    expect(occurrences(out, '$RPN=')).toBe(1);
+    expect(out).toContain('innerHTML');
+    expect(out).toMatch(
+      /<\/template><script>window\.\$RPN=[^]*\$RP\(\)<\/script>/,
+    );
   });
 
   // @gate enableViewTransition
@@ -305,12 +309,11 @@ describe('ReactDOMFizzServer declarative patching', () => {
       {unstable_declarativePatching: true},
     );
     const out = await r.finish(['item-0']);
-    // Stay on declarative markers; the leading 1 asks $RP to wrap the batch in a
-    // view transition.
+    // Stay on declarative markers. $RP reveals with $RV, so the script that ends
+    // the group upgrades it like the script path does.
     expect(occurrences(out, '<template for=')).toBe(1);
     expect(occurrences(out, '<?start')).toBe(1);
-    expect(out).toContain('$RP("B:0")');
-    expect(out).not.toContain('$RV=');
+    expect(out).toMatch(/<\/template><script>[^]*\$RV=[^]*\$RP\(\)<\/script>/);
     expect(out).not.toContain('$RC=');
     expect(out).not.toContain('$RC(');
     expect(out).toContain('startViewTransition');
@@ -376,6 +379,31 @@ describe('ReactDOMFizzServer declarative patching', () => {
       '<link rel="stylesheet" href="foo.css" data-precedence="default" blocking="render"/><template for="B:0"><div>',
     );
     expect(out).not.toContain('$RR');
+    // Not every browser stalls there, but a script waits for the stylesheet in all
+    // of them. This group ends with one that queues it, in the place of the sentinel.
+    expect(out).toContain('</template><script>$RP()</script>');
+    expect(out).not.toContain('<!---->');
+  });
+
+  // @gate enableFizzExternalRuntime
+  it('needs no inline script at all with the external runtime', async () => {
+    const r = await render(<App count={3} />, {
+      unstable_declarativePatching: true,
+      unstable_externalRuntimeSrc: 'runtime.js',
+    });
+    const shell = r.shell();
+    // An instruction sets up $RP where the patches will be appended. The empty script
+    // is never executed: closing it makes the parser deliver the instruction first.
+    expect(occurrences(shell, '<template data-rpi=""></template>')).toBe(1);
+    expect(shell).toContain(
+      '<template data-rpi=""></template><script></script>',
+    );
+    const out = await r.finish(allTexts(3));
+    expect(occurrences(out, '<template for="B:')).toBe(3);
+    expect(out).toContain('</template><!---->');
+    expect(occurrences(out, 'data-rpi')).toBe(1);
+    expect(out).not.toContain('$RP');
+    expect(out.replace('<script></script>', '')).not.toMatch(/<script>/);
   });
 
   it('keeps all stylesheet props on the render-blocking link', async () => {

@@ -102,7 +102,7 @@ describe('ReactDOMFizzServer declarative patching resume', () => {
     return {prelude, resumeOut};
   }
 
-  it('resumes a declarative prerender with <template for> and $RP', async () => {
+  it('resumes a declarative prerender with <template for>', async () => {
     const {prelude, resumeOut} = await prerenderAndResume({
       unstable_declarativePatching: true,
     });
@@ -111,8 +111,11 @@ describe('ReactDOMFizzServer declarative patching resume', () => {
     expect(resumeOut).toContain(
       '<template for="B:0"><p>content</p></template>',
     );
-    expect(resumeOut).toContain('$RP(');
+    // $RP was set up by the prelude. The resumed patches only need their sentinel.
+    expect(occurrences(prelude, '$RP()</script>')).toBe(1);
     expect(occurrences(prelude + resumeOut, '$RP=')).toBe(1);
+    expect(resumeOut).toContain('</template><!---->');
+    expect(resumeOut).not.toContain('<script');
     expect(resumeOut).not.toContain('$RC(');
     expect(resumeOut).not.toContain('<div hidden id="S:');
   });

@@ -676,486 +676,294 @@ const PROCESSING_INSTRUCTION_NODE = 7;
 
 // Declarative patching ($RP).
 //
-// Progressive enhancement: without scripts a browser with native support applies each
-// <template for="B:n"> to its <?start name="B:n"> range as it parses. With scripts,
-// $RP() runs once after the shell and collects every named start marker into $RPS
-// (id → node) and $RPI (node → id WeakMap), then blanks the name so native matching
-// cannot fire. That is what makes batching possible when scripts run.
+// A pending boundary is written as <!--$?--><?start name="B:n">fallback<?end><!--/$-->
+// and completes with a <template for="B:n"> that holds its content. Without scripts a
+// browser with native support applies the template to the range as it parses.
 //
-// $RP("B:0","B:1") follows a group of <template for="B:n"> patches. It queues the ids and
-// applies everything queued after the same throttle as $RC (FALLBACK_THROTTLE_MS since
-// the last reveal). Each boundary is found via $RPS; its <!--$?--> is the previous
-// sibling of the start marker. Nested <?start> markers inside the inserted content are
-// collected into the maps the same way. Boundaries inside SVG/MathML are then reparsed
-// in the right namespace. After a successful replace the script flips $? to $ and
-// calls _reactRetry (native / no-script hydration watches the marker with a
-// MutationObserver instead).
-function isDeclarativeStartMarker(node) {
-  if (node == null) {
+// With scripts, $RP() runs once after the shell. It indexes the start markers by id
+// and swaps the ones that are processing instructions for the comment that a browser
+// without native support parses them as. A comment is not a target for the parser, so
+// the browser leaves each patch in the document as an inert <template for>, and reveals
+// can be batched behind the same throttle as $RC.
+//
+// Patches are not announced by a script. They are appended to the element the stream
+// is written to, which $RP() observes. The server ends each group of patches with an
+// empty comment (the sentinel): everything before it has been parsed completely. Each
+// patch is then queued on $RB for $RV, the reveal of the script path, with the start
+// marker in the place of the <template id="B:n"> and the template content in the place
+// of the hidden segment. The server writes <script>$RP()</script> instead of the
+// sentinel when a group has to wait for a stylesheet or for a helper in that script.
+
+// id → start marker.
+const declarativeMarkers = new Map();
+// Set once a marker was a processing instruction: the browser parses them natively,
+// so a marker is never a comment and comments do not have to be walked.
+let declarativeNative = false;
+// Observes the element that the stream is appended to.
+let declarativeObserver = null;
+// The patches that were parsed, or are being parsed, since the last sentinel.
+let declarativePatches = [];
+// The ids React generates: an optional identifierPrefix, then B: and a hex number.
+// Markers and templates with any other name belong to the page.
+const DECLARATIVE_ID = /^\?start name="([^"]*B:[\da-f]+)"$/;
+const DECLARATIVE_FOR = /B:[\da-f]+$/;
+
+// Indexes one <?start> marker. Returns true if the <?end> that follows it has to be
+// swapped as well.
+function registerDeclarativeMarker(node) {
+  const isInstruction = node.nodeType === PROCESSING_INSTRUCTION_NODE;
+  let data = node.data;
+  if (isInstruction) {
+    if (node['target'] !== 'start') {
+      return false;
+    }
+    data = '?start ' + data;
+  } else if (data.charCodeAt(0) !== 63) {
+    // Not a "?": one of the many other comments of the shell.
     return false;
   }
-  if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
-    return node['target'] === 'start';
+  const match = DECLARATIVE_ID.exec(data);
+  if (match === null) {
+    return false;
   }
-  return node.nodeType === COMMENT_NODE && node.data.indexOf('?start') === 0;
+  if (isInstruction) {
+    declarativeNative = true;
+    const comment = document.createComment(data);
+    node.parentNode.replaceChild(comment, node);
+    node = comment;
+  }
+  declarativeMarkers.set(match[1], node);
+  return isInstruction;
 }
 
-function getDeclarativeStartName(node) {
-  const match = /name="([^"]*)"/.exec(node.data);
-  return match !== null ? match[1] : '';
-}
-
-// Register one named <?start> into $RPS/$RPI and blank its name so native
-// <template for> cannot match. Already-blanked markers are left alone.
-// A marker that is still inside a patch (inPatch) is also swapped for the comment a
-// browser without native support parses it as: inserting a processing instruction
-// into the document is far slower than inserting a comment.
-function registerAndBlankMarker(marker, inPatch) {
-  const id = getDeclarativeStartName(marker);
-  if (id === '') {
-    return;
-  }
-  if (marker.nodeType !== PROCESSING_INSTRUCTION_NODE) {
-    marker.data = '?start name=""';
-  } else if (inPatch) {
-    const comment = document.createComment('?start name=""');
-    marker.parentNode.replaceChild(comment, marker);
-    marker = comment;
-  } else {
-    marker.data = 'name=""';
-  }
-  window['$RPS'].set(id, marker);
-  window['$RPI'].set(marker, id);
-}
-
-// Collect every named <?start> under root into $RPS/$RPI and blank the name so native
-// <template for> cannot match. Already-blanked markers are left alone.
-export function collectDeclarativeBoundaries(root) {
-  // One walk for both shapes: a processing instruction in browsers with native
-  // support, a comment everywhere else. A TreeWalker and not a NodeIterator, because a
-  // document has to update every live NodeIterator each time a node is removed.
-  const walker = document.createTreeWalker(root, 192);
-  const markers = [];
-  let node;
-  const inPatch = root !== document;
-  while ((node = walker.nextNode())) {
-    if (
-      isDeclarativeStartMarker(node) ||
-      (inPatch &&
+function collectDeclarativeMarkers(root) {
+  // Processing instructions first. Only a browser that never produced one has its
+  // markers in comments. A TreeWalker and not a NodeIterator, because a document has
+  // to update every live NodeIterator each time a node is removed.
+  for (
+    let whatToShow = 64;
+    whatToShow !== 0;
+    whatToShow = declarativeNative || whatToShow === 128 ? 0 : 128
+  ) {
+    const walker = document.createTreeWalker(root, whatToShow);
+    let node = walker.nextNode();
+    let unmatchedEnds = 0;
+    while (node) {
+      // The node is replaced below, so move on first.
+      const next = walker.nextNode();
+      if (registerDeclarativeMarker(node)) {
+        unmatchedEnds++;
+      } else if (
+        unmatchedEnds !== 0 &&
         node.nodeType === PROCESSING_INSTRUCTION_NODE &&
-        node['target'] === 'end')
-    ) {
-      markers.push(node);
-    }
-  }
-  for (let i = 0; i < markers.length; i++) {
-    node = markers[i];
-    if (node['target'] === 'end') {
-      // Same reason as the start marker of a patch: see registerAndBlankMarker.
-      node.parentNode.replaceChild(document.createComment('?end'), node);
-    } else {
-      registerAndBlankMarker(node, inPatch);
+        node['target'] === 'end'
+      ) {
+        // Moving a processing instruction into the document is far slower than
+        // moving a comment, and this one would move with the fallback or the content.
+        unmatchedEnds--;
+        node.parentNode.replaceChild(document.createComment('?end'), node);
+      }
+      node = next;
     }
   }
 }
 
-// Collect-only observer, for the external runtime: it can load while the shell is
-// still being parsed, so markers keep arriving after its first collect. The inline
-// $RP() runs after the whole shell and needs none. Stops with the parser, so that it
-// does not run for every later mutation of the page.
-export function ensureDeclarativeCollector() {
-  if (document.readyState !== 'loading') {
+// The <!--$?--> of a boundary that is still pending, or null. A boundary is patched
+// or errors once, and React removes the marker with the boundary when it client
+// renders it.
+function takeDeclarativeBoundary(id) {
+  if (!declarativeMarkers.has(id)) {
+    // The shell call was skipped, or this marker was parsed after it.
+    collectDeclarativeMarkers(document);
+  }
+  const marker = declarativeMarkers.get(id);
+  declarativeMarkers.delete(id);
+  const start = marker && marker.previousSibling;
+  return start &&
+    start.nodeType === COMMENT_NODE &&
+    start.data === SUSPENSE_PENDING_START_DATA
+    ? start
+    : null;
+}
+
+// Queues one completely parsed <template for> for reveal.
+function queueDeclarativePatch(template) {
+  const id = template.getAttribute('for');
+  if (!DECLARATIVE_FOR.test(id)) {
     return;
   }
-  const collect = records => {
-    for (let i = 0; i < records.length; i++) {
-      const added = records[i].addedNodes;
-      for (let j = 0; j < added.length; j++) {
-        const node = added[j];
-        if (isDeclarativeStartMarker(node)) {
-          registerAndBlankMarker(node, false);
+  const start = takeDeclarativeBoundary(id);
+  if (template.parentNode) {
+    template.parentNode.removeChild(template);
+  }
+  if (start === null) {
+    // Dropped with its template.
+    return;
+  }
+  const marker = start.nextSibling;
+  let content = template.content;
+  // Optional helpers that the server only sends when a patch needs them.
+  if (window['$RPN']) {
+    content = window['$RPN'](content, marker.parentNode);
+  }
+  if (window['$RPH']) {
+    window['$RPH'](content);
+  }
+  // The boundaries that are still pending in this content.
+  collectDeclarativeMarkers(content);
+  // Queued. React must not client render it while it waits for the throttle.
+  start.data = SUSPENSE_QUEUED_START_DATA;
+  const batch = window['$RB'];
+  batch.push(marker, content);
+  if (batch.length === 2) {
+    // The first patch of a batch schedules its reveal, like $RC does.
+    let revealed = false;
+    const reveal = () => {
+      if (!revealed) {
+        revealed = true;
+        window['$RV'](batch);
+      }
+    };
+    if (typeof window['$RT'] !== 'number') {
+      requestAnimationFrame(reveal);
+      // WebKit throttles animation frames in iframes that are not visible.
+      setTimeout(reveal, 250);
+    } else {
+      const currentTime = performance.now();
+      const msUntilTimeout =
+        currentTime < TARGET_VANITY_METRIC &&
+        currentTime > TARGET_VANITY_METRIC - FALLBACK_THROTTLE_MS
+          ? TARGET_VANITY_METRIC - currentTime
+          : window['$RT'] + FALLBACK_THROTTLE_MS - currentTime;
+      // Always a timer, even for a low or negative delay, so that patches that are
+      // parsed in the same task make the batch.
+      setTimeout(reveal, msUntilTimeout);
+    }
+  }
+}
+
+// Collects the patches among the nodes that were added to the stream. Returns how many
+// of the collected patches are known to be complete: the ones before a sentinel.
+function collectDeclarativePatches(lists) {
+  let complete = 0;
+  for (let i = 0; i < lists.length; i++) {
+    const added = lists[i].addedNodes;
+    for (let j = 0; j < added.length; j++) {
+      const node = added[j];
+      if (node.nodeType === COMMENT_NODE) {
+        if (node.data === '') {
+          complete = declarativePatches.length;
+        }
+      } else if (node.nodeName === 'TEMPLATE') {
+        if (node.hasAttribute('for')) {
+          declarativePatches.push(node);
+        } else if (node.hasAttribute('data-rcr')) {
+          // The boundary errored on the server: <template data-rcr id="E:B:n">, which
+          // also has the details. Let React client render it, like $RX does.
+          const start = takeDeclarativeBoundary(node.id.slice(2));
+          if (start !== null) {
+            start.data = SUSPENSE_FALLBACK_START_DATA;
+            if (start['_reactRetry']) {
+              start['_reactRetry']();
+            }
+          }
         }
       }
     }
-  };
-  const observer = new MutationObserver(collect);
-  observer.observe(document, {childList: true, subtree: true});
-  document.addEventListener('DOMContentLoaded', () => {
-    collect(observer.takeRecords());
-    observer.disconnect();
-  });
+  }
+  return complete;
 }
 
-// Every marker is normally collected by now: the ones of the shell by $RP(), the ones
-// nested in a patch when that patch was announced. If an id is still unknown (the
-// shell call was skipped), walk the document once.
-function ensureMarkersFor(ids) {
-  const starts = window['$RPS'];
-  for (let i = 0; i < ids.length; i++) {
-    if (!starts.has(ids[i])) {
-      collectDeclarativeBoundaries(document);
-      return;
-    }
+function queueDeclarativePatches(count) {
+  const patches = declarativePatches.splice(0, count);
+  for (let i = 0; i < patches.length; i++) {
+    queueDeclarativePatch(patches[i]);
   }
 }
 
-// Register one <template for> patch in $RPT (id → template) and collect the <?start>
-// markers of the boundaries nested in its content, which no observer can see.
-function registerPatchTemplate(template) {
-  window['$RPT'].set(template.getAttribute('for'), template);
-  collectDeclarativeBoundaries(template.content);
-}
-
-// The patches of a group are written right before the instruction that announces them,
-// so they are found by walking back from it: no selector and no document walk. Stops
-// at the patches of an earlier group, or at anything that is not part of a group.
-function collectPatchTemplates(anchor, count) {
-  const templates = window['$RPT'];
-  let node = anchor ? anchor.previousSibling : null;
-  for (; count && node; node = node.previousSibling) {
-    if (node.nodeType !== ELEMENT_NODE) {
-      continue;
-    }
-    const name = node.nodeName;
-    if (name === 'TEMPLATE' && node.hasAttribute('for')) {
-      if (templates.get(node.getAttribute('for')) === node) {
-        return;
-      }
-      registerPatchTemplate(node);
-      count--;
-    } else if (name !== 'SCRIPT' && name !== 'LINK' && name !== 'TEMPLATE') {
-      return;
-    }
+// $RP. The first call sets up, with the element the stream is appended to when that
+// is not the parent of the running script (the external runtime). A later call is
+// written after a group of patches in the place of the sentinel.
+export function patchDeclarativeBoundaries(root) {
+  if (declarativeObserver !== null) {
+    collectDeclarativePatches(declarativeObserver.takeRecords());
+    queueDeclarativePatches(declarativePatches.length);
+    return;
   }
-}
-
-// The template of a queued patch. Looked up in the document only when the walk back
-// from the instruction did not find it.
-function getPatchTemplate(id) {
-  let template = window['$RPT'].get(id);
-  if (!template) {
-    // Ids are React-generated (prefix + hex); quote them for the attribute selector.
-    template = document.querySelector('template[for="' + id + '"]');
-    if (template) {
-      registerPatchTemplate(template);
-    }
-  }
-  return template;
-}
-
-export function patchDeclarativeBoundaries() {
-  if (arguments.length === 0) {
-    collectDeclarativeBoundaries(document);
+  const script = document.currentScript;
+  root = root || (script && script.parentNode) || document.body;
+  collectDeclarativeMarkers(document);
+  const observer = (declarativeObserver = new MutationObserver(records => {
+    queueDeclarativePatches(collectDeclarativePatches(records));
+  }));
+  observer.observe(root, {childList: true});
+  // Patches that were parsed before this ran.
+  queueDeclarativePatches(
+    collectDeclarativePatches([{addedNodes: root.childNodes}]),
+  );
+  if (typeof window['$RT'] !== 'number') {
     // Track the paint time of the shell, like markShellTime does for $RC.
     requestAnimationFrame(() => {
       window['$RT'] = performance.now();
     });
-    return;
   }
-  const queue = window['$RPQ'];
-  const first = queue.length === 0;
-  const ids = [];
-  for (let i = 0; i < arguments.length; i++) {
-    ids.push(arguments[i]);
-    queue.push(arguments[i]);
-  }
-  // The external runtime passes its instruction node as `this`.
-  collectPatchTemplates(
-    this && this.nodeType ? this : document.currentScript,
-    ids.length,
-  );
-  queueDeclarativePatches(ids);
-  if (!first) {
-    return;
-  }
-  // This is the first patch of the batch. Flush it after the throttle.
-  // Schedule via $RPF (not a direct function ref) so a separately-eval'd View
-  // Transitions upgrade cannot clobber the flush by reusing its minified name.
-  // Race a 250ms timer against the first paint: WebKit throttles rAF in iframes.
-  if (typeof window['$RT'] !== 'number') {
-    let scheduled = false;
-    const kick = () => {
-      if (!scheduled) {
-        scheduled = true;
-        window['$RPF']();
-      }
-    };
-    requestAnimationFrame(kick);
-    setTimeout(kick, 250);
-  } else {
-    const currentTime = performance.now();
-    const msUntilTimeout =
-      currentTime < TARGET_VANITY_METRIC &&
-      currentTime > TARGET_VANITY_METRIC - FALLBACK_THROTTLE_MS
-        ? TARGET_VANITY_METRIC - currentTime
-        : window['$RT'] + FALLBACK_THROTTLE_MS - currentTime;
-    // Always use a timer, even for a low or negative delay, so that patches that are
-    // already queued make the batch.
-    setTimeout(window['$RPF'], msUntilTimeout);
-  }
+  document.addEventListener('DOMContentLoaded', () => {
+    // Nothing is still being parsed, and nothing else is coming. Patches that ended
+    // up somewhere else in the document are found here too.
+    observer.disconnect();
+    declarativePatches = [];
+    const patches = document.querySelectorAll('template[for]');
+    for (let i = 0; i < patches.length; i++) {
+      queueDeclarativePatch(patches[i]);
+    }
+  });
 }
 
-// Like $RC does when it queues a boundary: mark it as queued so React does not client
-// render it while the reveal waits for the throttle. Template lookup and orphan cleanup
-// wait for the flush — every completion emits $RP(ids), so work here must stay O(ids)
-// Map gets, not querySelector.
-function queueDeclarativePatches(ids) {
-  ensureMarkersFor(ids);
-  const starts = window['$RPS'];
-  for (let i = 0; i < ids.length; i++) {
-    const marker = starts.get(ids[i]);
-    if (!marker) {
-      continue;
-    }
-    const start = marker.previousSibling;
-    if (
-      start &&
-      start.nodeType === COMMENT_NODE &&
-      start.data === SUSPENSE_PENDING_START_DATA
-    ) {
-      start.data = SUSPENSE_QUEUED_START_DATA;
-    }
-  }
-}
-
-// The base of $RW, like revealCompletedBoundaries is for $RV. The batch carries the ids
-// of the patches to apply.
-export function revealDeclarativePatches(batch) {
-  window['$RT'] = performance.now();
-  patchDeclarativeGroup(batch['ids']);
-}
-
-export function flushDeclarativePatches() {
-  const ids = window['$RPQ'];
-  window['$RPQ'] = [];
-  const batch = [];
-  batch['ids'] = ids;
-  if (window['$RW'] !== revealDeclarativePatches) {
-    // Upgraded to View Transitions (or the external runtime, which always
-    // ships the VT-capable reveal). Hand it the boundaries to animate, as
-    // $RV gets them: the start of each fallback range and the content that
-    // replaces it. getPatchTemplate also collects nested markers.
-    for (let i = 0; i < ids.length; i++) {
-      const template = getPatchTemplate(ids[i]);
-      const marker = window['$RPS'].get(ids[i]);
-      const start = marker && marker.previousSibling;
-      if (
-        template &&
-        start &&
-        start.nodeType === COMMENT_NODE &&
-        isDeclarativeStartMarker(marker) &&
-        marker.isConnected
-      ) {
-        batch.push(marker, template.content);
-      }
-    }
-  }
-  window['$RW'](batch);
-}
-
-function patchDeclarativeGroup(args) {
-  const templates = {};
-  const wanted = {};
-  let remaining = 0;
-  for (let i = 0; i < args.length; i++) {
-    if (wanted[args[i]] !== 1) {
-      wanted[args[i]] = 1;
-      remaining++;
-      // Registered when the group was announced. This also collects the markers
-      // nested in a patch that was not, before any of them is looked up below.
-      templates[args[i]] = getPatchTemplate(args[i]);
-      window['$RPT'].delete(args[i]);
-    }
-  }
-  ensureMarkersFor(args);
-  // Parents (markers in the document) first. Replacing a parent inserts its children,
-  // which are then collected and become document-visible on the next pass.
-  let safety = remaining + 1;
-  while (remaining && safety--) {
-    let progress = false;
-    for (let i = 0; i < args.length; i++) {
-      const id = args[i];
-      if (wanted[id] !== 1) {
-        continue;
-      }
-      const marker = window['$RPS'].get(id);
-      if (marker && marker.isConnected) {
-        wanted[id] = 2;
-        remaining--;
-        progress = true;
-        patchBoundary(marker, templates[id], id);
-      }
-    }
-    if (!progress) {
-      break;
-    }
-  }
-  // Drop templates for boundaries we never found in the document (native already
-  // applied, or the boundary was removed before the patch arrived).
-  for (let i = 0; i < args.length; i++) {
-    const id = args[i];
-    if (wanted[id] === 1) {
-      wanted[id] = 2;
-      const template = templates[id];
-      if (template && template.parentNode) {
-        template.parentNode.removeChild(template);
-      }
-      window['$RPS'].delete(id);
-    }
-  }
-}
-
-function patchBoundary(marker, template, id) {
-  const start = marker.previousSibling;
-  if (!start || start.nodeType !== COMMENT_NODE) {
-    if (template && template.parentNode) {
-      template.parentNode.removeChild(template);
-    }
-    window['$RPS'].delete(id);
-    return;
-  }
-  if (template) {
-    // Only a still-pending boundary whose collected start marker is intact may be
-    // replaced. Otherwise the template is an orphan and is dropped.
-    if (
-      (start.data !== SUSPENSE_PENDING_START_DATA &&
-        start.data !== SUSPENSE_QUEUED_START_DATA) ||
-      !isDeclarativeStartMarker(marker)
-    ) {
-      template.parentNode.removeChild(template);
-      window['$RPS'].delete(id);
-      return;
-    }
-  }
-  // The boundary ends at the matching <!--/$-->. Nested boundaries are counted.
-  let depth = 1;
-  let end = start.nextSibling;
-  for (; end; end = end.nextSibling) {
-    if (end.nodeType === COMMENT_NODE) {
-      const data = end.data;
-      if (data === SUSPENSE_END_DATA) {
-        if (--depth === 0) {
-          break;
-        }
-      } else if (
-        data === SUSPENSE_START_DATA ||
-        data === SUSPENSE_PENDING_START_DATA ||
-        data === SUSPENSE_FALLBACK_START_DATA ||
-        data === SUSPENSE_QUEUED_START_DATA
-      ) {
-        depth++;
-      }
-    }
-  }
-  if (!end) {
-    return;
-  }
-  // DOM React already owns in this range (a client render got there first, or it
-  // hydrated a natively applied patch) must survive untouched.
-  let owned = false;
-  for (let node = start.nextSibling; node !== end && !owned; ) {
-    const keys = Object.keys(node);
-    for (let i = 0; i < keys.length; i++) {
-      if (keys[i].indexOf('__reactFiber$') === 0) {
-        owned = true;
-      }
-    }
-    node = node.nextSibling;
-  }
-  if (template) {
-    if (!owned) {
-      let node;
-      while ((node = start.nextSibling) !== end) {
-        node.parentNode.removeChild(node);
-      }
-      start.after(template.content);
-      // Revealed. Let React know, like $RC does.
-      start.data = SUSPENSE_START_DATA;
-      if (start['_reactRetry']) {
-        requestAnimationFrame(start['_reactRetry']);
-      }
-    }
-    template.parentNode.removeChild(template);
-  }
-  window['$RPS'].delete(id);
-  // SVG/MathML reparse and late-style hoist are optional helpers the server emits
-  // only when a patch needs them (like $RR for classic), so the base $RP bootstrap
-  // stays smaller on plain HTML pages.
-  if (!owned) {
-    const fixNamespaces = window['$RPN'];
-    if (typeof fixNamespaces === 'function') {
-      fixNamespaces(start, end);
-    }
-    const hoistStyles = window['$RPH'];
-    if (typeof hoistStyles === 'function') {
-      hoistStyles(start, end);
-    }
-  }
-}
-
-// The HTML parser turns <image> into <img> (an SVG element that is not allowed to be
-// reparsed, since <img> breaks out of SVG). Turn those back before the reparse, except
-// in <foreignObject> where <img> is real HTML.
-function restoreSvgImages(node) {
-  if (node.nodeType !== ELEMENT_NODE) {
-    return node;
-  }
-  const images = node.querySelectorAll('img');
-  const list = node.localName === 'img' ? [node] : [];
-  for (let i = 0; i < images.length; i++) {
-    list.push(images[i]);
-  }
-  for (let i = 0; i < list.length; i++) {
-    const img = list[i];
-    let ancestor = img.parentNode;
-    while (ancestor && ancestor !== node.parentNode) {
-      if (ancestor.localName === 'foreignobject') {
-        break;
-      }
-      ancestor = ancestor.parentNode;
-    }
-    if (ancestor && ancestor !== node.parentNode) {
-      continue;
-    }
-    const image = document.createElementNS(SVG_NAMESPACE, 'image');
-    for (let j = 0; j < img.attributes.length; j++) {
-      image.setAttribute(img.attributes[j].name, img.attributes[j].value);
-    }
-    img.parentNode.replaceChild(image, img);
-    if (img === node) {
-      node = image;
-    }
-  }
-  return node;
-}
-
-// Template content is parsed as HTML. Inside SVG and MathML the nodes have to be
-// parsed again in their parent's namespace (HTML integration points excluded).
-export function fixDeclarativeNamespaces(start, end) {
-  const parent = start.parentNode;
+// $RPN. Template content is parsed as HTML. For a boundary inside SVG or MathML it has
+// to be parsed again in the namespace of its parent (HTML integration points
+// excluded). Returns the node that holds the content to insert.
+export function fixDeclarativeNamespaces(content, parent) {
+  const namespace = parent.namespaceURI;
+  const name = parent.localName;
   if (
-    !parent ||
-    parent.namespaceURI === XHTML_NAMESPACE ||
-    parent.localName === 'foreignObject' ||
-    parent.localName === 'desc' ||
-    parent.localName === 'title'
+    !namespace ||
+    namespace === XHTML_NAMESPACE ||
+    name === 'foreignObject' ||
+    name === 'desc' ||
+    name === 'title'
   ) {
-    return;
+    return content;
   }
-  for (let node = start.nextSibling, next; node !== end; node = next) {
-    next = node.nextSibling;
-    if (parent.namespaceURI === SVG_NAMESPACE) {
-      node = restoreSvgImages(node);
+  const holder = document.createElementNS(namespace, name);
+  holder.appendChild(content);
+  if (namespace === SVG_NAMESPACE) {
+    // The HTML parser turned <image> into <img>, which breaks out of SVG when it is
+    // parsed again. Turn those back, except in <foreignObject> where <img> is HTML.
+    const images = holder.querySelectorAll('img');
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      let ancestor = img.parentNode;
+      while (ancestor !== holder && ancestor.localName !== 'foreignobject') {
+        ancestor = ancestor.parentNode;
+      }
+      if (ancestor === holder) {
+        const image = document.createElementNS(SVG_NAMESPACE, 'image');
+        for (let j = 0; j < img.attributes.length; j++) {
+          image.setAttribute(img.attributes[j].name, img.attributes[j].value);
+        }
+        img.parentNode.replaceChild(image, img);
+      }
     }
-    node.outerHTML = node.outerHTML;
   }
+  holder.innerHTML = holder.innerHTML;
+  return holder;
 }
 
-// Late <style data-precedence> rules arrive inside the patch. Move them to where a
-// hoisted style of that precedence belongs: after the last resource with the same
+// $RPH. Late <style data-precedence> rules arrive inside the patch. Move them to where
+// a hoisted style of that precedence belongs: after the last resource with the same
 // precedence, or after the last resource of all, like $RR does for a new precedence.
-export function hoistDeclarativePatchStyles(start, end) {
-  for (let node = start.nextSibling, next; node !== end; node = next) {
+export function hoistDeclarativePatchStyles(content) {
+  for (let node = content.firstChild, next; node; node = next) {
     next = node.nextSibling;
     if (
       node.nodeType === ELEMENT_NODE &&

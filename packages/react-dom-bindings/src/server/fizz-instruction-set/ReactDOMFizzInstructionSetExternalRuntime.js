@@ -4,19 +4,15 @@
 
 import {
   clientRenderBoundary,
-  collectDeclarativeBoundaries,
   completeBoundary,
   completeBoundaryWithStyles,
   completeSegment,
-  ensureDeclarativeCollector,
   fixDeclarativeNamespaces,
-  flushDeclarativePatches,
   hoistDeclarativePatchStyles,
   listenToFormSubmissionsForReplaying,
   patchDeclarativeBoundaries,
   revealCompletedBoundaries,
   revealCompletedBoundariesWithViewTransitions,
-  revealDeclarativePatches,
 } from './ReactDOMFizzInstructionSetShared';
 
 // This is a string so Closure's advanced compilation mode doesn't mangle it.
@@ -31,20 +27,9 @@ window['$RV'] = revealCompletedBoundariesWithViewTransitions.bind(
 window['$RC'] = completeBoundary;
 window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
-window['$RPS'] = new Map();
-window['$RPI'] = new WeakMap();
-window['$RPT'] = new Map();
-window['$RPQ'] = [];
-window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
-  null,
-  revealDeclarativePatches,
-);
-window['$RPF'] = flushDeclarativePatches;
 window['$RPN'] = fixDeclarativeNamespaces;
 window['$RPH'] = hoistDeclarativePatchStyles;
 window['$RP'] = patchDeclarativeBoundaries;
-collectDeclarativeBoundaries(document);
-ensureDeclarativeCollector();
 
 listenToFormSubmissionsForReplaying();
 

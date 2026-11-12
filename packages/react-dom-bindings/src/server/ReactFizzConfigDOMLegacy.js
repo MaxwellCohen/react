@@ -87,6 +87,7 @@ export type RenderState = {
   declarativePatching: boolean,
   needDeclarativeNamespaceFix: boolean,
   needDeclarativeStyleHoist: boolean,
+  needDeclarativeStylesheets: boolean,
   // This is an extra field for the legacy renderer
   generateStaticMarkup: boolean,
 };
@@ -134,6 +135,7 @@ export function createRenderState(
     declarativePatching: false,
     needDeclarativeNamespaceFix: false,
     needDeclarativeStyleHoist: false,
+    needDeclarativeStylesheets: false,
 
     // This is an extra field for the legacy renderer
     generateStaticMarkup,
@@ -177,7 +179,7 @@ export {
   writeStartDeclarativePatch,
   writeEndDeclarativePatch,
   writeDeclarativeClientRenderedBoundary,
-  writeDeclarativePatchScript,
+  writeDeclarativePatchSentinel,
   writeHoistablesForBoundary,
   writePlaceholder,
   writeCompletedRoot,

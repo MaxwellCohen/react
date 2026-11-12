@@ -262,7 +262,7 @@ const ReactNoopServer = ReactFizzServer({
   writeDeclarativeClientRenderedBoundary(): boolean {
     return true;
   },
-  writeDeclarativePatchScript(): boolean {
+  writeDeclarativePatchSentinel(): boolean {
     return true;
   },
   writeStartDeclarativePatch(): boolean {

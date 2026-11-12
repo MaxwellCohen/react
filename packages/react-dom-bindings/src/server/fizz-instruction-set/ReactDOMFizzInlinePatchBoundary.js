@@ -1,15 +1,11 @@
 import {
-  flushDeclarativePatches,
   patchDeclarativeBoundaries,
-  revealDeclarativePatches,
+  revealCompletedBoundaries,
 } from './ReactDOMFizzInstructionSetShared';
 
+// The reveal is shared with the script path: $RP queues on $RB what $RC would.
 // This is a string so Closure's advanced compilation mode doesn't mangle it.
 /* eslint-disable dot-notation */
-window['$RPS'] = new Map();
-window['$RPI'] = new WeakMap();
-window['$RPT'] = new Map();
-window['$RPQ'] = [];
-window['$RW'] = revealDeclarativePatches;
-window['$RPF'] = flushDeclarativePatches;
+window['$RB'] = [];
+window['$RV'] = revealCompletedBoundaries;
 window['$RP'] = patchDeclarativeBoundaries;

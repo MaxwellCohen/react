@@ -69,7 +69,7 @@ import {
   writeStartDeclarativePatch,
   writeEndDeclarativePatch,
   writeDeclarativeClientRenderedBoundary,
-  writeDeclarativePatchScript,
+  writeDeclarativePatchSentinel,
   writeStartClientRenderedSuspenseBoundary,
   writeEndCompletedSuspenseBoundary,
   writeEndPendingSuspenseBoundary,
@@ -393,7 +393,7 @@ const RENDER_ENDED = 'The render ended.';
 export opaque type Request = {
   destination: null | Destination,
   flushScheduled: boolean,
-  declarativePatchedIds: Array<number>, // patches written but not yet followed by their $RP script
+  declarativePatchesWritten: boolean, // patches were written that no sentinel has followed yet
   +resumableState: ResumableState,
   +renderState: RenderState,
   +rootFormatContext: FormatContext,
@@ -568,7 +568,7 @@ function RequestInstance(
   const abortSet: Set<Task> = new Set();
   this.destination = null;
   this.flushScheduled = false;
-  this.declarativePatchedIds = [];
+  this.declarativePatchesWritten = false;
   this.resumableState = resumableState;
   this.renderState = renderState;
   this.rootFormatContext = rootFormatContext;
@@ -6231,21 +6231,19 @@ function flushClientRenderedBoundary(
   }
 }
 
-// The script for a group of patches goes right after the group, so browsers that cannot
-// apply <template for> themselves apply all of it in one task, parents before children.
-function flushDeclarativePatchScript(
+// The sentinel goes right after a group of patches, so that everything that was
+// flushed together is queued, and revealed, together.
+function flushDeclarativePatchSentinel(
   request: Request,
   destination: Destination,
 ): void {
-  const ids = request.declarativePatchedIds;
-  if (ids.length > 0) {
-    writeDeclarativePatchScript(
+  if (request.declarativePatchesWritten) {
+    request.declarativePatchesWritten = false;
+    writeDeclarativePatchSentinel(
       destination,
       request.resumableState,
       request.renderState,
-      ids,
     );
-    ids.length = 0;
   }
 }
 
@@ -6277,7 +6275,7 @@ function flushSegmentContainer(
     boundary !== null &&
     boundary.declarative
   ) {
-    request.declarativePatchedIds.push(segment.id);
+    request.declarativePatchesWritten = true;
     writeStartDeclarativePatch(
       destination,
       request.renderState,
@@ -6560,7 +6558,7 @@ function flushCompletedQueues(
     }
     completedBoundaries.splice(0, i);
     if (enableFizzDeclarativePatching) {
-      flushDeclarativePatchScript(request, destination);
+      flushDeclarativePatchSentinel(request, destination);
     }
 
     // Allow anything written so far to flush to the underlying sink before
@@ -6604,7 +6602,7 @@ function flushCompletedQueues(
   } finally {
     flushingPartialBoundaries = false;
     if (enableFizzDeclarativePatching) {
-      flushDeclarativePatchScript(request, destination);
+      flushDeclarativePatchSentinel(request, destination);
     }
     const postponedState = request.postponedState;
     if (postponedState !== null) {

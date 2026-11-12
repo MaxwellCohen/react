@@ -4335,16 +4335,9 @@ function isDeclarativePendingMarker(node: ?Node): boolean {
 // comment node itself is never replaced, so it is safe to flip it here, which is what
 // the $RC runtime would have done.
 // The server signals an errored declarative boundary with <template data-rcr id="E:<name>">
-// (see writeDeclarativeClientRenderedBoundary). Without scripts the name is still on the
-// pending range marker; after $RP() blanks names the id lives in $RPI (node → id).
+// (see writeDeclarativeClientRenderedBoundary). The name is on the pending range marker,
+// also after $RP() swapped a processing instruction for a comment.
 function getDeclarativeBoundaryName(marker: Node): null | string {
-  const ids: void | WeakMap<Node, string> = (window as any).$RPI;
-  if (ids != null) {
-    const collected = ids.get(marker);
-    if (collected != null && collected !== '') {
-      return collected;
-    }
-  }
   const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
   if (match !== null && match[1] !== '') {
     return match[1];
@@ -4364,6 +4357,18 @@ function findDeclarativeErrorMarker(
     return null;
   }
   return instance.ownerDocument.getElementById('E:' + name);
+}
+
+// The $RP runtime is set up for this boundary: the marker is a comment, which the
+// parser does not patch, so the boundary is only revealed by $RV, and $RP flips it
+// when it errors. Like with $RC and $RX, there is nothing to detect here.
+function isPatchedByDeclarativeRuntime(marker: ?Node): boolean {
+  return (
+    marker != null &&
+    marker.nodeType === COMMENT_NODE &&
+    isDeclarativePendingMarker(marker) &&
+    typeof (window as any).$RP === 'function'
+  );
 }
 
 // True when the start marker is gone, which is how a <template for> patch is detected.
@@ -4388,6 +4393,9 @@ function getDeclarativeBoundaryData(instance: SuspenseInstance): string {
   ) {
     return instance.data;
   }
+  if (isPatchedByDeclarativeRuntime(instance.nextSibling)) {
+    return instance.data;
+  }
   if (findDeclarativeErrorMarker(instance) !== null) {
     return SUSPENSE_FALLBACK_START_DATA;
   }
@@ -4405,7 +4413,10 @@ function syncDeclarativelyPatchedBoundary(instance: SuspenseInstance): void {
   if (!enableFizzDeclarativePatching) {
     return;
   }
-  if (instance.data !== SUSPENSE_PENDING_START_DATA) {
+  if (
+    instance.data !== SUSPENSE_PENDING_START_DATA ||
+    isPatchedByDeclarativeRuntime(instance.nextSibling)
+  ) {
     return;
   }
   const errorMarker = findDeclarativeErrorMarker(instance);
@@ -4518,8 +4529,8 @@ export function registerSuspenseInstanceRetry(
     instance._reactRetry = listener;
     if (enableFizzDeclarativePatching) {
       // Native / no-script <template for> patches never call _reactRetry, so watch
-      // for the marker disappearing instead of waiting for DOMContentLoaded.
-      // The $RP script path calls _reactRetry itself after it replaces the range.
+      // for the marker disappearing instead of waiting for DOMContentLoaded. Where
+      // $RP is set up it calls _reactRetry itself, and there is nothing to watch.
       unwatch = watchDeclarativeBoundary(instance, listener);
     }
   }
@@ -4552,6 +4563,7 @@ function watchDeclarativeBoundary(
     parentNode == null ||
     marker == null ||
     !isDeclarativePendingMarker(marker) ||
+    isPatchedByDeclarativeRuntime(marker) ||
     typeof MutationObserver !== 'function'
   ) {
     return null;
