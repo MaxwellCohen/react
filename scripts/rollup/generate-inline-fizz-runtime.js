@@ -40,6 +40,10 @@ const config = [
   {
     entry: 'ReactDOMFizzInlinePatchBoundary.js',
     exportName: 'patchDeclarativeBoundaries',
+    // Its helpers are top-level functions. Keep them out of the global scope so the
+    // View Transitions upgrade script (also minified to top-level names) cannot
+    // overwrite them.
+    wrap: true,
   },
   {
     entry: 'ReactDOMFizzInlinePatchBoundaryUpgradeToViewTransitions.js',
@@ -55,7 +59,7 @@ const prettierConfig = require('../../.prettierrc.js');
 
 async function main() {
   const exportStatements = await Promise.all(
-    config.map(async ({entry, exportName}) => {
+    config.map(async ({entry, exportName, wrap}) => {
       const fullEntryPath = instructionDir + '/' + entry;
       const compiler = new ClosureCompiler({
         entry_point: fullEntryPath,
@@ -82,7 +86,10 @@ async function main() {
         });
       });
 
-      return `export const ${exportName} = ${JSON.stringify(code.trim().replace('\n', ''))};`;
+      const trimmed = code.trim().replace('\n', '');
+      return `export const ${exportName} = ${JSON.stringify(
+        wrap ? '(function(){' + trimmed + '})();' : trimmed,
+      )};`;
     })
   );
 

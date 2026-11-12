@@ -714,12 +714,27 @@ function getDeclarativeStartName(node) {
   return match !== null ? match[1] : '';
 }
 
+// Register one named <?start> into $RPS/$RPI and blank its name so native
+// <template for> cannot match. Already-blanked markers are left alone.
+function registerAndBlankMarker(marker) {
+  const id = getDeclarativeStartName(marker);
+  if (id === '') {
+    return;
+  }
+  ensureDeclarativeMaps();
+  window['$RPS'].set(id, marker);
+  window['$RPI'].set(marker, id);
+  if (marker.nodeType === PROCESSING_INSTRUCTION_NODE) {
+    marker.data = 'name=""';
+  } else {
+    marker.data = '?start name=""';
+  }
+}
+
 // Collect every named <?start> under root into $RPS/$RPI and blank the name so native
 // <template for> cannot match. Already-blanked markers are left alone.
 export function collectDeclarativeBoundaries(root) {
   ensureDeclarativeMaps();
-  const starts = window['$RPS'];
-  const ids = window['$RPI'];
   const markers = [];
   let node;
   // Native browsers: processing instructions.
@@ -737,39 +752,69 @@ export function collectDeclarativeBoundaries(root) {
     }
   }
   for (let i = 0; i < markers.length; i++) {
-    const marker = markers[i];
-    const id = getDeclarativeStartName(marker);
-    if (id === '') {
-      continue;
-    }
-    starts.set(id, marker);
-    ids.set(marker, id);
-    if (marker.nodeType === PROCESSING_INSTRUCTION_NODE) {
-      marker.data = 'name=""';
-    } else {
-      marker.data = '?start name=""';
-    }
+    registerAndBlankMarker(markers[i]);
   }
 }
 
-function collectAllDeclarativeBoundaries() {
-  collectDeclarativeBoundaries(document);
-  const found = document.querySelectorAll('template[for]');
-  for (let i = 0; i < found.length; i++) {
-    collectDeclarativeBoundaries(found[i].content);
+// Collect-only observer: blank/register late <?start> markers as the parser adds them.
+// This is NOT the apply path — patches still go through $RP("B:n") announce. Without it
+// every $RP call would have to re-walk the document, which cliffs at hundreds of
+// boundaries when the server does not hold flushes.
+export function ensureDeclarativeCollector() {
+  if (window['$RPO']) {
+    return;
   }
-  return found;
+  ensureDeclarativeMaps();
+  window['$RPO'] = new MutationObserver(records => {
+    for (let i = 0; i < records.length; i++) {
+      const added = records[i].addedNodes;
+      for (let j = 0; j < added.length; j++) {
+        const node = added[j];
+        if (isDeclarativeStartMarker(node)) {
+          registerAndBlankMarker(node);
+        }
+      }
+    }
+  });
+  window['$RPO'].observe(document, {childList: true, subtree: true});
+}
+
+function findDeclarativeTemplate(id) {
+  // Ids are React-generated (prefix + hex); quote them for the attribute selector.
+  return document.querySelector('template[for="' + id + '"]');
+}
+
+// If any id is missing from $RPS (observer has not run yet, or the marker still lives
+// inside another patch's <template> content), do one collect of the document and of
+// every pending template's content. Avoids a full walk on the common (already-mapped)
+// path; nested parents-before-children still need the template.content pass.
+function ensureMarkersFor(ids) {
+  const starts = window['$RPS'];
+  for (let i = 0; i < ids.length; i++) {
+    if (!starts || !starts.has(ids[i])) {
+      collectDeclarativeBoundaries(document);
+      const found = document.querySelectorAll('template[for]');
+      for (let j = 0; j < found.length; j++) {
+        collectDeclarativeBoundaries(found[j].content);
+      }
+      return;
+    }
+  }
 }
 
 export function patchDeclarativeBoundaries() {
   if (arguments.length === 0) {
     collectDeclarativeBoundaries(document);
+    ensureDeclarativeCollector();
     // Track the paint time of the shell, like markShellTime does for $RC.
     requestAnimationFrame(() => {
       window['$RT'] = performance.now();
     });
     return;
   }
+  // Late markers must be registered even when the shell $RP() was skipped (e.g. the
+  // external runtime loaded after the shell).
+  ensureDeclarativeCollector();
   const queue = window['$RPQ'];
   const first = queue.length === 0;
   const ids = [];
@@ -784,9 +829,17 @@ export function patchDeclarativeBoundaries() {
   // This is the first patch of the batch. Flush it after the throttle.
   // Schedule via $RPF (not a direct function ref) so a separately-eval'd View
   // Transitions upgrade cannot clobber the flush by reusing its minified name.
+  // Race a 250ms timer against the first paint: WebKit throttles rAF in iframes.
   if (typeof window['$RT'] !== 'number') {
-    // We haven't had our rAF callback yet, so schedule everything for the first paint.
-    requestAnimationFrame(window['$RPF']);
+    let scheduled = false;
+    const kick = () => {
+      if (!scheduled) {
+        scheduled = true;
+        window['$RPF']();
+      }
+    };
+    requestAnimationFrame(kick);
+    setTimeout(kick, 250);
   } else {
     const currentTime = performance.now();
     const msUntilTimeout =
@@ -802,16 +855,12 @@ export function patchDeclarativeBoundaries() {
 
 // Calls fn(marker, template, id) for each queued id whose start marker is currently in
 // the document (parents), then for markers that only live inside other patches' template
-// content (children).
+// content (children). Lookups are O(ids) via $RPS + per-id template query — no document walk.
 function forEachPatch(ids, fn) {
-  const found = collectAllDeclarativeBoundaries();
+  ensureMarkersFor(ids);
   const wanted = {};
   for (let i = 0; i < ids.length; i++) {
     wanted[ids[i]] = 1;
-  }
-  const templates = {};
-  for (let i = 0; i < found.length; i++) {
-    templates[found[i].getAttribute('for')] = found[i];
   }
   const starts = window['$RPS'];
   for (let i = 0; i < ids.length; i++) {
@@ -822,7 +871,7 @@ function forEachPatch(ids, fn) {
     const marker = starts.get(id);
     if (marker && document.contains(marker)) {
       wanted[id] = 2;
-      fn(marker, templates[id], id);
+      fn(marker, findDeclarativeTemplate(id), id);
     }
   }
   for (let i = 0; i < ids.length; i++) {
@@ -833,7 +882,7 @@ function forEachPatch(ids, fn) {
     const marker = starts.get(id);
     if (marker) {
       wanted[id] = 2;
-      fn(marker, templates[id], id);
+      fn(marker, findDeclarativeTemplate(id), id);
     }
   }
   return wanted;
@@ -852,10 +901,13 @@ function queueDeclarativePatches(ids) {
       }
     }
   });
-  const found = document.querySelectorAll('template[for]');
-  for (let i = 0; i < found.length; i++) {
-    if (wanted[found[i].getAttribute('for')] === 1) {
-      found[i].parentNode.removeChild(found[i]);
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (wanted[id] === 1) {
+      const template = findDeclarativeTemplate(id);
+      if (template && template.parentNode) {
+        template.parentNode.removeChild(template);
+      }
     }
   }
 }
@@ -892,7 +944,7 @@ export function flushDeclarativePatches() {
 }
 
 function patchDeclarativeGroup(args) {
-  const found = collectAllDeclarativeBoundaries();
+  ensureMarkersFor(args);
   const wanted = {};
   let remaining = 0;
   for (let i = 0; i < args.length; i++) {
@@ -901,7 +953,9 @@ function patchDeclarativeGroup(args) {
       remaining++;
     }
   }
+  // Index templates once per flush, not per boundary.
   const templates = {};
+  const found = document.querySelectorAll('template[for]');
   for (let i = 0; i < found.length; i++) {
     templates[found[i].getAttribute('for')] = found[i];
   }

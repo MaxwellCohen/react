@@ -8,6 +8,7 @@ import {
   completeBoundary,
   completeBoundaryWithStyles,
   completeSegment,
+  ensureDeclarativeCollector,
   flushDeclarativePatches,
   listenToFormSubmissionsForReplaying,
   patchDeclarativeBoundaries,
@@ -30,6 +31,7 @@ window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
 window['$RPS'] = new Map();
 window['$RPI'] = new WeakMap();
+window['$RPO'] = null;
 window['$RPQ'] = [];
 window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
   null,
@@ -38,6 +40,7 @@ window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
 window['$RPF'] = flushDeclarativePatches;
 window['$RP'] = patchDeclarativeBoundaries;
 collectDeclarativeBoundaries(document);
+ensureDeclarativeCollector();
 
 listenToFormSubmissionsForReplaying();
 

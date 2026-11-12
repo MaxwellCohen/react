@@ -8,6 +8,7 @@ import {
 /* eslint-disable dot-notation */
 window['$RPS'] = new Map();
 window['$RPI'] = new WeakMap();
+window['$RPO'] = null;
 window['$RPQ'] = [];
 window['$RW'] = revealDeclarativePatches;
 window['$RPF'] = flushDeclarativePatches;
