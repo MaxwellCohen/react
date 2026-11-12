@@ -46,13 +46,7 @@ describe('$RP runtime (polyfill path)', () => {
 
   function pending(name, fallback) {
     return (
-      '<!--' +
-      name +
-      '--><!--$?--><?start name="' +
-      name +
-      '">' +
-      fallback +
-      '<?end><!--/$-->'
+      '<!--$?--><?start name="' + name + '">' + fallback + '<?end><!--/$-->'
     );
   }
 
@@ -66,12 +60,10 @@ describe('$RP runtime (polyfill path)', () => {
     return document.body.innerHTML.replace(/<!--[^>]*-->/g, '');
   }
 
-  it('drops a template whose anchor was orphaned instead of replacing other content', async () => {
-    // B:a's boundary was removed by React but its anchor stayed. The next sibling is
-    // now the following boundary's anchor, not a pending start comment.
+  it('drops a template whose boundary was removed instead of replacing other content', async () => {
+    // B:a's start marker is gone; only B:b remains. The B:a template is an orphan.
     setBody(
-      '<!--B:a-->' +
-        pending('B:b', 'fb-b') +
+      pending('B:b', 'fb-b') +
         '<p>after</p>' +
         '<template for="B:a">evil</template>' +
         '<template for="B:b">good</template>',
@@ -81,9 +73,9 @@ describe('$RP runtime (polyfill path)', () => {
     expect(document.querySelectorAll('template').length).toBe(0);
   });
 
-  it('drops a template when the range marker names another boundary', async () => {
+  it('drops a template when no start marker was collected for that id', async () => {
     setBody(
-      '<!--B:a--><!--$?--><?start name="B:other">fb<?end><!--/$-->' +
+      '<!--$?--><?start name="B:other">fb<?end><!--/$-->' +
         '<template for="B:a">evil</template>',
     );
     await patch('B:a');
@@ -93,7 +85,7 @@ describe('$RP runtime (polyfill path)', () => {
 
   it('drops a template for a boundary that is no longer pending', async () => {
     setBody(
-      '<!--B:a--><!--$--><?start name="B:a">done<?end><!--/$-->' +
+      '<!--$--><?start name="B:a">done<?end><!--/$-->' +
         '<template for="B:a">evil</template>',
     );
     await patch('B:a');
@@ -142,7 +134,7 @@ describe('$RP runtime (polyfill path)', () => {
 
   it('is a no-op when the browser already applied the patch', async () => {
     // Native support consumes the template and the markers.
-    setBody('<!--B:a--><!--$?-->done<!--/$-->');
+    setBody('<!--$?-->done<!--/$-->');
     const before = document.body.innerHTML;
     await patch('B:a');
     expect(document.body.innerHTML).toBe(before);
@@ -190,12 +182,14 @@ describe('$RP runtime (polyfill path)', () => {
     expect(visible()).toBe('<p>hi</p>');
   });
 
-  it('reparses after native DPU already applied into SVG', async () => {
-    // Native support consumed the template; $RP still fixes the namespace.
-    setBody('<svg><!--B:a--><!--$?--><circle r="2"></circle><!--/$--></svg>');
+  it('is a no-op after native DPU already applied into SVG', async () => {
+    // Native support consumed the template and start marker. With no <!--B:n-->
+    // anchor, $RP has nothing to find; SVG reparsing happens when $RP itself
+    // inserts (scripts blank names so native does not win that path).
+    setBody('<svg><!--$?--><circle r="2"></circle><!--/$--></svg>');
+    const before = document.body.innerHTML;
     await patch('B:a');
-    const circle = document.querySelector('circle');
-    expect(circle.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    expect(document.body.innerHTML).toBe(before);
   });
 
   it('patches without a view transition unless $RW was upgraded', async () => {
@@ -276,19 +270,6 @@ describe('$RP runtime (polyfill path)', () => {
     });
   });
 
-  it('does not reparse nodes React already owns on the native path', async () => {
-    setBody(
-      '<svg><!--B:a--><!--$?--><circle id="c1" r="2"></circle><circle id="c2" r="3"></circle><!--/$--></svg>',
-    );
-    const c1 = document.getElementById('c1');
-    const c2 = document.getElementById('c2');
-    c1.__reactFiber$abc = {};
-    c2.__reactFiber$abc = {};
-    await patch('B:a');
-    expect(document.getElementById('c1')).toBe(c1);
-    expect(document.getElementById('c2')).toBe(c2);
-  });
-
   it('holds patches until the throttle expires and applies them together', async () => {
     setBody(
       pending('B:a', 'fa') +
@@ -304,13 +285,38 @@ describe('$RP runtime (polyfill path)', () => {
     expect(document.body.textContent).toBe('AB');
   });
 
-  it('turns <?start> processing instructions into comments so the browser cannot patch them', () => {
+  it('collects <?start> markers into $RPS and blanks their names so the browser cannot patch them', () => {
     const pi = document.createProcessingInstruction('start', 'name="B:a"');
     document.body.appendChild(pi);
     window.$RP();
-    expect(pi.parentNode).toBe(null);
-    const marker = document.body.firstChild;
+    expect(pi.parentNode).toBe(document.body);
+    expect(pi.data).toBe('name=""');
+    expect(window.$RPS.get('B:a')).toBe(pi);
+    expect(window.$RPI.get(pi)).toBe('B:a');
+  });
+
+  it('collects comment-form <?start> markers and blanks their names', () => {
+    setBody('<!--$?--><?start name="B:a">fb<?end><!--/$-->');
+    // jsdom parses <?start> as a comment.
+    window.$RP();
+    expect(window.$RPS.has('B:a')).toBe(true);
+    const marker = window.$RPS.get('B:a');
     expect(marker.nodeType).toBe(8);
-    expect(marker.data).toBe('?start name="B:a"');
+    expect(marker.data).toBe('?start name=""');
+    expect(window.$RPI.get(marker)).toBe('B:a');
+  });
+
+  it('calls _reactRetry after replacing a range', async () => {
+    setBody(pending('B:a', 'fb') + '<template for="B:a">done</template>');
+    const start = document.body.firstChild;
+    let called = 0;
+    start._reactRetry = () => {
+      called++;
+    };
+    await patch('B:a');
+    // $RP schedules _reactRetry on rAF after the replace.
+    jest.runOnlyPendingTimers();
+    expect(visible()).toBe('done');
+    expect(called).toBe(1);
   });
 });

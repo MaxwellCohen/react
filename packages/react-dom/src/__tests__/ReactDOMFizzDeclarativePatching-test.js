@@ -171,7 +171,8 @@ describe('ReactDOMFizzServer declarative patching', () => {
     // The comment markers stay outside of the range so React keeps a stable node.
     expect(occurrences(shell, '<!--$?--><?start name="B:')).toBe(BOUNDARIES);
     expect(occurrences(shell, '<?end><!--/$-->')).toBe(BOUNDARIES);
-    expect(shell).toContain('<!--B:0--><!--$?--><?start name="B:0">');
+    expect(shell).toContain('<!--$?--><?start name="B:0">');
+    expect(shell).not.toContain('<!--B:0-->');
     expect(shell).not.toContain('<template id="B:');
 
     const out = await r.finish(allTexts(BOUNDARIES));
@@ -335,7 +336,7 @@ describe('ReactDOMFizzServer declarative patching', () => {
     const afterOuter = await r.finish(['outer']);
     // The outer patch carries a new range for the inner boundary to patch later.
     expect(afterOuter).toMatch(
-      /<template for="B:0"><section><!--B:1--><!--\$\?--><\?start name="B:1">inner-fallback<\?end><!--\/\$--><\/section><\/template>/,
+      /<template for="B:0"><section><!--\$\?--><\?start name="B:1">inner-fallback<\?end><!--\/\$--><\/section><\/template>/,
     );
     const afterInner = await r.finish(['inner']);
     expect(afterInner).toContain(
@@ -589,26 +590,6 @@ describe('ReactDOMFizzServer declarative patching', () => {
     expect(items.length).toBe(2);
     items[0].click();
     expect(onClick).toHaveBeenCalledTimes(1);
-  });
-
-  it('removes the anchor together with a deleted dehydrated boundary', async () => {
-    const {container} = await renderToContainer(2);
-    expect(container.innerHTML).toContain('<!--B:1-->');
-    const anchors = () =>
-      Array.from(container.querySelectorAll('*'))
-        .flatMap(el => Array.from(el.childNodes))
-        .filter(n => n.nodeType === 8 && /^B:/.test(n.data));
-    expect(anchors().length).toBe(2);
-    textCache = new Map();
-    allTexts(2).forEach(resolveText);
-    const errors = [];
-    await act(() => {
-      // The client has one boundary fewer, so the second dehydrated one is deleted.
-      ReactDOMClient.hydrateRoot(container, <App count={1} />, {
-        onRecoverableError: e => errors.push(e),
-      });
-    });
-    expect(anchors().map(n => n.data)).not.toContain('B:1');
   });
 
   it('client renders an errored boundary as soon as its marker arrives', async () => {

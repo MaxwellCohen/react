@@ -4,10 +4,11 @@
 
 import {
   clientRenderBoundary,
+  collectDeclarativeBoundaries,
   completeBoundary,
   completeBoundaryWithStyles,
   completeSegment,
-  disarmDeclarativeBoundaries,
+  flushDeclarativePatches,
   listenToFormSubmissionsForReplaying,
   patchDeclarativeBoundaries,
   revealCompletedBoundaries,
@@ -27,13 +28,16 @@ window['$RV'] = revealCompletedBoundariesWithViewTransitions.bind(
 window['$RC'] = completeBoundary;
 window['$RR'] = completeBoundaryWithStyles;
 window['$RS'] = completeSegment;
+window['$RPS'] = new Map();
+window['$RPI'] = new WeakMap();
 window['$RPQ'] = [];
 window['$RW'] = revealCompletedBoundariesWithViewTransitions.bind(
   null,
   revealDeclarativePatches,
 );
+window['$RPF'] = flushDeclarativePatches;
 window['$RP'] = patchDeclarativeBoundaries;
-disarmDeclarativeBoundaries(document);
+collectDeclarativeBoundaries(document);
 
 listenToFormSubmissionsForReplaying();
 

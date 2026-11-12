@@ -4600,8 +4600,9 @@ function writeShellTimeInstruction(
     return true;
   }
   if (enableFizzDeclarativePatching && renderState.declarativePatching) {
-    // $RP() with no arguments keeps browsers from patching natively (so that $RP can
-    // throttle the reveals) and tracks the paint time of the shell.
+    // $RP() with no arguments collects <?start> markers into $RPS and blanks their
+    // names (so native matching cannot fire and $RP can throttle) and tracks the
+    // paint time of the shell.
     if ((resumableState.instructions & SentMarkShellTime) !== NothingSent) {
       return true;
     }
@@ -4752,14 +4753,11 @@ export function writeStartPendingSuspenseBoundary(
 // <?start name="B:n">…<?end> range and completion is a <template for="B:n"> that the
 // HTML parser applies itself, so no inline script (or nonce) is needed. The
 // <!--$?--> and <!--/$--> comments stay OUTSIDE the range so the comment node React
-// holds on to during hydration is never replaced.
+// holds on to during hydration is never replaced. $RP finds boundaries via a Map of
+// collected start markers ($RPS), not a separate <!--B:n--> anchor.
 const startPendingDeclarativeBoundary1 = stringToPrecomputedChunk(
   '<!--$?--><?start name="',
 );
-// <!--B:n--> goes in front of the boundary. $RP finds the boundary by it
-// after a browser applied a patch natively (the <?start> marker is gone then).
-const declarativeAnchorStart = stringToPrecomputedChunk('<!--');
-const declarativeAnchorEnd = stringToPrecomputedChunk('-->');
 const startPendingDeclarativeBoundary2 = stringToPrecomputedChunk('">');
 const endPendingDeclarativeBoundary =
   stringToPrecomputedChunk('<?end><!--/$-->');
@@ -4780,10 +4778,6 @@ export function writeStartPendingDeclarativeBoundary(
   renderState: RenderState,
   id: number,
 ): boolean {
-  writeChunk(destination, declarativeAnchorStart);
-  writeChunk(destination, renderState.boundaryPrefix);
-  writeChunk(destination, stringToChunk(id.toString(16)));
-  writeChunk(destination, declarativeAnchorEnd);
   writeChunk(destination, startPendingDeclarativeBoundary1);
   writeChunk(destination, renderState.boundaryPrefix);
   writeChunk(destination, stringToChunk(id.toString(16)));

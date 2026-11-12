@@ -1236,36 +1236,10 @@ export function removeChildFromContainer(
   parentNode.removeChild(child);
 }
 
-// A declarative boundary is preceded by a <!--B:name--> anchor that the $RP fallback
-// finds it by. Once the boundary is gone the anchor must go too, or $RP would treat
-// whatever follows it as that boundary's range.
-function removeDeclarativeAnchor(
-  parentInstance: Instance,
-  hydrationInstance: SuspenseInstance | ActivityInstance,
-): void {
-  const marker = hydrationInstance.nextSibling;
-  const anchor = hydrationInstance.previousSibling;
-  if (
-    marker == null ||
-    anchor == null ||
-    anchor.nodeType !== COMMENT_NODE ||
-    !isDeclarativePendingMarker(marker)
-  ) {
-    return;
-  }
-  const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
-  if (match !== null && (anchor as any as Comment).data === match[1]) {
-    parentInstance.removeChild(anchor);
-  }
-}
-
 function clearHydrationBoundary(
   parentInstance: Instance,
   hydrationInstance: SuspenseInstance | ActivityInstance,
 ): void {
-  if (enableFizzDeclarativePatching) {
-    removeDeclarativeAnchor(parentInstance, hydrationInstance);
-  }
   let node: Node = hydrationInstance;
   // Delete all nodes within this suspense boundary.
   // There might be nested nodes so we need to keep track of how
@@ -4361,7 +4335,8 @@ function isDeclarativePendingMarker(node: ?Node): boolean {
 // comment node itself is never replaced, so it is safe to flip it here, which is what
 // the $RC runtime would have done.
 // The server signals an errored declarative boundary with <template data-rcr id="E:<name>">
-// (see writeDeclarativeClientRenderedBoundary). The name is in the pending range marker.
+// (see writeDeclarativeClientRenderedBoundary). Without scripts the name is still on the
+// pending range marker; after $RP() blanks names the id lives in $RPI (node → id).
 function findDeclarativeErrorMarker(
   instance: SuspenseInstance,
 ): null | HTMLElement {
@@ -4369,11 +4344,24 @@ function findDeclarativeErrorMarker(
   if (!isDeclarativePendingMarker(marker)) {
     return null;
   }
-  const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
-  if (match === null) {
+  let name = null;
+  const ids: void | WeakMap<Node, string> = (window: any)['$RPI'];
+  if (ids != null) {
+    const collected = ids.get((marker: any));
+    if (collected != null && collected !== '') {
+      name = collected;
+    }
+  }
+  if (name == null) {
+    const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
+    if (match !== null && match[1] !== '') {
+      name = match[1];
+    }
+  }
+  if (name == null) {
     return null;
   }
-  return instance.ownerDocument.getElementById('E:' + match[1]);
+  return instance.ownerDocument.getElementById('E:' + name);
 }
 
 // True when the start marker is gone, which is how a <template for> patch is detected.
@@ -4531,8 +4519,9 @@ export function registerSuspenseInstanceRetry(
       isDeclarativePendingMarker(instance.nextSibling) &&
       typeof MutationObserver === 'function'
     ) {
-      // Nothing calls _reactRetry for <template for> patches, so watch the siblings
-      // for the marker disappearing instead of waiting for DOMContentLoaded.
+      // Native / no-script <template for> patches never call _reactRetry, so watch
+      // the siblings for the marker disappearing instead of waiting for DOMContentLoaded.
+      // The $RP script path calls _reactRetry itself after it replaces the range.
       const patchObserver = (observer = new MutationObserver(() => {
         if (
           !isDeclarativePendingMarker(instance.nextSibling) ||
