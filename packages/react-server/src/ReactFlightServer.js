@@ -783,14 +783,22 @@ function RequestInstance(
   this.onElidedRow = null;
   if (enableFlightStaticHostElision && elideStaticHosts) {
     if (elideStaticHosts === true) {
-      const registry = allocateElidedRowsRegistry();
-      this.elidedRequestId = registry.requestId;
-      releaseElidedRowsWhenCollected(this, registry.requestId);
+      // Allocated on the first elided element, so a response with nothing to
+      // elide is byte-identical to one without the option. Hint rows flush
+      // before regular rows, so `:Q` still precedes the first stub.
+      const request: Request = this;
+      let registry: null | {requestId: number, rows: Map<number, mixed>} = null;
       this.onElidedValue = (id: number, value: mixed) => {
-        registry.rows.set(id, value);
+        let current = registry;
+        if (current === null) {
+          current = registry = allocateElidedRowsRegistry();
+          request.elidedRequestId = current.requestId;
+          releaseElidedRowsWhenCollected(request, current.requestId);
+          emitElidedRowsRequestIdChunk(request, current.requestId);
+        }
+        current.rows.set(id, value);
       };
       this.onElidedRow = noop;
-      emitElidedRowsRequestIdChunk(this, registry.requestId);
     } else {
       const {onRow, onValue} = elideStaticHosts;
       if (typeof onValue === 'function') {
