@@ -381,6 +381,87 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(off).toContain('name-9');
   });
 
+  it('writes nothing extra when there is nothing to elide', async () => {
+    const Counter = clientExports(function Counter({label}) {
+      return <button>{label}</button>;
+    });
+    const render = opts =>
+      serverAct(async () =>
+        readAll(
+          ReactServerDOMServer.renderToReadableStream(
+            <Counter label="only-client" />,
+            webpackMap,
+            opts,
+          ),
+        ),
+      );
+    const store = globalThis.__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__;
+    const pendingBefore = store === undefined ? 0 : store.pending.size;
+
+    // Rendered from one call site with the DEV timestamp row dropped, so
+    // debug info cannot differ between the two.
+    const options = [{elideStaticHosts: true}, undefined];
+    const outputs = [];
+    for (let i = 0; i < options.length; i++) {
+      outputs.push(await render(options[i]));
+    }
+    const [main, stock] = outputs;
+    const withoutTime = text => text.replace(/^:N.*\n/gm, '');
+    expect(withoutTime(main)).toBe(withoutTime(stock));
+    expect(main).not.toContain(':Q');
+    const storeAfter = globalThis.__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__;
+    expect(storeAfter === undefined ? 0 : storeAfter.pending.size).toBe(
+      pendingBefore,
+    );
+
+    const html = await ssr({main, rows: undefined});
+    expect(html).toContain('only-client');
+  });
+
+  it('writes the registry id before the first stub that needs it', async () => {
+    const Counter = clientExports(function Counter({label}) {
+      return <button>{label}</button>;
+    });
+    async function Late() {
+      await null;
+      return (
+        <section>
+          <p>late-static</p>
+        </section>
+      );
+    }
+    function App() {
+      return (
+        <div>
+          <Counter label="first" />
+          <React.Suspense fallback={<p>loading</p>}>
+            <Late />
+          </React.Suspense>
+        </div>
+      );
+    }
+    const main = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+          elideStaticHosts: true,
+        }),
+      ),
+    );
+    const rows = main.split('\n');
+    const root = rows.findIndex(row => row.startsWith('0:'));
+    const id = rows.findIndex(row => row.startsWith(':Q'));
+    const stub = rows.findIndex(row => row.includes('$J'));
+    // The root row is written before anything is elided, so it comes first.
+    expect(root).not.toBe(-1);
+    expect(id).toBeGreaterThan(root);
+    expect(stub).toBeGreaterThan(id);
+    expect(main).not.toContain('late-static');
+
+    const html = await ssr({main, rows: undefined});
+    expect(html).toContain('late-static');
+    expect(html).toContain('first');
+  });
+
   describe('registry lifetime', () => {
     // A real GC is needed to observe the FinalizationRegistry release.
     let gc;
