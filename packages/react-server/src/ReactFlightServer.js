@@ -3885,6 +3885,24 @@ const nonElidableTags = new Set([
   'details',
 ]);
 
+// Void elements can't take the stub's dangerouslySetInnerHTML, and a stub
+// would be no smaller than they are. They are still static inside an elided
+// parent; they are just never elided on their own.
+const voidTags = new Set([
+  'area',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'source',
+  'track',
+  'wbr',
+]);
+
 // enableFlightStaticHostElision: Fizz renders these in place (not hoisted) unless
 // they are resources, and they carry no behavior the client must re-create:
 // <style> without precedence+href, and non-executable data-block scripts.
@@ -3996,6 +4014,7 @@ function tryElideHostElement(
     cache === null ||
     elisionDepth > 0 ||
     typeof element.type !== 'string' ||
+    voidTags.has(element.type) ||
     !isStaticHostNode(cache, element)
   ) {
     return null;
