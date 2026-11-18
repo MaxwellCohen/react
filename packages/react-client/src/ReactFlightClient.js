@@ -2923,16 +2923,20 @@ function getLateElidedRow(response: Response, id: number): null | React$Node {
 }
 
 // Rendered in place of the stub by the consumer that claimed the rows (the one
-// that renders HTML), in the slot ElidedHost takes in the browser. Rendering it
-// records that the HTML contains this row. The server sends the rows that were
-// never rendered to the browser once this consumer settles.
-function ElidedRendered(props: {
+// that renders HTML), in the slot ElidedHost takes in the browser. It is a lazy
+// node: Fizz resolves it only when it renders that position, which records
+// that the HTML contains this row. The server sends the rows that were never
+// rendered to the browser once this consumer settles. A lazy node costs far
+// less than a component render per row.
+type ElidedRenderedPayload = {
   entry: ElidedRowsEntry,
   id: number,
-  children: React$Node,
-}): React$Node {
-  props.entry.rendered.add(props.id);
-  return props.children;
+  model: any,
+};
+
+function initElidedRendered(payload: ElidedRenderedPayload): any {
+  payload.entry.rendered.add(payload.id);
+  return payload.model;
 }
 
 function createElidedRenderedElement(
@@ -2941,16 +2945,13 @@ function createElidedRenderedElement(
   key: null | string,
   response: Response,
   model: any,
-): React$Element<any> {
-  const props: any = {entry, id, children: model};
-  if (key !== null) {
-    props.key = key;
-  }
-  const element: any = React.createElement(ElidedRendered, props);
-  if (__DEV__) {
-    element._store.validated = 1;
-  }
-  return element;
+): any {
+  const payload: ElidedRenderedPayload = {entry, id, model};
+  return {
+    $$typeof: REACT_LAZY_TYPE,
+    _payload: payload,
+    _init: initElidedRendered,
+  };
 }
 
 function settleElidedRows(entry: ElidedRowsEntry): void {
