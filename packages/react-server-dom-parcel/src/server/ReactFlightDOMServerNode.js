@@ -163,6 +163,7 @@ type Options = {
     | {
         onRow?: (id: number, json: string) => void,
         onValue?: (id: number, value: mixed) => void,
+        inPlace?: Array<string>,
       },
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),

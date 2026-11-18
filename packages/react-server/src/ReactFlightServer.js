@@ -602,6 +602,9 @@ export type ElideStaticHosts =
   | {
       onRow?: (id: number, json: string) => void,
       onValue?: (id: number, value: mixed) => void,
+      // Keys of plain data objects whose values the framework renders in
+      // place (e.g. a route tree), so elements under them can be elided.
+      inPlace?: Array<string>,
     };
 
 export type Request = {
@@ -641,6 +644,11 @@ export type Request = {
   onElidedValue: null | ((id: number, value: mixed) => void),
   // enableFlightStaticHostElision: internal registry id when no framework callbacks.
   elidedRequestId: number,
+  // enableFlightStaticHostElision: data keys whose values stay in host position.
+  inPlaceKeys: null | Set<string>,
+  // enableFlightStaticHostElision: the model passed to render; its own entries
+  // stay in host position.
+  rootModel: mixed,
   // enableFlightStaticHostElision: memoized isStaticHostNode results.
   staticHostCache: null | WeakMap<any, boolean>,
   identifierCount: number,
@@ -781,8 +789,17 @@ function RequestInstance(
   this.elidedRequestId = 0;
   this.onElidedValue = null;
   this.onElidedRow = null;
+  this.inPlaceKeys = null;
+  this.rootModel = model;
   if (enableFlightStaticHostElision && elideStaticHosts) {
-    if (elideStaticHosts === true) {
+    if (elideStaticHosts !== true && Array.isArray(elideStaticHosts.inPlace)) {
+      this.inPlaceKeys = new Set(elideStaticHosts.inPlace);
+    }
+    if (
+      elideStaticHosts === true ||
+      (typeof elideStaticHosts.onRow !== 'function' &&
+        typeof elideStaticHosts.onValue !== 'function')
+    ) {
       // Allocated on the first elided element, so a response with nothing to
       // elide is byte-identical to one without the option. Hint rows flush
       // before regular rows, so `:Q` still precedes the first stub.
@@ -3138,17 +3155,18 @@ function resolveModelChildren(
   const isRootMap =
     trackHostPosition &&
     !isElementProps &&
-    task.id === 0 &&
-    (rendered as any) === task.model;
+    (rendered as any) === request.rootModel;
   const childrenInHostPosition = elementChildrenInHostPosition;
+  const inPlaceKeys = isElementProps ? null : request.inPlaceKeys;
   for (const key in rendered) {
     if (hasOwnProperty.call(rendered, key)) {
       if (trackHostPosition) {
-        // Only the `children` of a host element stay in host position.
+        // Only the `children` of a host element stay in host position, and
+        // data keys the framework says it renders in place.
         hostPosition =
           isElementProps && key === 'children'
             ? childrenInHostPosition
-            : isRootMap
+            : isRootMap || (inPlaceKeys !== null && inPlaceKeys.has(key))
               ? prevHostPosition
               : false;
       }

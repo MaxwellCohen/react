@@ -711,6 +711,80 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelectorAll('tr').length).toBe(100);
   });
 
+  it('elides under the data keys a framework renders in place', async () => {
+    function Page() {
+      return (
+        <table>
+          <tbody>
+            {Array.from({length: 100}, (_, i) => (
+              <tr key={i}>
+                <td>{'name-' + i}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    // A route tree like Next.js sends: segment data in objects and a Map.
+    const model = {
+      tree: {
+        data: {rsc: <h1>layout-heading</h1>, loading: <p>loading-text</p>},
+        slots: new Map([['children', {data: {rsc: <Page />}}]]),
+      },
+    };
+    const render = opts =>
+      serverAct(async () =>
+        readAll(
+          ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
+        ),
+      );
+    // Without the keys, nothing under the tree is in place.
+    const plain = await render({elideStaticHosts: true});
+    expect(plain).toContain('name-99');
+    expect(plain).not.toContain('$J');
+
+    const main = await render({
+      elideStaticHosts: {inPlace: ['data', 'rsc', 'slots']},
+    });
+    expect(main.length).toBeLessThan(plain.length / 10);
+    expect(main).not.toContain('name-99');
+    expect(main).not.toContain('layout-heading');
+    // Keys that are not listed keep their content.
+    expect(main).toContain('loading-text');
+    function TreeShell({response}) {
+      const tree = use(response).tree;
+      return (
+        <>
+          {tree.data.rsc}
+          {tree.slots.get('children').data.rsc}
+        </>
+      );
+    }
+    const sResponse = consume(main, undefined);
+    await sResponse;
+    let html;
+    await act(async () => {
+      html = await readAll(
+        await ReactDOMFizzServer.renderToReadableStream(
+          <TreeShell response={sResponse} />,
+        ),
+      );
+    });
+    expect(html).toContain('layout-heading');
+    expect(html).toContain('name-99');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const table = container.querySelector('table');
+    const bResponse = consume(main, undefined);
+    await bResponse;
+    await act(() => {
+      ReactDOMClient.hydrateRoot(container, <TreeShell response={bResponse} />);
+    });
+    expect(container.querySelector('table')).toBe(table);
+    expect(container.querySelectorAll('tr').length).toBe(100);
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();
