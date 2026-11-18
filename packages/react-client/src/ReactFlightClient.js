@@ -2778,7 +2778,11 @@ function ElidedHost(props: {
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
   const [mode] = React.useState(
-    hydrating ? ADOPT : props.saved.node !== null ? RESTORE : RECOVER,
+    hydrating
+      ? ADOPT
+      : props.saved.node !== null || props.saved.html !== null
+        ? RESTORE
+        : RECOVER,
   );
   // React restores `display` from the style prop when it shows a hidden
   // Activity again. The stub has no props of its own, so it uses the inline
@@ -2815,20 +2819,45 @@ const RESTORE = 1;
 const RECOVER = 2;
 const EMPTY_HTML = {__html: ''};
 
-type ElidedNodeHolder = {node: null | Element, display: null | string};
+// The node a stub adopted while it is attached. When it is detached (unmounted,
+// or hidden by an Activity) the holder keeps its attributes and HTML instead,
+// so the detached DOM can be collected.
+type ElidedNodeHolder = {
+  node: null | Element,
+  display: null | string,
+  attributes: null | Array<string>,
+  html: null | string,
+};
+
+function snapshotElidedNode(saved: ElidedNodeHolder): void {
+  const node = saved.node;
+  if (node === null) {
+    return;
+  }
+  const attributes: Array<string> = [];
+  const list = node.attributes;
+  for (let i = 0; i < list.length; i++) {
+    attributes.push(list[i].name, list[i].value);
+  }
+  saved.attributes = attributes;
+  saved.html = node.innerHTML;
+  saved.node = null;
+}
 
 function rememberElidedNode(
   saved: ElidedNodeHolder,
   node: null | Element,
 ): void {
-  if (node !== null) {
-    saved.node = node;
-    if (saved.display === null) {
-      // Adopted while hydrating, so this is the server's inline display.
-      const inline = (node as any).style.display;
-      if (typeof inline === 'string' && inline !== '') {
-        saved.display = inline;
-      }
+  if (node === null) {
+    snapshotElidedNode(saved);
+    return;
+  }
+  saved.node = node;
+  if (saved.display === null) {
+    // Adopted while hydrating, so this is the server's inline display.
+    const inline = (node as any).style.display;
+    if (typeof inline === 'string' && inline !== '') {
+      saved.display = inline;
     }
   }
 }
@@ -2841,25 +2870,33 @@ function restoreElidedNode(
   node: null | Element,
 ): void {
   if (node === null) {
+    snapshotElidedNode(saved);
     return;
   }
   const from = saved.node;
   saved.node = node;
-  if (from === null || from === node) {
+  if (from === node) {
+    return;
+  }
+  if (from === null) {
+    // Rebuild from the snapshot taken when the old node was detached.
+    const attributes = saved.attributes;
+    if (attributes !== null) {
+      for (let i = 0; i < attributes.length; i += 2) {
+        node.setAttribute(attributes[i], attributes[i + 1]);
+      }
+    }
+    if (saved.html !== null) {
+      node.innerHTML = saved.html;
+    }
+    restoreElidedDisplay(saved, node);
     return;
   }
   const attributes = from.attributes;
   for (let i = 0; i < attributes.length; i++) {
     node.setAttribute(attributes[i].name, attributes[i].value);
   }
-  // The old node may have been unmounted while a hidden Activity had set
-  // display: none on it. Put back the display the server rendered.
-  const style = (node as any).style;
-  if (saved.display !== null) {
-    style.setProperty('display', saved.display);
-  } else {
-    style.removeProperty('display');
-  }
+  restoreElidedDisplay(saved, node);
   if (from.isConnected) {
     let child = from.firstChild;
     while (child != null) {
@@ -2872,6 +2909,17 @@ function restoreElidedNode(
       node.appendChild(child);
       child = from.firstChild;
     }
+  }
+}
+
+// The old node may have been detached while a hidden Activity had set
+// display: none on it. Put back the display the server rendered.
+function restoreElidedDisplay(saved: ElidedNodeHolder, node: Element): void {
+  const style = (node as any).style;
+  if (saved.display !== null) {
+    style.setProperty('display', saved.display);
+  } else {
+    style.removeProperty('display');
   }
 }
 
@@ -3016,13 +3064,13 @@ const elidedNodeHolders: Map<string, any> = new Map();
 
 function getElidedNodeHolder(requestId: number, id: number): ElidedNodeHolder {
   if (requestId === 0 || typeof WeakRef !== 'function') {
-    return {node: null, display: null};
+    return {node: null, display: null, attributes: null, html: null};
   }
   const key = requestId + ':' + id;
   const ref = elidedNodeHolders.get(key);
   let holder = ref !== undefined ? ref.deref() : undefined;
   if (holder === undefined) {
-    holder = {node: null, display: null};
+    holder = {node: null, display: null, attributes: null, html: null};
     // $FlowFixMe[cannot-resolve-name]
     elidedNodeHolders.set(key, new WeakRef(holder));
   }

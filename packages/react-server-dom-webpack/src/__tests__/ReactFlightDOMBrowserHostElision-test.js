@@ -1191,6 +1191,43 @@ describe('ReactFlightDOMBrowser host elision', () => {
     });
   });
 
+  it('lets the detached node go and restores from a snapshot', async () => {
+    function App() {
+      return (
+        <main className="page">
+          <h1>snapshot-heading</h1>
+        </main>
+      );
+    }
+    const {main, rows} = await flight(<App />);
+    const html = await ssr({main, rows});
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const missing = [];
+    const response = consume(main, undefined, {
+      onElidedContentMissing: () => missing.push('missing'),
+    });
+    await response;
+    let root;
+    await act(() => {
+      root = ReactDOMClient.hydrateRoot(
+        container,
+        <Shell response={response} />,
+      );
+    });
+    const old = container.querySelector('main');
+    await act(() => root.render(<p>elsewhere</p>));
+    // The stub doesn't read the detached node again.
+    old.querySelector('h1').textContent = 'changed-after-unmount';
+    await act(() => root.render(<Shell response={response} />));
+    expect(missing).toEqual([]);
+    const restored = container.querySelector('main');
+    expect(restored).not.toBe(old);
+    expect(restored.className).toBe('page');
+    expect(restored.textContent).toBe('snapshot-heading');
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();
