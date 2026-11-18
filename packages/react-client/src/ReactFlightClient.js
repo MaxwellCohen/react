@@ -3743,6 +3743,15 @@ function resolveModel(
     }
     chunks.set(id, newChunk);
   } else {
+    if (
+      enableFlightStaticHostElision &&
+      response._elidedRows !== null &&
+      response._elidedRows.get(id) !== undefined
+    ) {
+      // A late row for content this consumer already got from the registry
+      // (it rendered the real element). Nothing to do.
+      return;
+    }
     if (__DEV__) {
       resolveChunkDebugInfo(response, streamState, chunk);
     }
