@@ -63,6 +63,32 @@ Waku was used because it is easy to patch and has good RSC support; nothing here
 
 With the flag on and no opt-in, Waku's output is byte-identical to stock. A second page whose rows are Client Components gets 1.10×. On every variant the page hydrates, the counters work, there are no console errors, and a client navigation fetches the full payload (602,063 B) and renders all 1000 rows. The patch is the `rsc-html-first-optin` branch of `MaxwellCohen/wakujs`. It has two parts: the HTML render passes `elideStaticHosts: true`, and `Root` passes `onElidedContentMissing` for the initial payload and refetches that payload in full when React asks (about 15 lines).
 
+### Next.js 16.4.6
+
+Patch: `MaxwellCohen/next.js` branch `html-first/16.4`. Dynamic HTML renders, PPR resumes and the staged render behind cached navigations pass `elideStaticHosts: true`; prerendered pages inline their payload decoded and re-encoded with elision (no Server Component runs twice), while the stored `.rsc` stays complete; hydration and the client cache's decode pass `onElidedContentMissing`, which refetches the current route and keeps the client caches.
+
+| 1000-row table | stock | patched |
+|---|---|---|
+| inlined Flight, dynamic | 765,297 B | 23,219 B |
+| inlined Flight, prerendered | 765,415 B | 28,760 B |
+| requests/s | 1.00 | 2.79× |
+| main thread on `router.refresh()` (first, second) | 18 ms, 12 ms | 19 ms, 10 ms |
+| DOM nodes after leaving the page | 256 | 75 |
+
+Next's own e2e suites (52, including Cache Components and PPR), with the canary build in Next's stable slots and the experimental build in its experimental slots: 871 pass, none fail.
+
+Next needed these on top of the first version of this PR: Fragment children stay in host position; plain data (objects, arrays, Maps) keeps the position it is in; void elements are never elided on their own; `renderToReadableStream` in the Turbopack and unbundled Node builds forwards the option; late rows; adopted nodes shared between decodes of one payload; the server's inline `display` kept across Activity; detached stubs kept as a snapshot; and keeping stubs on later full payloads (below).
+
+### Keeping stubs on later full payloads
+
+A refresh, a server action that revalidates, or returning to a PPR page brings real elements where the stubs are. React sees a type change (the stub is a function component) and rebuilds that DOM: 1,044 nodes and 46 ms of main thread on the table page, against 18 ms for stock. `ReactChildFiber` now asks the host config, at the two places a type mismatch replaces a child, whether the stub's DOM already renders the new element (`instanceMatchesStaticElement`). If so the stub fiber is reused; if the content differs, the host config patches the DOM in place. The check is behind `enableFlightStaticHostElision && supportsHydration`, only runs on fibers whose type carries `REACT_ELIDED_HOST_TYPE`, and suspends on lazy content that hasn't loaded, like rendering the element would. Alternatives that were tested and rejected:
+
+- No reconciler involvement: the rebuild above.
+- The stub as a host element of the same tag, so the real element is an ordinary update: React replaces the server's children on that update.
+- The stub as a dehydrated Suspense boundary: the boundary keeps the server DOM until the real element arrives, then it is client rendered and the original nodes are replaced.
+
+A stub that unmounts keeps its node's attributes and HTML as strings, so a later mount (Back) can rebuild it without a request. Keeping the node instead held about 14,000 detached nodes for the table page; keeping nothing made Back refetch the route. With the snapshot the page left in Next's cache uses less memory than stock, which keeps the whole element tree.
+
 ## Correctness
 
 With the recovery wired, a modal whose static children mount only after a click shows its content, the same as stock. Without the recovery, the same page reports an uncaught error and never shows the content. (`waku-htmlfirst-bench`, page `late-modal`, three variants.)
@@ -84,6 +110,5 @@ Other checks:
 ## Limits
 
 - The hoisted `<head>` content of a page can differ from stock in which preload links appear. Resources that matter are the same.
-- Next.js has not been tried. The opt-in there would be `elideStaticHosts: true` when the request is not an RSC request.
 - Four Jest tests fail in this environment on the base commit as well (three Node Buffer-pool checks under Node 26 and one Edge outlining timeout).
 - Eliding Client Components themselves is out of scope. It needs a guarantee that the component does nothing in the browser.
