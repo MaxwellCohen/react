@@ -17,9 +17,23 @@
 
 type ElidedRowMap = Map<number, mixed>;
 
+// Shared by the Flight request that elided the rows and the consumer that
+// claimed them to render HTML.
+export type ElidedRowsEntry = {
+  rows: ElidedRowMap,
+  // Ids of the rows the claimer actually rendered. The HTML for the others was
+  // never produced (children of a closed modal, a client-only wrapper), so the
+  // server writes those to the stream after all ("late rows").
+  rendered: Set<number>,
+  claimed: boolean,
+  // Set by the server while it keeps the stream open for late rows. Called by
+  // the claimer once it has rendered what it is going to render.
+  settle: null | (() => void),
+};
+
 type ElidedRowsStore = {
   nextId: number,
-  pending: Map<number, ElidedRowMap>,
+  pending: Map<number, ElidedRowsEntry>,
 };
 
 const STORE_KEY = '__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__';
@@ -37,24 +51,30 @@ function getStore(): ElidedRowsStore {
 
 export function allocateElidedRowsRegistry(): {
   requestId: number,
-  rows: ElidedRowMap,
+  entry: ElidedRowsEntry,
 } {
   const store = getStore();
   const requestId = store.nextId++;
-  const rows: ElidedRowMap = new Map();
-  store.pending.set(requestId, rows);
-  return {requestId, rows};
+  const entry: ElidedRowsEntry = {
+    rows: new Map(),
+    rendered: new Set(),
+    claimed: false,
+    settle: null,
+  };
+  store.pending.set(requestId, entry);
+  return {requestId, entry};
 }
 
 export function claimElidedRowsRegistry(
   requestId: number,
-): void | ElidedRowMap {
+): void | ElidedRowsEntry {
   const store = getStore();
-  const rows = store.pending.get(requestId);
-  if (rows !== undefined) {
+  const entry = store.pending.get(requestId);
+  if (entry !== undefined) {
     store.pending.delete(requestId);
+    entry.claimed = true;
   }
-  return rows;
+  return entry;
 }
 
 export function releaseElidedRowsRegistry(requestId: number): void {

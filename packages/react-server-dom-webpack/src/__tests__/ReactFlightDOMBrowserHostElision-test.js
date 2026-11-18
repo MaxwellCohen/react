@@ -514,7 +514,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       await collect();
       // The consumer still holds the stream, so it can still claim the rows.
       expect(pending().size).toBe(before + 1);
-      const main = await readAll(stream);
+      const main = await serverAct(() => readAll(stream));
       const html = await ssr({main, rows: undefined});
       expect(html).toContain('important');
       expect(pending().size).toBe(before);
@@ -1053,6 +1053,218 @@ describe('ReactFlightDOMBrowser host elision', () => {
     await renderFullPayload(root, <App />);
     expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
     expect(container.textContent).toContain('modal-body');
+  });
+
+  describe('late rows', () => {
+    // What a framework does: the Flight stream is rendered to HTML in this
+    // process while it is also sent to the browser. Returns the browser's
+    // payload and the HTML.
+    async function flightAndSsr(element, options) {
+      let main;
+      let html;
+      await serverAct(async () => {
+        const [forSsr, forBrowser] =
+          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+            elideStaticHosts: true,
+            ...options,
+          }).tee();
+        const browser = readAll(forBrowser);
+        const response = ReactServerDOMClient.createFromReadableStream(forSsr);
+        const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
+          <Shell response={response} />,
+        );
+        // Suspense boundaries complete in place, without inline scripts.
+        await htmlStream.allReady;
+        html = await readAll(htmlStream);
+        main = await browser;
+      });
+      return {main, html};
+    }
+
+    // The same payload when nothing renders it to HTML while it streams.
+    async function flightOnly(element) {
+      return serverAct(() =>
+        readAll(
+          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+            elideStaticHosts: true,
+          }),
+        ),
+      );
+    }
+
+    const withoutRequestId = main => main.replace(/:Q[0-9a-f]+\n/, ':Q\n');
+
+    function createPanel() {
+      return clientExports(function Panel({children}) {
+        const [open, setOpen] = React.useState(false);
+        return (
+          <div>
+            <button onClick={() => setOpen(!open)}>toggle</button>
+            {open ? <aside>{children}</aside> : null}
+          </div>
+        );
+      });
+    }
+
+    it('sends the rows SSR did not render, so a closed modal opens without a round trip', async () => {
+      const Panel = createPanel();
+      const App = () => (
+        <main>
+          <article>{'page-content '.repeat(10)}</article>
+          <Panel>
+            <p>modal-body</p>
+          </Panel>
+        </main>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).toContain('page-content');
+      expect(html).not.toContain('modal-body');
+      // The article is in the HTML and stays out of the payload. The modal's
+      // content is not, so its row was written after all.
+      expect(main).not.toContain('page-content');
+      expect(main).toContain('modal-body');
+      const unrendered = await flightOnly(<App />);
+      expect(unrendered).not.toContain('modal-body');
+      const lateBytes = byteLength(main) - byteLength(unrendered);
+      console.log(
+        `late rows: elided=${byteLength(unrendered)} ` +
+          `with the modal's row=${byteLength(main)} (+${lateBytes})`,
+      );
+      // One row. In DEV it comes with its debug info.
+      expect(lateBytes).toBeLessThan(__DEV__ ? 400 : 80);
+
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onElidedContentMissing: missing,
+      });
+      expect(container.innerHTML).toBe(html);
+      expect(container.textContent).not.toContain('modal-body');
+      await act(() => container.querySelector('button').click());
+      expect(container.querySelector('aside').innerHTML).toBe(
+        '<p>modal-body</p>',
+      );
+      // Closing and opening it again doesn't need the server either.
+      await act(() => container.querySelector('button').click());
+      expect(container.querySelector('aside')).toBe(null);
+      await act(() => container.querySelector('button').click());
+      expect(container.querySelector('aside').innerHTML).toBe(
+        '<p>modal-body</p>',
+      );
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
+    it('sends the rows of a client-only wrapper', async () => {
+      const ClientOnly = clientExports(function ClientOnly({children}) {
+        const [mounted, setMounted] = React.useState(false);
+        React.useEffect(() => setMounted(true), []);
+        return mounted ? children : null;
+      });
+      const App = () => (
+        <div>
+          <ClientOnly>
+            <p>client-only-content</p>
+          </ClientOnly>
+        </div>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).not.toContain('client-only-content');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onElidedContentMissing: missing,
+      });
+      expect(container.innerHTML).toBe('<div><p>client-only-content</p></div>');
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
+    it('writes no late row for content that SSR rendered', async () => {
+      const Counter = clientExports(function Counter() {
+        const [n, setN] = React.useState(0);
+        return <button onClick={() => setN(n + 1)}>{n}</button>;
+      });
+      async function Slow() {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return <section>{'streamed-content '.repeat(10)}</section>;
+      }
+      const App = () => (
+        <main>
+          <article>{'page-content '.repeat(10)}</article>
+          <Counter />
+          <React.Suspense fallback="loading">
+            <Slow />
+          </React.Suspense>
+        </main>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).toContain('page-content');
+      expect(html).toContain('streamed-content');
+      expect(main).toContain('$J');
+      expect(main).not.toContain('page-content');
+      expect(main).not.toContain('streamed-content');
+      // What the server writes when it sends no late rows.
+      const unrendered = await flightOnly(<App />);
+      expect(main.split('\n').length).toBe(unrendered.split('\n').length);
+      if (!__DEV__) {
+        // Timing rows differ between two renders in DEV.
+        expect(withoutRequestId(main)).toBe(withoutRequestId(unrendered));
+      }
+      const {container, errors} = await hydrate(main, html);
+      expect(container.textContent).toContain('streamed-content');
+      expect(errors).toEqual([]);
+    });
+
+    it('closes the stream when nothing in this process renders it', async () => {
+      const Panel = createPanel();
+      const main = await flightOnly(
+        <Panel>
+          <p>modal-body</p>
+        </Panel>,
+      );
+      expect(main).toContain('$J');
+      expect(main).toContain(':q\n');
+      expect(main).not.toContain('modal-body');
+    });
+
+    it('closes the stream without late rows when the render is aborted', async () => {
+      const Panel = createPanel();
+      async function Never() {
+        await new Promise(() => {});
+      }
+      const controller = new AbortController();
+      const errors = [];
+      let main;
+      await serverAct(async () => {
+        const [forSsr, forBrowser] =
+          ReactServerDOMServer.renderToReadableStream(
+            <main>
+              <Panel>
+                <p>modal-body</p>
+              </Panel>
+              <React.Suspense fallback="loading">
+                <Never />
+              </React.Suspense>
+            </main>,
+            webpackMap,
+            {
+              elideStaticHosts: true,
+              signal: controller.signal,
+              onError(error) {
+                errors.push(error.message);
+              },
+            },
+          ).tee();
+        const browser = readAll(forBrowser);
+        // Claims the rows, and never gets to say which ones it rendered.
+        await ReactServerDOMClient.createFromReadableStream(forSsr);
+        controller.abort(new Error('aborted'));
+        main = await browser;
+      });
+      expect(errors).toEqual(['aborted']);
+      expect(main).toContain('$J');
+      expect(main).not.toContain(':q\n');
+      expect(main).not.toContain('modal-body');
+    });
   });
 
   it('names the missing element when late-mounted content has no recovery callback', async () => {

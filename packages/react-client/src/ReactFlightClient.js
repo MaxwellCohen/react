@@ -53,6 +53,7 @@ import {
   claimElidedRowsRegistry,
   releaseElidedRowsRegistry,
 } from 'shared/ReactFlightElidedRowsRegistry';
+import type {ElidedRowsEntry} from 'shared/ReactFlightElidedRowsRegistry';
 
 import {
   resolveClientReference,
@@ -399,6 +400,12 @@ type Response = {
   _chunks: Map<number, SomeChunk<any>>,
   // enableFlightStaticHostElision: rows the server withheld from the stream.
   _elidedRows: null | ElidedRows,
+  // enableFlightStaticHostElision: the registry entry this response claimed. It
+  // records which rows get rendered, see ElidedRendered.
+  _elidedEntry: null | ElidedRowsEntry,
+  // enableFlightStaticHostElision: resolves when the stream ends, for stubs that
+  // wait for a late row.
+  _elidedEnd: null | {promise: Promise<void>, resolve: () => void},
   // enableFlightStaticHostElision: see recoverElidedContent.
   _onElidedContentMissing: null | (() => void),
   _elidedRecovery: null | Promise<empty>,
@@ -1342,6 +1349,9 @@ export function reportGlobalError(
   const response = unwrapWeakResponse(weakResponse);
   response._closed = true;
   response._closedReason = error;
+  if (enableFlightStaticHostElision) {
+    endElidedRows(response);
+  }
   response._chunks.forEach(chunk => {
     // If this chunk was already resolved or errored, it won't
     // trigger an error but if it wasn't then we need to
@@ -2745,7 +2755,8 @@ function getInferredFunctionApproximate(code: string): () => void {
  */
 function ElidedHost(props: {
   tag: string,
-  recover: () => Promise<empty>,
+  late: () => null | React$Node,
+  recover: () => Promise<mixed>,
   saved: {node: null | Element},
   remember: (node: null | Element) => void,
   restore: (node: null | Element) => void,
@@ -2765,6 +2776,12 @@ function ElidedHost(props: {
     hydrating ? ADOPT : props.saved.node !== null ? RESTORE : RECOVER,
   );
   if (mode === RECOVER) {
+    // The server sends the rows that its HTML render did not reach after all.
+    const late = props.late();
+    if (late !== null) {
+      return late;
+    }
+    // Suspends until the stream ends, then (rendering again) forever.
     React.use(props.recover());
   }
   return React.createElement(props.tag, {
@@ -2837,7 +2854,20 @@ function getTrue(): boolean {
 // the framework (the onElidedContentMissing option) to render the full,
 // non-elided payload. Without that option the page can't get the content
 // back, so it reports an error instead. Either way the stubs stay suspended.
-function recoverElidedContent(response: Response, tag: string): Promise<empty> {
+function recoverElidedContent(response: Response, tag: string): Promise<mixed> {
+  if (!response._closed) {
+    // A late row for this stub can still arrive. They are the last rows of
+    // the stream, so look again when it ends.
+    let end = response._elidedEnd;
+    if (end === null) {
+      let resolve: () => void = noop;
+      const promise = new Promise<void>(r => {
+        resolve = r;
+      });
+      end = response._elidedEnd = {promise, resolve};
+    }
+    return end.promise;
+  }
   let pending = response._elidedRecovery;
   if (pending === null) {
     pending = response._elidedRecovery = new Promise(noop);
@@ -2869,16 +2899,89 @@ function recoverElidedContent(response: Response, tag: string): Promise<empty> {
 
 function noop(): void {}
 
+function endElidedRows(response: Response): void {
+  const end = response._elidedEnd;
+  if (end !== null) {
+    end.resolve();
+  }
+  // The consumer that claimed the rows is not going to render more of them.
+  const entry = response._elidedEntry;
+  if (entry !== null) {
+    settleElidedRows(entry);
+  }
+}
+
+// The row of an elided element, if the server sent it after all. This never
+// creates a chunk: nothing else refers to the id, so one only exists once its
+// row arrived.
+function getLateElidedRow(response: Response, id: number): null | React$Node {
+  const chunk = response._chunks.get(id);
+  if (chunk === undefined) {
+    return null;
+  }
+  return createLazyChunkWrapper(chunk, 0) as any;
+}
+
+// Rendered in place of the stub by the consumer that claimed the rows (the one
+// that renders HTML), in the slot ElidedHost takes in the browser. Rendering it
+// records that the HTML contains this row. The server sends the rows that were
+// never rendered to the browser once this consumer settles.
+function ElidedRendered(props: {
+  entry: ElidedRowsEntry,
+  id: number,
+  children: React$Node,
+}): React$Node {
+  props.entry.rendered.add(props.id);
+  return props.children;
+}
+
+function createElidedRenderedElement(
+  entry: ElidedRowsEntry,
+  id: number,
+  key: null | string,
+  response: Response,
+  model: any,
+): React$Element<any> {
+  const props: any = {entry, id, children: model};
+  if (key !== null) {
+    props.key = key;
+  }
+  const element: any = React.createElement(ElidedRendered, props);
+  if (__DEV__) {
+    element._store.validated = 1;
+  }
+  return element;
+}
+
+function settleElidedRows(entry: ElidedRowsEntry): void {
+  const settle = entry.settle;
+  if (settle !== null) {
+    settle();
+  }
+}
+
+// The server wrote everything but the late rows. Give the renderer that reads
+// this response the chance to render what just resolved before telling the
+// server which rows it rendered: its work is scheduled in a task, and what
+// that task unblocks in another.
+function scheduleElidedSettle(entry: ElidedRowsEntry): void {
+  setTimeout(() => {
+    setTimeout(settleElidedRows.bind(null, entry), 0);
+  }, 0);
+}
+
 function createElidedHostElement(
   response: Response,
+  id: number,
   tag: string,
   key: null | string,
 ): React$Element<any> {
+  const late = getLateElidedRow.bind(null, response, id);
   const recover = recoverElidedContent.bind(null, response, tag);
   const saved: {node: null | Element} = {node: null};
   const remember = rememberElidedNode.bind(null, saved);
   const restore = restoreElidedNode.bind(null, saved);
-  const props: any = {tag, recover, saved, remember, restore};
+  const props: any = {tag, late, recover, saved, remember, restore};
   if (key !== null) {
     props.key = key;
   }
@@ -2951,20 +3054,26 @@ function parseModelString(
               );
             }
           }
+          const stubKey = keyColon === -1 ? null : value.slice(keyColon + 1);
           if (response._chunks.has(id)) {
-            // The server gave us the row (SSR): render the real element.
+            // The server gave us the row (SSR, or a late row that is already
+            // here): render the real element.
+            const entry = response._elidedEntry;
             return getOutlinedModel(
               response,
               ref,
               parentObject,
               key,
-              createModel,
+              entry !== null
+                ? createElidedRenderedElement.bind(null, entry, id, stubKey)
+                : createModel,
             );
           }
           return createElidedHostElement(
             response,
+            id,
             value.slice(colon + 1, keyColon === -1 ? value.length : keyColon),
-            keyColon === -1 ? null : value.slice(keyColon + 1),
+            stubKey,
           );
         }
         // The server elided an element but this client was built without
@@ -3324,6 +3433,8 @@ function ResponseInstance(
   this._nonce = nonce;
   this._chunks = chunks;
   this._elidedRows = null;
+  this._elidedEntry = null;
+  this._elidedEnd = null;
   this._onElidedContentMissing = null;
   this._elidedRecovery = null;
   // Preserve a leading U+FEFF instead of consuming it as an encoding signature.
@@ -5546,10 +5657,21 @@ function processFullStringRow(
           // Framework already supplied elidedHostRows; drop the unused registry.
           releaseElidedRowsRegistry(requestId);
         } else {
-          const rows = claimElidedRowsRegistry(requestId);
-          if (rows !== undefined) {
-            response._elidedRows = rows as any;
+          const entry = claimElidedRowsRegistry(requestId);
+          if (entry !== undefined) {
+            response._elidedRows = entry.rows as any;
+            response._elidedEntry = entry;
           }
+        }
+      }
+      return;
+    }
+    case 113 /* "q" */: {
+      // enableFlightStaticHostElision: everything but the late rows was written.
+      if (enableFlightStaticHostElision) {
+        const entry = response._elidedEntry;
+        if (entry !== null) {
+          scheduleElidedSettle(entry);
         }
       }
       return;
@@ -5693,6 +5815,7 @@ export function processBinaryChunk(
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
           resolvedRowTag === 35 /* "#" */ ||
+          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {
@@ -5864,6 +5987,7 @@ export function processStringChunk(
           i++;
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
+          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {
@@ -6021,6 +6145,9 @@ export function close(weakResponse: WeakResponse): void {
   if (response._allowPartialStream) {
     // For partial streams, we halt pending chunks instead of erroring them.
     response._closed = true;
+    if (enableFlightStaticHostElision) {
+      endElidedRows(response);
+    }
     response._chunks.forEach(chunk => {
       if (
         chunk.status === PENDING ||

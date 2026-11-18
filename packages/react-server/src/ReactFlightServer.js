@@ -24,6 +24,7 @@ import {
   releaseElidedRowsRegistry,
   releaseElidedRowsWhenCollected,
 } from 'shared/ReactFlightElidedRowsRegistry';
+import type {ElidedRowsEntry} from 'shared/ReactFlightElidedRowsRegistry';
 
 import {
   scheduleWork,
@@ -641,6 +642,11 @@ export type Request = {
   onElidedValue: null | ((id: number, value: mixed) => void),
   // enableFlightStaticHostElision: internal registry id when no framework callbacks.
   elidedRequestId: number,
+  // enableFlightStaticHostElision: non-null while the stream is kept open for
+  // late rows (see settleElidedRows). Counts as one pending chunk.
+  elidedEntry: null | ElidedRowsEntry,
+  elidedEnd: 0 | 1 | 2, // nothing yet, `:q` emitted, `:q` written
+  elidedTimeout: null | TimeoutID,
   // enableFlightStaticHostElision: memoized isStaticHostNode results.
   staticHostCache: null | WeakMap<any, boolean>,
   identifierCount: number,
@@ -779,6 +785,9 @@ function RequestInstance(
   // createFrom* claims. `{onRow, onValue}` (JSON row / live value) is the
   // override for out-of-process or custom consumers.
   this.elidedRequestId = 0;
+  this.elidedEntry = null;
+  this.elidedEnd = 0;
+  this.elidedTimeout = null;
   this.onElidedValue = null;
   this.onElidedRow = null;
   if (enableFlightStaticHostElision && elideStaticHosts) {
@@ -787,14 +796,16 @@ function RequestInstance(
       // elide is byte-identical to one without the option. Hint rows flush
       // before regular rows, so `:Q` still precedes the first stub.
       const request: Request = this;
-      let registry: null | {requestId: number, rows: Map<number, mixed>} = null;
+      let entry: null | ElidedRowsEntry = null;
       this.onElidedValue = (id: number, value: mixed) => {
-        let current = registry;
+        let current = entry;
         if (current === null) {
-          current = registry = allocateElidedRowsRegistry();
-          request.elidedRequestId = current.requestId;
-          releaseElidedRowsWhenCollected(request, current.requestId);
-          emitElidedRowsRequestIdChunk(request, current.requestId);
+          const registry = allocateElidedRowsRegistry();
+          current = entry = registry.entry;
+          request.elidedRequestId = registry.requestId;
+          releaseElidedRowsWhenCollected(request, registry.requestId);
+          emitElidedRowsRequestIdChunk(request, registry.requestId);
+          holdForLateElidedRows(request, current);
         }
         current.rows.set(id, value);
       };
@@ -4894,6 +4905,9 @@ function logRecoverableError(
 function fatalError(request: Request, error: mixed): void {
   const onFatalError = request.onFatalError;
   onFatalError(error);
+  if (enableFlightStaticHostElision) {
+    releaseElidedHold(request);
+  }
   if (enableTaint) {
     cleanupTaintQueue(request);
   }
@@ -5255,6 +5269,142 @@ function emitElidedRowsRequestIdChunk(
   // enableFlightStaticHostElision: identify the internal row registry across tee().
   const row = ':Q' + requestId.toString(16) + '\n';
   request.completedHintChunks.push(stringToChunk(row));
+}
+
+// enableFlightStaticHostElision, late rows. The consumer that renders HTML only
+// renders part of what was elided: the children of a closed modal or of a
+// client-only wrapper never reach the HTML, so a browser that mounts them later
+// has nothing to adopt. Once the claimer has rendered, the rows it did not
+// render are written to the stream as ordinary rows under the id their stub
+// refers to, and the browser resolves the stub from those.
+//
+// The stream is kept open for that with one pending chunk. When everything
+// else is written, `:q` tells the claimer that it has seen it all, and the
+// claimer calls entry.settle() once its renderer had a chance to run. A wrong
+// guess is safe either way: a late row for content that is in the HTML only
+// costs bytes, and a stub without HTML or a late row asks the framework for
+// the full payload as before (onElidedContentMissing).
+function holdForLateElidedRows(request: Request, entry: ElidedRowsEntry): void {
+  request.elidedEntry = entry;
+  request.pendingChunks++;
+  // The entry is reachable from the global registry until it is claimed, and
+  // must not keep the request alive (see releaseElidedRowsWhenCollected).
+  if (typeof WeakRef === 'function') {
+    const weakRequest = new WeakRef(request);
+    entry.settle = () => {
+      const strongRequest = weakRequest.deref();
+      if (strongRequest !== undefined) {
+        settleElidedRows(strongRequest);
+      }
+    };
+  } else {
+    entry.settle = settleElidedRows.bind(null, request);
+  }
+}
+
+// How long a claimer that never settles (it stopped reading the stream) can
+// keep the stream open after everything else was written.
+const ELIDED_SETTLE_TIMEOUT = 1000;
+
+// Called at the end of a flush that left nothing but the hold pending.
+function flushElidedEnd(request: Request): void {
+  if (request.elidedEnd === 0) {
+    request.elidedEnd = 1;
+    request.completedHintChunks.push(stringToChunk(':q\n'));
+    if (request.destination !== null) {
+      flushCompletedChunks(request);
+    }
+    return;
+  }
+  if (request.elidedEnd === 1 && request.completedHintChunks.length === 0) {
+    request.elidedEnd = 2;
+    // A consumer in this process claims the rows as soon as it reads the first
+    // bytes. If nothing did shortly after the last bytes were written, the
+    // stream goes somewhere else (or is read later, from a buffer) and nobody
+    // is going to settle it.
+    scheduleWork(() => {
+      scheduleWork(() => {
+        const entry = request.elidedEntry;
+        if (entry === null) {
+          return;
+        }
+        if (entry.claimed) {
+          request.elidedTimeout = setTimeout(
+            settleElidedRows.bind(null, request),
+            ELIDED_SETTLE_TIMEOUT,
+          );
+        } else {
+          finishElidedHold(request);
+        }
+      });
+    });
+  }
+}
+
+function releaseElidedHold(request: Request): void {
+  const entry = request.elidedEntry;
+  if (entry !== null) {
+    entry.settle = null;
+    request.elidedEntry = null;
+    request.pendingChunks--;
+    if (request.elidedTimeout !== null) {
+      clearTimeout(request.elidedTimeout);
+      request.elidedTimeout = null;
+    }
+  }
+}
+
+function finishElidedHold(request: Request): void {
+  try {
+    releaseElidedHold(request);
+    flushCompletedChunks(request);
+  } catch (error) {
+    logRecoverableError(request, error, null);
+    fatalError(request, error);
+  }
+}
+
+function settleElidedRows(request: Request): void {
+  const entry = request.elidedEntry;
+  if (entry === null || request.status > OPEN) {
+    return;
+  }
+  // The late rows are complete, and nothing after this point has a consumer
+  // that could still render it to HTML.
+  request.onElidedRow = null;
+  request.onElidedValue = null;
+  // All ready was already reported if it was reached, the late rows are not
+  // part of it.
+  const onAllReady = request.onAllReady;
+  request.onAllReady = noop;
+  try {
+    const rendered = entry.rendered;
+    entry.rows.forEach((value, id) => {
+      if (!rendered.has(id)) {
+        const task = createTaskWithID(
+          request,
+          id,
+          value as any,
+          null,
+          false,
+          createRootFormatContext(),
+          request.abortableTasks,
+          enableProfilerTimer ? performance.now() : 0,
+          null,
+          null,
+          null,
+        );
+        retryTask(request, task);
+      }
+    });
+  } catch (error) {
+    logRecoverableError(request, error, null);
+    fatalError(request, error);
+    return;
+  } finally {
+    request.onAllReady = onAllReady;
+  }
+  finishElidedHold(request);
 }
 
 function emitSymbolChunk(request: Request, id: number, name: string): void {
@@ -7136,6 +7286,15 @@ function flushCompletedChunks(request: Request): void {
     }
     flushBuffered(destination);
   }
+  if (
+    enableFlightStaticHostElision &&
+    request.pendingChunks === 1 &&
+    request.elidedEntry !== null &&
+    request.elidedEnd !== 2
+  ) {
+    flushElidedEnd(request);
+    return;
+  }
   if (request.pendingChunks === 0) {
     // There are no pending chunks left, so the render is complete and its cache
     // signal is aborted here. Debug chunks can still be pending, but they carry
@@ -7360,6 +7519,10 @@ export function abort(request: Request, reason: mixed): void {
       // No createFrom* claimed the rows (cancelled before SSR). Drop them.
       releaseElidedRowsRegistry(request.elidedRequestId);
       request.elidedRequestId = 0;
+    }
+    if (enableFlightStaticHostElision) {
+      // Nothing waits for late rows of an aborted render.
+      releaseElidedHold(request);
     }
     if (enableProfilerTimer) {
       request.abortTime = performance.now();
