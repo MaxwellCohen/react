@@ -818,6 +818,36 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(html).toContain('count');
   });
 
+  it('never elides a void element on its own', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <hr />
+          <p>
+            line-one
+            <br />
+            line-two
+          </p>
+        </main>
+      );
+    }
+    const {main, rows} = await flight(<App />);
+    // The <hr> stays inline; the <p> around the <br> is still elided.
+    expect(main).not.toMatch(/\$J[0-9a-f]+:hr/);
+    expect(main).toMatch(/\$J[0-9a-f]+:p/);
+    expect(main).not.toContain('line-one');
+    const html = await ssr({main, rows});
+    expect(html).toContain('<hr/>');
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelector('hr')).not.toBe(null);
+    expect(container.textContent).toContain('line-two');
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();
