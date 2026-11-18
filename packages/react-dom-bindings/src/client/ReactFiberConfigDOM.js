@@ -36,7 +36,12 @@ import {runWithFiberInDEV} from 'react-reconciler/src/ReactCurrentFiber';
 
 import hasOwnProperty from 'shared/hasOwnProperty';
 import {checkAttributeStringCoercion} from 'shared/CheckStringCoercion';
-import {REACT_CONTEXT_TYPE} from 'shared/ReactSymbols';
+import isArray from 'shared/isArray';
+import {
+  REACT_CONTEXT_TYPE,
+  REACT_ELEMENT_TYPE,
+  REACT_LAZY_TYPE,
+} from 'shared/ReactSymbols';
 
 export {
   setCurrentUpdatePriority,
@@ -132,6 +137,7 @@ import {
   enableViewTransition,
   enableHydrationChangeEvent,
   enableProfilerTimer,
+  enableFlightStaticHostElision,
 } from 'shared/ReactFeatureFlags';
 import {
   HostComponent,
@@ -4554,6 +4560,178 @@ export function describeHydratableInstanceForDevWarnings(
   } else {
     return instance.nodeValue;
   }
+}
+
+// enableFlightStaticHostElision: whether a client render of <type {...props}>
+// would produce the same DOM as `instance`, which was adopted from server HTML
+// without its props (a Flight stub). Then the stub can stay instead of being
+// replaced by an identical new subtree. This must not have false positives, so
+// it only accepts what the server elides (host elements and text with
+// primitive props) and compares against what the client would create: the
+// attributes that setInitialProperties leaves on a detached element in an
+// inert document.
+let staticTwinDocument: null | Document = null;
+
+type StaticChildCursor = {node: ?Node, text: string};
+
+export function instanceMatchesStaticElement(
+  instance: Instance,
+  type: string,
+  props: Props,
+): boolean {
+  if (!enableFlightStaticHostElision) {
+    return false;
+  }
+  let twinDocument = staticTwinDocument;
+  if (twinDocument === null) {
+    twinDocument = staticTwinDocument =
+      instance.ownerDocument.implementation.createHTMLDocument('');
+  }
+  return matchStaticElement(instance, type, props, twinDocument);
+}
+
+function matchStaticElement(
+  instance: Element,
+  type: string,
+  props: Props,
+  twinDocument: Document,
+): boolean {
+  let hasInnerHTML = false;
+  for (const propKey in props) {
+    const value = (props as any)[propKey];
+    if (propKey === 'children' || value == null) {
+      continue;
+    }
+    switch (typeof value) {
+      case 'string':
+      case 'number':
+      case 'boolean':
+        continue;
+      case 'object':
+        if (propKey === 'style') {
+          continue;
+        }
+        if (propKey === 'dangerouslySetInnerHTML') {
+          hasInnerHTML = true;
+          continue;
+        }
+    }
+    // Event handlers, refs and anything else the DOM can't be compared to.
+    return false;
+  }
+  const twin: any = twinDocument.createElementNS(
+    instance.namespaceURI as any,
+    type,
+  );
+  try {
+    setInitialProperties(twin, type, props);
+  } catch (x) {
+    return false;
+  }
+  const attributes = twin.attributes;
+  if (instance.attributes.length !== attributes.length) {
+    return false;
+  }
+  for (let i = 0; i < attributes.length; i++) {
+    const name = attributes[i].name;
+    if (name === 'style') {
+      // The server and the client serialize styles differently.
+      if (
+        !instance.hasAttribute('style') ||
+        (instance as any).style.cssText !== twin.style.cssText
+      ) {
+        return false;
+      }
+    } else if (instance.getAttribute(name) !== attributes[i].value) {
+      return false;
+    }
+  }
+  if (hasInnerHTML) {
+    return instance.innerHTML === twin.innerHTML;
+  }
+  const cursor: StaticChildCursor = {node: instance.firstChild, text: ''};
+  return (
+    matchStaticChildren(cursor, props.children, twinDocument) &&
+    matchStaticText(cursor) &&
+    cursor.node == null
+  );
+}
+
+function matchStaticChildren(
+  cursor: StaticChildCursor,
+  children: mixed,
+  twinDocument: Document,
+): boolean {
+  if (children == null || typeof children === 'boolean') {
+    return true;
+  }
+  if (
+    typeof children === 'string' ||
+    typeof children === 'number' ||
+    typeof children === 'bigint'
+  ) {
+    // Adjacent text is compared as one string, see matchStaticText.
+    cursor.text += '' + (children as any);
+    return true;
+  }
+  if (isArray(children)) {
+    for (let i = 0; i < children.length; i++) {
+      if (!matchStaticChildren(cursor, children[i], twinDocument)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (typeof children === 'object') {
+    const child: any = children;
+    if (child.$$typeof === REACT_LAZY_TYPE) {
+      let resolved;
+      try {
+        const init = child._init;
+        resolved = init(child._payload);
+      } catch (x) {
+        // Not loaded yet.
+        return false;
+      }
+      return matchStaticChildren(cursor, resolved, twinDocument);
+    }
+    if (child.$$typeof === REACT_ELEMENT_TYPE) {
+      const type = child.type;
+      if (typeof type !== 'string' || !matchStaticText(cursor)) {
+        return false;
+      }
+      const node = cursor.node;
+      if (
+        node == null ||
+        node.nodeType !== ELEMENT_NODE ||
+        node.nodeName.toLowerCase() !== type.toLowerCase()
+      ) {
+        return false;
+      }
+      cursor.node = node.nextSibling;
+      return matchStaticElement(node as any, type, child.props, twinDocument);
+    }
+  }
+  return false;
+}
+
+// Consumes the text nodes at the cursor, and the separators the server writes
+// between adjacent ones, and compares them to the text collected so far.
+function matchStaticText(cursor: StaticChildCursor): boolean {
+  let node = cursor.node;
+  let text = '';
+  while (node != null) {
+    if (node.nodeType === TEXT_NODE) {
+      text += (node as any).nodeValue;
+    } else if (node.nodeType !== COMMENT_NODE || (node as any).data !== ' ') {
+      break;
+    }
+    node = node.nextSibling;
+  }
+  const expected = cursor.text;
+  cursor.node = node;
+  cursor.text = '';
+  return text === expected;
 }
 
 export function validateHydratableInstance(

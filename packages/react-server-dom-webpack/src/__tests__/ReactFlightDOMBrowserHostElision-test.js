@@ -610,8 +610,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
       root.render(<Shell response={nextResponse} />);
     });
     expect(container.querySelectorAll('tr').length).toBe(ROWS);
-    // Elided regions are re-created from the payload; client components stay.
-    expect(container.querySelector('table')).not.toBe(table);
+    // The payload has the content the stubs adopted, so their DOM stays.
+    expect(container.querySelector('table')).toBe(table);
     expect(container.querySelector('button')).toBe(button);
   });
 
@@ -657,6 +657,183 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelector('h1').textContent).toBe('Title b');
     expect(container.querySelectorAll('li').length).toBe(2);
     expect(container.querySelector('a').getAttribute('href')).toBe('/b');
+  });
+
+  describe('a full payload in place of the stubs', () => {
+    let ClientCounter;
+    beforeEach(() => {
+      ClientCounter = clientExports(function Counter() {
+        const [n, setN] = React.useState(0);
+        return <button onClick={() => setN(n + 1)}>c:{n}</button>;
+      });
+    });
+
+    function Page({title, rows, rowClass, color, extra}) {
+      return (
+        <main>
+          <h1 title={title}>
+            {'Report'} {rows.length}
+          </h1>
+          <ClientCounter />
+          <table
+            className="data"
+            style={{color, borderWidth: 1}}
+            hidden={false}>
+            <tbody>
+              {rows.map(name => (
+                <tr key={name} className={rowClass}>
+                  <td data-name={name}>{name}</td>
+                  <td>
+                    <a href={'/' + name}>open</a>
+                    <br />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {extra}
+        </main>
+      );
+    }
+
+    const base = {
+      title: 'a "b" & c',
+      rows: ['one', 'two', 'three'],
+      rowClass: 'row',
+      color: 'red',
+    };
+
+    async function hydratePage(props = base) {
+      const first = await flight(<Page {...props} />);
+      expect(first.main).toContain('$J');
+      const html = await ssr({main: first.main, rows: first.rows});
+      const result = await hydrate(first.main, html);
+      const container = result.container;
+      const nodes = Array.from(container.querySelectorAll('*'));
+      const texts = [];
+      const walker = document.createTreeWalker(container, 4);
+      while (walker.nextNode()) {
+        texts.push(walker.currentNode);
+      }
+      const mutations = new MutationObserver(() => {});
+      mutations.observe(container, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true,
+      });
+      return {...result, html: container.innerHTML, nodes, texts, mutations};
+    }
+
+    it('keeps the adopted DOM when the content is the same', async () => {
+      const {container, root, errors, html, nodes, texts, mutations} =
+        await hydratePage();
+      await act(() => container.querySelector('button').click());
+      const clicked = container.innerHTML;
+      expect(clicked).toBe(html.replace('c:<!-- -->0', 'c:<!-- -->1'));
+      mutations.takeRecords();
+
+      await renderFullPayload(root, <Page {...base} />);
+      expect(errors).toEqual([]);
+      expect(mutations.takeRecords()).toEqual([]);
+      expect(container.innerHTML).toBe(clicked);
+      expect(Array.from(container.querySelectorAll('*'))).toEqual(nodes);
+      nodes.concat(texts).forEach(node => expect(node.isConnected).toBe(true));
+
+      // And again: the stubs are still there to compare with.
+      await renderFullPayload(root, <Page {...base} />);
+      expect(mutations.takeRecords()).toEqual([]);
+      expect(container.querySelector('table')).toBe(nodes[3]);
+      expect(nodes[3].nodeName).toBe('TABLE');
+
+      // Content that changes after it was kept is rendered.
+      await renderFullPayload(root, <Page {...base} rowClass="other" />);
+      expect(errors).toEqual([]);
+      expect(container.querySelector('tr').className).toBe('other');
+      await renderFullPayload(root, <Page {...base} rowClass="third" />);
+      expect(container.querySelector('tr').className).toBe('third');
+      expect(container.querySelector('button').textContent).toBe('c:1');
+    });
+
+    it('keeps the adopted DOM of content the full payload splits into rows', async () => {
+      const props = {
+        ...base,
+        rows: Array.from({length: 100}, (_, i) => i + '-'.repeat(200)),
+      };
+      const {container, root, errors, nodes, mutations} =
+        await hydratePage(props);
+      const full = await flight(<Page {...props} />, false);
+      // The table is not one row of the payload.
+      expect(full.main.split('\n').length).toBeGreaterThan(10);
+      const response = consume(full.main);
+      await response;
+      await act(() => root.render(<Shell response={response} />));
+      expect(errors).toEqual([]);
+      expect(mutations.takeRecords()).toEqual([]);
+      expect(Array.from(container.querySelectorAll('*'))).toEqual(nodes);
+    });
+
+    it.each([
+      ['text', {rows: ['one', 'two', 'four']}],
+      ['an attribute', {rowClass: 'row selected'}],
+      ['an attribute of the stub itself', {title: 'other'}],
+      ['a removed attribute', {rowClass: undefined}],
+      ['a style', {color: 'blue'}],
+      ['a removed style', {color: undefined}],
+      ['more children', {rows: ['one', 'two', 'three', 'four']}],
+      ['fewer children', {rows: ['one', 'two']}],
+      ['the order of children', {rows: ['two', 'one', 'three']}],
+    ])('renders the new content when %s differs', async (_, changes) => {
+      const {container, root, errors} = await hydratePage();
+      const button = container.querySelector('button');
+      const props = {...base, ...changes};
+      await renderFullPayload(root, <Page {...props} />);
+      expect(errors).toEqual([]);
+      expect(container.querySelector('button')).toBe(button);
+
+      // The same as rendering that payload from scratch.
+      const full = await flight(<Page {...props} />, false);
+      const response = consume(full.main);
+      await response;
+      const expected = document.createElement('div');
+      const expectedRoot = ReactDOMClient.createRoot(expected);
+      await act(() => expectedRoot.render(<Shell response={response} />));
+      expect(expected.querySelectorAll('tr').length).toBe(props.rows.length);
+      // Apart from how the server HTML that stayed writes text and styles.
+      const actual = container.cloneNode(true);
+      actual.querySelectorAll('[style]').forEach(node => {
+        node.setAttribute('style', node.style.cssText);
+      });
+      expect(actual.innerHTML.replace(/<!-- -->/g, '')).toBe(
+        expected.innerHTML,
+      );
+    });
+
+    it('renders the new content when the DOM was changed', async () => {
+      const {container, root, errors} = await hydratePage();
+      const table = container.querySelector('table');
+      const h1 = container.querySelector('h1');
+      container.querySelector('td').setAttribute('data-name', 'changed');
+      await renderFullPayload(root, <Page {...base} />);
+      expect(errors).toEqual([]);
+      expect(container.querySelector('table')).not.toBe(table);
+      expect(container.querySelector('td').getAttribute('data-name')).toBe(
+        'one',
+      );
+      expect(container.querySelector('h1')).toBe(h1);
+    });
+
+    it('renders the new content when it is not static', async () => {
+      const {container, root, errors} = await hydratePage();
+      const table = container.querySelector('table');
+      await renderFullPayload(
+        root,
+        <Page {...base} extra={<ClientCounter />} />,
+      );
+      expect(errors).toEqual([]);
+      expect(container.querySelector('table')).toBe(table);
+      expect(container.querySelectorAll('button').length).toBe(2);
+    });
   });
 
   it('elides static output under the entries of a root element map', async () => {
@@ -1926,9 +2103,10 @@ describe('ReactFlightDOMBrowser host elision', () => {
       expect(visibleText(container)).toBe(
         'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
       );
-      // The full payload has real elements where the stubs were, so they are
-      // remounted, as on a navigation.
-      expect(container.querySelector('h1')).not.toBe(h1);
+      // The full payload has real elements where the stubs were. Where a stub
+      // adopted DOM (outside of the boundary) it is what they would render, so
+      // it stays. A root that client-renders has no such DOM.
+      expect(container.querySelector('h1') === h1).toBe(withSuspense);
       expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
       expect(missing).toHaveBeenCalledTimes(1);
       return {chunks, errors};

@@ -247,6 +247,8 @@ export const diffHydratedPropsForDevWarnings =
   $$$config.diffHydratedPropsForDevWarnings;
 export const diffHydratedTextForDevWarnings =
   $$$config.diffHydratedTextForDevWarnings;
+export const instanceMatchesStaticElement =
+  $$$config.instanceMatchesStaticElement;
 export const describeHydratableInstanceForDevWarnings =
   $$$config.describeHydratableInstanceForDevWarnings;
 export const validateHydratableInstance = $$$config.validateHydratableInstance;

@@ -98,6 +98,7 @@ import {
   REACT_ELEMENT_TYPE,
   ASYNC_ITERATOR,
   REACT_FRAGMENT_TYPE,
+  REACT_ELIDED_HOST_TYPE,
 } from 'shared/ReactSymbols';
 
 import getComponentNameFromType from 'shared/getComponentNameFromType';
@@ -2742,7 +2743,9 @@ function getInferredFunctionApproximate(code: string): () => void {
  *
  * Why a wrapper component type rather than a bare host element: on navigation
  * the full payload has a real <tag> at this position. Because the component
- * type differs React unmounts the stub and mounts fresh DOM. A same-type host
+ * type differs React unmounts the stub and mounts fresh DOM, unless that DOM
+ * would be the same as what the stub adopted: then the renderer keeps the stub
+ * (it knows the type by its $$typeof, see canKeepElidedHost). A same-type host
  * element would instead diff against {dangerouslySetInnerHTML: {__html: ''}}
  * and append the new children after the stale server HTML.
  *
@@ -2802,6 +2805,10 @@ function ElidedHost(props: {
     ref: mode === RESTORE ? props.restore : props.remember,
   });
 }
+
+// Lets the renderer keep a stub (and its DOM) when the full payload has the
+// same content in its place.
+ElidedHost.$$typeof = REACT_ELIDED_HOST_TYPE;
 
 const ADOPT = 0;
 const RESTORE = 1;
