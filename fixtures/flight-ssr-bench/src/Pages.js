@@ -229,7 +229,7 @@ export function TableServerStatic({itemCount}) {
   );
 }
 
-// (iii-d) One elided row for the whole <tbody> of server-component rows.
+// (iii-d) One stubbed row for the whole <tbody> of server-component rows.
 export function TableServerStaticBody({itemCount}) {
   const products = generateProducts(itemCount);
   return (

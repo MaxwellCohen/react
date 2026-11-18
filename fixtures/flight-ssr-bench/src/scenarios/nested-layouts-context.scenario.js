@@ -25,8 +25,8 @@ export function Root({size}) {
                 <section className="content" key={i}>
                   <h2>Section {i}</h2>
                   <p>
-                    Server-rendered content section {i} passed through three client
-                    layouts as children.
+                    Server-rendered content section {i} passed through three
+                    client layouts as children.
                   </p>
                 </section>
               ))}

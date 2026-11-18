@@ -11,12 +11,22 @@ export const expectedBenefit = 'high';
 export const sizes = {smoke: 3, full: 200};
 
 function makeHtml(i) {
-  const escape = (s) =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escape = s =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   return [
     '<div class="block block-' + i + '" data-index="' + i + '">',
     '<h3>' + escape('Block & "title" <' + i + '>') + '</h3>',
-    '<p style="margin:0;color:rgb(' + i % 256 + ',' + (i * 3) % 256 + ',' + (i * 7) % 256 + ')">',
+    '<p style="margin:0;color:rgb(' +
+      (i % 256) +
+      ',' +
+      ((i * 3) % 256) +
+      ',' +
+      ((i * 7) % 256) +
+      ')">',
     'Some <em>emphasized</em> and <strong>bold</strong> text with entities &amp; &lt; &gt; &quot; &#169; &#x2713;.',
     '</p>',
     '<ul><li>Item A-' + i + '</li><li>Item B-' + i + '</li></ul>',
@@ -32,7 +42,7 @@ export function Root({size}) {
     <Document title="Inner HTML">
       <main id="main">
         <h1 dangerouslySetInnerHTML={{__html: 'Head &amp; <em>line</em>'}} />
-        {blocks.map((i) => (
+        {blocks.map(i => (
           <div key={i} className="row">
             <section
               id={'block-' + i}

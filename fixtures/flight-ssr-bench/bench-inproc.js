@@ -27,7 +27,7 @@ webpack(require('./webpack.config'), async err => {
   if (err) throw err;
   const b = require('./build/rsc-bundle.js');
   const FizzSame = require('./src/FizzSame.js').default;
-  const flight = (C, elide, live) => () =>
+  const flight = (C, stub, live) => () =>
     nodeStreamToString(
       renderFlightFizzNode(
         b.renderRSCNode,
@@ -35,7 +35,7 @@ webpack(require('./webpack.config'), async err => {
         ROWS,
         clientManifest,
         ssrManifest,
-        {elide, live}
+        {stub, live}
       )
     );
   const PageFizz = require('./src/PageApp.js').makePage(true);
@@ -43,16 +43,16 @@ webpack(require('./webpack.config'), async err => {
     'PageApp fizz (no RSC) floor': () =>
       nodeStreamToString(renderFizzNode(PageFizz, ROWS)),
     'PageApp client rows, flight': flight(b.PageAppBaseline, false),
-    'PageApp client rows, elide LIVE': flight(b.PageAppBaseline, true, true),
+    'PageApp client rows, stub LIVE': flight(b.PageAppBaseline, true, true),
     'PageApp server rows, flight': flight(b.PageAppHtmlFirst, false),
-    'PageApp server rows, elide': flight(b.PageAppHtmlFirst, true),
-    'PageApp server rows, elide LIVE': flight(b.PageAppHtmlFirst, true, true),
+    'PageApp server rows, stub': flight(b.PageAppHtmlFirst, true),
+    'PageApp server rows, stub LIVE': flight(b.PageAppHtmlFirst, true, true),
     'fizz same markup (no RSC)': () =>
       nodeStreamToString(renderFizzNode(FizzSame, ROWS)),
     'lean rows': flight(b.TableServerLean, false),
-    'lean rows, elide': flight(b.TableServerLean, true),
-    'server rows, elide': flight(b.TableServerStatic, true),
-    'server tbody, elide': flight(b.TableServerStaticBody, true),
+    'lean rows, stub': flight(b.TableServerLean, true),
+    'server rows, stub': flight(b.TableServerStatic, true),
+    'server tbody, stub': flight(b.TableServerStaticBody, true),
     'server rows LIVE': flight(b.TableServerStatic, true, true),
     'server tbody LIVE': flight(b.TableServerStaticBody, true, true),
   };

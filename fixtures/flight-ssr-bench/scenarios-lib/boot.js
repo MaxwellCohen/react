@@ -22,11 +22,19 @@ async function boot(opts, {client}) {
       dirs[v] = prepareVariant(opts.builds, v);
       const w = startWorker(v, dirs[v]);
       workers.push(w);
-      w.info = await w.call('init', {files, clientMode: client ? 'production' : 'none'});
+      w.info = await w.call('init', {
+        files,
+        clientMode: client ? 'production' : 'none',
+      });
     })
   );
   const byName = Object.fromEntries(workers.map(w => [w.name, w]));
-  return {scenarios, workers: opts.variants.map(v => byName[v]), dirs, kill: () => workers.forEach(w => w.kill())};
+  return {
+    scenarios,
+    workers: opts.variants.map(v => byName[v]),
+    dirs,
+    kill: () => workers.forEach(w => w.kill()),
+  };
 }
 
 module.exports = {boot};

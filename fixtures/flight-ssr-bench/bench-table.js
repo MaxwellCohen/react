@@ -96,16 +96,16 @@ async function main() {
         clientManifest,
         ssrManifest
       ).pipe(res),
-    'e-server-host-elided': res =>
+    'e-server-host-stubbed': res =>
       renderFlightFizzNode(
         renderRSCNode,
         TableServerHost,
         ROWS,
         clientManifest,
         ssrManifest,
-        {elide: true}
+        {stub: true}
       ).pipe(res),
-    // enableFlightStaticHostElision variants: plain flight vs elided (zero opt-in /
+    // enableFlightHTMLFirst variants: plain flight vs stubbed (zero opt-in /
     // optional sideChannel).
     ...Object.fromEntries(
       Object.entries({
@@ -129,7 +129,7 @@ async function main() {
             ).pipe(res),
         ],
         [
-          k + '-elided',
+          k + '-stubbed',
           res =>
             renderFlightFizzNode(
               renderRSCNode,
@@ -137,7 +137,7 @@ async function main() {
               ROWS,
               clientManifest,
               ssrManifest,
-              {elide: true}
+              {stub: true}
             ).pipe(res),
         ],
       ])
@@ -146,14 +146,10 @@ async function main() {
     ...Object.fromEntries(
       [
         ['n-page-client-rows', PageAppBaseline, undefined],
-        ['n-page-client-rows-live', PageAppBaseline, {elide: true, live: true}],
+        ['n-page-client-rows-live', PageAppBaseline, {stub: true, live: true}],
         ['o-page-server-rows', PageAppHtmlFirst, undefined],
-        ['o-page-server-rows-json', PageAppHtmlFirst, {elide: true}],
-        [
-          'o-page-server-rows-live',
-          PageAppHtmlFirst,
-          {elide: true, live: true},
-        ],
+        ['o-page-server-rows-json', PageAppHtmlFirst, {stub: true}],
+        ['o-page-server-rows-live', PageAppHtmlFirst, {stub: true, live: true}],
       ].map(([k, C, opts]) => [
         k,
         res =>

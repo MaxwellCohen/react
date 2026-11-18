@@ -18,10 +18,15 @@ export default function Newsletter() {
         value={email}
         onChange={e => setEmail(e.target.value)}
       />
-      <button type="button" className="newsletter-submit" onClick={() => setSent(email)}>
+      <button
+        type="button"
+        className="newsletter-submit"
+        onClick={() => setSent(email)}>
         Subscribe
       </button>
-      <p className="newsletter-status">{sent ? 'Subscribed: ' + sent : 'Not subscribed'}</p>
+      <p className="newsletter-status">
+        {sent ? 'Subscribed: ' + sent : 'Not subscribed'}
+      </p>
     </form>
   );
 }

@@ -83,7 +83,7 @@ async function check(browser, kind) {
     await rowCounter.click();
     rowCounterText = await rowCounter.textContent();
   }
-  // Client-side navigation to a smaller page: full Flight (not elided).
+  // Client-side navigation to a smaller page: full Flight (not stubbed).
   await page.evaluate(url => window.__navigate(url), `/rsc/${kind}?rows=20`);
   await page.waitForFunction(
     () => document.querySelectorAll('tr').length === 20,

@@ -47,13 +47,13 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
-  enableFlightStaticHostElision,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
 import {
-  claimElidedRowsRegistry,
-  releaseElidedRowsRegistry,
-} from 'shared/ReactFlightElidedRowsRegistry';
-import type {ElidedRowsEntry} from 'shared/ReactFlightElidedRowsRegistry';
+  claimStubbedRowsRegistry,
+  releaseStubbedRowsRegistry,
+} from 'shared/ReactFlightHTMLFirstRegistry';
+import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import {
   resolveClientReference,
@@ -98,7 +98,7 @@ import {
   REACT_ELEMENT_TYPE,
   ASYNC_ITERATOR,
   REACT_FRAGMENT_TYPE,
-  REACT_ELIDED_HOST_TYPE,
+  REACT_STATIC_STUB_TYPE,
 } from 'shared/ReactSymbols';
 
 import getComponentNameFromType from 'shared/getComponentNameFromType';
@@ -399,19 +399,19 @@ type Response = {
   _encodeFormAction: void | EncodeFormActionCallback,
   _nonce: ?string,
   _chunks: Map<number, SomeChunk<any>>,
-  // enableFlightStaticHostElision: rows the server withheld from the stream.
-  _elidedRows: null | ElidedRows,
-  // enableFlightStaticHostElision: the registry entry this response claimed. It
-  // records which rows get rendered, see ElidedRendered.
-  _elidedEntry: null | ElidedRowsEntry,
-  // enableFlightStaticHostElision: the `:Q` id of the payload, which names it.
-  _elidedRequestId: number,
-  // enableFlightStaticHostElision: resolves when the stream ends, for stubs that
+  // enableFlightHTMLFirst: rows the server withheld from the stream.
+  _stubbedRows: null | StubbedRows,
+  // enableFlightHTMLFirst: the registry entry this response claimed. It
+  // records which rows get rendered, see StubbedRendered.
+  _stubbedEntry: null | StubbedRowsEntry,
+  // enableFlightHTMLFirst: the `:Q` id of the payload, which names it.
+  _stubbedRequestId: number,
+  // enableFlightHTMLFirst: resolves when the stream ends, for stubs that
   // wait for a late row.
-  _elidedEnd: null | {promise: Promise<void>, resolve: () => void},
-  // enableFlightStaticHostElision: see recoverElidedContent.
-  _onElidedContentMissing: null | (() => void),
-  _elidedRecovery: null | Promise<empty>,
+  _stubbedEnd: null | {promise: Promise<void>, resolve: () => void},
+  // enableFlightHTMLFirst: see recoverStubbedContent.
+  _onMissingHTML: null | (() => void),
+  _stubbedRecovery: null | Promise<empty>,
   _stringDecoder: StringDecoder,
   _closed: boolean,
   _closedReason: mixed,
@@ -447,27 +447,26 @@ function hasGCedResponse(weakResponse: WeakResponse): boolean {
   return __DEV__ && weakResponse.weak.deref() === undefined;
 }
 
-// The side channel for rows the server elided from the stream. Rows are
+// The side channel for rows the server stubbed from the stream. Rows are
 // complete JSON strings, so they are never interleaved with stream bytes.
-// A row is JSON, or (enableFlightStaticHostElision, in-process) a ready React node.
-export type ElidedRows = {get(id: number): void | string | mixed, ...};
+// A row is JSON, or (enableFlightHTMLFirst, in-process) a ready React node.
+export type StubbedRows = {get(id: number): void | string | mixed, ...};
 
-export function attachElidedRows(
+export function attachStubbedRows(
   weakResponse: WeakResponse,
-  rows: ElidedRows,
+  rows: StubbedRows,
 ): void {
-  if (enableFlightStaticHostElision) {
-    unwrapWeakResponse(weakResponse)._elidedRows = rows;
+  if (enableFlightHTMLFirst) {
+    unwrapWeakResponse(weakResponse)._stubbedRows = rows;
   }
 }
 
-export function attachElidedContentMissing(
+export function attachMissingHTML(
   weakResponse: WeakResponse,
-  onElidedContentMissing: () => void,
+  onMissingHTML: () => void,
 ): void {
-  if (enableFlightStaticHostElision) {
-    unwrapWeakResponse(weakResponse)._onElidedContentMissing =
-      onElidedContentMissing;
+  if (enableFlightHTMLFirst) {
+    unwrapWeakResponse(weakResponse)._onMissingHTML = onMissingHTML;
   }
 }
 
@@ -1352,8 +1351,8 @@ export function reportGlobalError(
   const response = unwrapWeakResponse(weakResponse);
   response._closed = true;
   response._closedReason = error;
-  if (enableFlightStaticHostElision) {
-    endElidedRows(response);
+  if (enableFlightHTMLFirst) {
+    endStubbedRows(response);
   }
   response._chunks.forEach(chunk => {
     // If this chunk was already resolved or errored, it won't
@@ -2731,11 +2730,11 @@ function getInferredFunctionApproximate(code: string): () => void {
 }
 
 /**
- * Elided host elements (enableFlightStaticHostElision).
+ * Stubbed host elements (enableFlightHTMLFirst).
  *
  * The server replaced a static host subtree with "$J<rowId>:<tag>" and the row
  * itself was dropped from the payload inlined in the HTML. We decode that to
- * <ElidedHost tag>, which renders an element of the same tag with
+ * <StaticStub tag>, which renders an element of the same tag with
  * dangerouslySetInnerHTML + suppressHydrationWarning. That is the standard
  * "static island" idiom: during hydration React matches the existing DOM node
  * by tag/position, does not descend into or patch its children or attributes,
@@ -2745,7 +2744,7 @@ function getInferredFunctionApproximate(code: string): () => void {
  * the full payload has a real <tag> at this position. Because the component
  * type differs React unmounts the stub and mounts fresh DOM, unless that DOM
  * would be the same as what the stub adopted: then the renderer keeps the stub
- * (it knows the type by its $$typeof, see canKeepElidedHost). A same-type host
+ * (it knows the type by its $$typeof, see canKeepStaticStub). A same-type host
  * element would instead diff against {dangerouslySetInnerHTML: {__html: ''}}
  * and append the new children after the stale server HTML.
  *
@@ -2755,14 +2754,14 @@ function getInferredFunctionApproximate(code: string): () => void {
  * It suspends, so React keeps what is on screen (the server HTML or the
  * boundary's fallback) instead of committing an empty element, and the
  * framework is asked once to render the full payload (see
- * recoverElidedContent). That payload has real elements where the stubs were,
+ * recoverStubbedContent). That payload has real elements where the stubs were,
  * which replace them.
  */
-function ElidedHost(props: {
+function StaticStub(props: {
   tag: string,
   late: () => null | React$Node,
   recover: () => Promise<mixed>,
-  saved: ElidedNodeHolder,
+  saved: StubbedNodeHolder,
   remember: (node: null | Element) => void,
   restore: (node: null | Element) => void,
 }): React$Node {
@@ -2812,7 +2811,7 @@ function ElidedHost(props: {
 
 // Lets the renderer keep a stub (and its DOM) when the full payload has the
 // same content in its place.
-ElidedHost.$$typeof = REACT_ELIDED_HOST_TYPE;
+StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
 
 const ADOPT = 0;
 const RESTORE = 1;
@@ -2822,14 +2821,14 @@ const EMPTY_HTML = {__html: ''};
 // The node a stub adopted while it is attached. When it is detached (unmounted,
 // or hidden by an Activity) the holder keeps its attributes and HTML instead,
 // so the detached DOM can be collected.
-type ElidedNodeHolder = {
+type StubbedNodeHolder = {
   node: null | Element,
   display: null | string,
   attributes: null | Array<string>,
   html: null | string,
 };
 
-function snapshotElidedNode(saved: ElidedNodeHolder): void {
+function snapshotStubbedNode(saved: StubbedNodeHolder): void {
   const node = saved.node;
   if (node === null) {
     return;
@@ -2844,12 +2843,12 @@ function snapshotElidedNode(saved: ElidedNodeHolder): void {
   saved.node = null;
 }
 
-function rememberElidedNode(
-  saved: ElidedNodeHolder,
+function rememberStubbedNode(
+  saved: StubbedNodeHolder,
   node: null | Element,
 ): void {
   if (node === null) {
-    snapshotElidedNode(saved);
+    snapshotStubbedNode(saved);
     return;
   }
   saved.node = node;
@@ -2865,12 +2864,12 @@ function rememberElidedNode(
 // Copies the attributes and content of the node this stub had before onto
 // the element React just created for it. The content is moved, or copied if
 // the old node is still in the document.
-function restoreElidedNode(
-  saved: ElidedNodeHolder,
+function restoreStubbedNode(
+  saved: StubbedNodeHolder,
   node: null | Element,
 ): void {
   if (node === null) {
-    snapshotElidedNode(saved);
+    snapshotStubbedNode(saved);
     return;
   }
   const from = saved.node;
@@ -2889,14 +2888,14 @@ function restoreElidedNode(
     if (saved.html !== null) {
       node.innerHTML = saved.html;
     }
-    restoreElidedDisplay(saved, node);
+    restoreStubbedDisplay(saved, node);
     return;
   }
   const attributes = from.attributes;
   for (let i = 0; i < attributes.length; i++) {
     node.setAttribute(attributes[i].name, attributes[i].value);
   }
-  restoreElidedDisplay(saved, node);
+  restoreStubbedDisplay(saved, node);
   if (from.isConnected) {
     let child = from.firstChild;
     while (child != null) {
@@ -2914,7 +2913,7 @@ function restoreElidedNode(
 
 // The old node may have been detached while a hidden Activity had set
 // display: none on it. Put back the display the server rendered.
-function restoreElidedDisplay(saved: ElidedNodeHolder, node: Element): void {
+function restoreStubbedDisplay(saved: StubbedNodeHolder, node: Element): void {
   const style = (node as any).style;
   if (saved.display !== null) {
     style.setProperty('display', saved.display);
@@ -2935,31 +2934,34 @@ function getTrue(): boolean {
 }
 
 // Called when a stub has to render without server HTML. The first call asks
-// the framework (the onElidedContentMissing option) to render the full,
-// non-elided payload. Without that option the page can't get the content
+// the framework (the onMissingHTML option) to render the full,
+// non-stubbed payload. Without that option the page can't get the content
 // back, so it reports an error instead. Either way the stubs stay suspended.
-function recoverElidedContent(response: Response, tag: string): Promise<mixed> {
+function recoverStubbedContent(
+  response: Response,
+  tag: string,
+): Promise<mixed> {
   if (!response._closed) {
     // A late row for this stub can still arrive. They are the last rows of
     // the stream, so look again when it ends.
-    let end = response._elidedEnd;
+    let end = response._stubbedEnd;
     if (end === null) {
       let resolve: () => void = noop;
       const promise = new Promise<void>(r => {
         resolve = r;
       });
-      end = response._elidedEnd = {promise, resolve};
+      end = response._stubbedEnd = {promise, resolve};
     }
     return end.promise;
   }
-  let pending = response._elidedRecovery;
+  let pending = response._stubbedRecovery;
   if (pending === null) {
-    pending = response._elidedRecovery = new Promise(noop);
-    const onElidedContentMissing = response._onElidedContentMissing;
+    pending = response._stubbedRecovery = new Promise(noop);
+    const onMissingHTML = response._onMissingHTML;
     // Not during render: the framework will update the root.
     Promise.resolve().then(
-      onElidedContentMissing !== null
-        ? onElidedContentMissing
+      onMissingHTML !== null
+        ? onMissingHTML
         : () =>
             reportUncaughtError(
               // eslint-disable-next-line react-internal/prod-error-codes
@@ -2971,7 +2973,7 @@ function recoverElidedContent(response: Response, tag: string): Promise<mixed> {
                   'happens when content passed as children mounts after ' +
                   'hydration (a modal or a client-only wrapper), or when a ' +
                   'boundary is client rendered after a server error or a ' +
-                  'hydration mismatch. Pass onElidedContentMissing to ' +
+                  'hydration mismatch. Pass onMissingHTML to ' +
                   'createFromReadableStream or createFromFetch and use it ' +
                   'to render the full payload.',
               ),
@@ -2983,22 +2985,22 @@ function recoverElidedContent(response: Response, tag: string): Promise<mixed> {
 
 function noop(): void {}
 
-function endElidedRows(response: Response): void {
-  const end = response._elidedEnd;
+function endStubbedRows(response: Response): void {
+  const end = response._stubbedEnd;
   if (end !== null) {
     end.resolve();
   }
   // The consumer that claimed the rows is not going to render more of them.
-  const entry = response._elidedEntry;
+  const entry = response._stubbedEntry;
   if (entry !== null) {
-    settleElidedRows(entry);
+    settleStubbedRows(entry);
   }
 }
 
-// The row of an elided element, if the server sent it after all. This never
+// The row of an stubbed element, if the server sent it after all. This never
 // creates a chunk: nothing else refers to the id, so one only exists once its
 // row arrived.
-function getLateElidedRow(response: Response, id: number): null | React$Node {
+function getLateStubbedRow(response: Response, id: number): null | React$Node {
   const chunk = response._chunks.get(id);
   if (chunk === undefined) {
     return null;
@@ -3007,38 +3009,38 @@ function getLateElidedRow(response: Response, id: number): null | React$Node {
 }
 
 // Rendered in place of the stub by the consumer that claimed the rows (the one
-// that renders HTML), in the slot ElidedHost takes in the browser. It is a lazy
+// that renders HTML), in the slot StaticStub takes in the browser. It is a lazy
 // node: Fizz resolves it only when it renders that position, which records
 // that the HTML contains this row. The server sends the rows that were never
 // rendered to the browser once this consumer settles. A lazy node costs far
 // less than a component render per row.
-type ElidedRenderedPayload = {
-  entry: ElidedRowsEntry,
+type StubbedRenderedPayload = {
+  entry: StubbedRowsEntry,
   id: number,
   model: any,
 };
 
-function initElidedRendered(payload: ElidedRenderedPayload): any {
+function initStubbedRendered(payload: StubbedRenderedPayload): any {
   payload.entry.rendered.add(payload.id);
   return payload.model;
 }
 
-function createElidedRenderedElement(
-  entry: ElidedRowsEntry,
+function createStubbedRenderedElement(
+  entry: StubbedRowsEntry,
   id: number,
   key: null | string,
   response: Response,
   model: any,
 ): any {
-  const payload: ElidedRenderedPayload = {entry, id, model};
+  const payload: StubbedRenderedPayload = {entry, id, model};
   return {
     $$typeof: REACT_LAZY_TYPE,
     _payload: payload,
-    _init: initElidedRendered,
+    _init: initStubbedRendered,
   };
 }
 
-function settleElidedRows(entry: ElidedRowsEntry): void {
+function settleStubbedRows(entry: StubbedRowsEntry): void {
   const settle = entry.settle;
   if (settle !== null) {
     settle();
@@ -3049,9 +3051,9 @@ function settleElidedRows(entry: ElidedRowsEntry): void {
 // this response the chance to render what just resolved before telling the
 // server which rows it rendered: its work is scheduled in a task, and what
 // that task unblocks in another.
-function scheduleElidedSettle(entry: ElidedRowsEntry): void {
+function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
   setTimeout(() => {
-    setTimeout(settleElidedRows.bind(null, entry), 0);
+    setTimeout(settleStubbedRows.bind(null, entry), 0);
   }, 0);
 }
 
@@ -3060,41 +3062,44 @@ function scheduleElidedSettle(entry: ElidedRowsEntry): void {
 // decode share the node that hydration adopted, keyed by the payload's `:Q` id
 // and the row id. The map holds them weakly, so a node lives only as long as
 // some decoded payload still references its stub.
-const elidedNodeHolders: Map<string, any> = new Map();
+const stubbedNodeHolders: Map<string, any> = new Map();
 
-function getElidedNodeHolder(requestId: number, id: number): ElidedNodeHolder {
+function getStubbedNodeHolder(
+  requestId: number,
+  id: number,
+): StubbedNodeHolder {
   if (requestId === 0 || typeof WeakRef !== 'function') {
     return {node: null, display: null, attributes: null, html: null};
   }
   const key = requestId + ':' + id;
-  const ref = elidedNodeHolders.get(key);
+  const ref = stubbedNodeHolders.get(key);
   let holder = ref !== undefined ? ref.deref() : undefined;
   if (holder === undefined) {
     holder = {node: null, display: null, attributes: null, html: null};
     // $FlowFixMe[cannot-resolve-name]
-    elidedNodeHolders.set(key, new WeakRef(holder));
+    stubbedNodeHolders.set(key, new WeakRef(holder));
   }
   return holder;
 }
 
-function createElidedHostElement(
+function createStaticStubElement(
   response: Response,
   id: number,
   tag: string,
   key: null | string,
 ): React$Element<any> {
-  const late = getLateElidedRow.bind(null, response, id);
-  const recover = recoverElidedContent.bind(null, response, tag);
-  const saved = getElidedNodeHolder(response._elidedRequestId, id);
-  const remember = rememberElidedNode.bind(null, saved);
-  const restore = restoreElidedNode.bind(null, saved);
+  const late = getLateStubbedRow.bind(null, response, id);
+  const recover = recoverStubbedContent.bind(null, response, tag);
+  const saved = getStubbedNodeHolder(response._stubbedRequestId, id);
+  const remember = rememberStubbedNode.bind(null, saved);
+  const restore = restoreStubbedNode.bind(null, saved);
   const props: any = {tag, late, recover, saved, remember, restore};
   if (key !== null) {
     props.key = key;
   }
-  const element: any = React.createElement(ElidedHost, props);
+  const element: any = React.createElement(StaticStub, props);
   if (__DEV__) {
-    // Elided elements keep their key if they had one, don't warn about it in lists.
+    // Stubbed elements keep their key if they had one, don't warn about it in lists.
     element._store.validated = 1;
   }
   return element;
@@ -3131,13 +3136,13 @@ function parseModelString(
         return value.slice(1);
       }
       case 'J': {
-        if (enableFlightStaticHostElision) {
-          // Elided host element: "$J<rowId>:<tag>[:<key>]". See ElidedHost below.
+        if (enableFlightHTMLFirst) {
+          // Stubbed host element: "$J<rowId>:<tag>[:<key>]". See StaticStub below.
           const colon = value.indexOf(':');
           const keyColon = value.indexOf(':', colon + 1);
           const ref = value.slice(2, colon);
           const id = parseInt(ref, 16);
-          const rows = response._elidedRows;
+          const rows = response._stubbedRows;
           if (!response._chunks.has(id) && rows !== null) {
             const json = rows.get(id);
             if (json !== undefined) {
@@ -3154,10 +3159,10 @@ function parseModelString(
               // synchronously, so a missing one can't arrive later either.
               // eslint-disable-next-line react-internal/prod-error-codes
               throw new Error(
-                'Missing elided row ' +
+                'Missing stubbed row ' +
                   ref +
-                  '. The elidedHostRows option must contain every row that ' +
-                  'the server handed to elideStaticHosts for this payload.',
+                  '. The htmlFirstRows option must contain every row that ' +
+                  'the server handed to htmlFirst for this payload.',
               );
             }
           }
@@ -3165,29 +3170,29 @@ function parseModelString(
           if (response._chunks.has(id)) {
             // The server gave us the row (SSR, or a late row that is already
             // here): render the real element.
-            const entry = response._elidedEntry;
+            const entry = response._stubbedEntry;
             return getOutlinedModel(
               response,
               ref,
               parentObject,
               key,
               entry !== null
-                ? createElidedRenderedElement.bind(null, entry, id, stubKey)
+                ? createStubbedRenderedElement.bind(null, entry, id, stubKey)
                 : createModel,
             );
           }
-          return createElidedHostElement(
+          return createStaticStubElement(
             response,
             id,
             value.slice(colon + 1, keyColon === -1 ? value.length : keyColon),
             stubKey,
           );
         }
-        // The server elided an element but this client was built without
+        // The server stubbed an element but this client was built without
         // support. Never parse the id as a lazy reference to an unrelated row.
         // eslint-disable-next-line react-internal/prod-error-codes
         throw new Error(
-          'Received an elided host element but enableFlightStaticHostElision is ' +
+          'Received an stubbed host element but enableFlightHTMLFirst is ' +
             'off in this client. The server and client builds must match.',
         );
       }
@@ -3539,12 +3544,12 @@ function ResponseInstance(
   this._encodeFormAction = encodeFormAction;
   this._nonce = nonce;
   this._chunks = chunks;
-  this._elidedRows = null;
-  this._elidedEntry = null;
-  this._elidedRequestId = 0;
-  this._elidedEnd = null;
-  this._onElidedContentMissing = null;
-  this._elidedRecovery = null;
+  this._stubbedRows = null;
+  this._stubbedEntry = null;
+  this._stubbedRequestId = 0;
+  this._stubbedEnd = null;
+  this._onMissingHTML = null;
+  this._stubbedRecovery = null;
   // Preserve a leading U+FEFF instead of consuming it as an encoding signature.
   this._stringDecoder = createStringDecoder(true);
   this._closed = false;
@@ -3852,9 +3857,9 @@ function resolveModel(
     chunks.set(id, newChunk);
   } else {
     if (
-      enableFlightStaticHostElision &&
-      response._elidedRows !== null &&
-      response._elidedRows.get(id) !== undefined
+      enableFlightHTMLFirst &&
+      response._stubbedRows !== null &&
+      response._stubbedRows.get(id) !== undefined
     ) {
       // A late row for content this consumer already got from the registry
       // (it rendered the real element). Nothing to do.
@@ -5767,29 +5772,29 @@ function processFullStringRow(
       return;
     }
     case 81 /* "Q" */: {
-      // enableFlightStaticHostElision: in-process registry id for elided rows.
-      if (enableFlightStaticHostElision) {
+      // enableFlightHTMLFirst: in-process registry id for stubbed rows.
+      if (enableFlightHTMLFirst) {
         const requestId = parseInt(row, 16);
-        response._elidedRequestId = requestId;
-        if (response._elidedRows !== null) {
-          // Framework already supplied elidedHostRows; drop the unused registry.
-          releaseElidedRowsRegistry(requestId);
+        response._stubbedRequestId = requestId;
+        if (response._stubbedRows !== null) {
+          // Framework already supplied htmlFirstRows; drop the unused registry.
+          releaseStubbedRowsRegistry(requestId);
         } else {
-          const entry = claimElidedRowsRegistry(requestId);
+          const entry = claimStubbedRowsRegistry(requestId);
           if (entry !== undefined) {
-            response._elidedRows = entry.rows as any;
-            response._elidedEntry = entry;
+            response._stubbedRows = entry.rows as any;
+            response._stubbedEntry = entry;
           }
         }
       }
       return;
     }
     case 113 /* "q" */: {
-      // enableFlightStaticHostElision: everything but the late rows was written.
-      if (enableFlightStaticHostElision) {
-        const entry = response._elidedEntry;
+      // enableFlightHTMLFirst: everything but the late rows was written.
+      if (enableFlightHTMLFirst) {
+        const entry = response._stubbedEntry;
         if (entry !== null) {
-          scheduleElidedSettle(entry);
+          scheduleStubbedSettle(entry);
         }
       }
       return;
@@ -6263,8 +6268,8 @@ export function close(weakResponse: WeakResponse): void {
   if (response._allowPartialStream) {
     // For partial streams, we halt pending chunks instead of erroring them.
     response._closed = true;
-    if (enableFlightStaticHostElision) {
-      endElidedRows(response);
+    if (enableFlightHTMLFirst) {
+      endStubbedRows(response);
     }
     response._chunks.forEach(chunk => {
       if (

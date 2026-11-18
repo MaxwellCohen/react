@@ -71,8 +71,8 @@ Client component: `'use client'; import {useState} from 'react'; export default 
 
 (a) hydrated and post-interaction DOM equal the flags-off DOM; (b) no console error/warning (browser and server render), no recoverable
 hydration error, no page error; (c) `interact` passes on the adopted DOM and again after navigation; (d) a client navigation that swaps in the full,
-non-elided Flight payload (no opt-in) yields the same DOM as the hydrated page.
-Flag-on SSR opts in with `elideStaticHosts: true` (React's internal registry; no `elidedHostRows` side channel).
+non-stubbed Flight payload (no opt-in) yields the same DOM as the hydrated page.
+Flag-on SSR opts in with `htmlFirst: true` (React's internal registry; no `htmlFirstRows` side channel).
 
 ## knownFailure (only for real React bugs)
 
@@ -92,7 +92,7 @@ The check then reports an expected failure, and fails if that variant starts pas
 | `(dom-vs-off) ... DOM differs from flags-off DOM: first difference at char N` | flags-on DOM is not the flags-off DOM: likely a React bug (or non-deterministic output) |
 | `(navigation) DOM after full-Flight navigation differs from hydrated DOM` | refetched content differs from what was adopted |
 | `(hydration) recoverable error: ...` | hydration mismatch fell back to client render |
-| `(console) pageerror: Static content that the server left out of this payload is needed on the client` | an elided region was mounted by client rendering (e.g. toggled children) |
+| `(console) pageerror: Static content that the server left out of this payload is needed on the client` | an stubbed region was mounted by client rendering (e.g. toggled children) |
 | `interact[i] ... Timeout 5000ms exceeded (matches=N text=...)` | selector/text never matched; fix the spec or the page |
 | `UNEXPECTED PASS: remove knownFailure` | the bug is fixed in that build |
 | `Build ... still contains unstable_pruneForBrowser` | `--builds` points at a pre-6ed2e62d21 build |

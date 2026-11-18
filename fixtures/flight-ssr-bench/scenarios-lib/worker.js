@@ -141,9 +141,9 @@ async function render({id, size, recoverErrors}) {
       clientManifest,
       ssrManifest,
       {
-        // The SSR render opts in with elideStaticHosts: true; React's internal
+        // The SSR render opts in with htmlFirst: true; React's internal
         // registry feeds SSR. No framework side channel.
-        elide: optIn,
+        stub: optIn,
         recoverErrors: !!recoverErrors,
       }
     )
@@ -152,8 +152,8 @@ async function render({id, size, recoverErrors}) {
   return {html, ms, problems: problems.splice(0)};
 }
 
-// Full (non-elided) Flight payload: what a client navigation / refetch receives.
-// Responses that go straight to the browser never opt in (elideStaticHosts: false
+// Full (non-stubbed) Flight payload: what a client navigation / refetch receives.
+// Responses that go straight to the browser never opt in (htmlFirst: false
 // states it explicitly), so they carry full content.
 function flight({id, size}) {
   problems = [];
@@ -169,7 +169,7 @@ function flight({id, size}) {
     );
     out.on('error', reject);
     bundle
-      .renderRSCNode(clientManifest, roots[id], size, {elideStaticHosts: false})
+      .renderRSCNode(clientManifest, roots[id], size, {htmlFirst: false})
       .pipe(out);
   });
 }

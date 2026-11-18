@@ -10,8 +10,22 @@ export const expectedBenefit = 'low';
 export const sizes = {smoke: 10, full: 500};
 
 const words = [
-  'render', 'server', 'payload', 'client', 'stream', 'chunk', 'boundary', 'hydrate',
-  'element', 'tree', 'module', 'reference', 'browser', 'cache', 'route', 'static',
+  'render',
+  'server',
+  'payload',
+  'client',
+  'stream',
+  'chunk',
+  'boundary',
+  'hydrate',
+  'element',
+  'tree',
+  'module',
+  'reference',
+  'browser',
+  'cache',
+  'route',
+  'static',
 ];
 
 // Deterministic paragraph i: 40-ish words picked by index arithmetic.

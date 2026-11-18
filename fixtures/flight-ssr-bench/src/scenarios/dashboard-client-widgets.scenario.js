@@ -9,7 +9,14 @@ export const description =
 export const expectedBenefit = 'low';
 export const sizes = {smoke: 4, full: 60};
 
-const nav = ['Overview', 'Orders', 'Products', 'Customers', 'Reports', 'Settings'];
+const nav = [
+  'Overview',
+  'Orders',
+  'Products',
+  'Customers',
+  'Reports',
+  'Settings',
+];
 const stats = [
   ['Revenue', '$48,210'],
   ['Orders', '1,094'],
@@ -18,7 +25,8 @@ const stats = [
 ];
 
 // Deterministic numeric series for widget i.
-const seriesOf = i => Array.from({length: 12}, (_, j) => ((i * 7 + j * 13) % 23) + 1);
+const seriesOf = i =>
+  Array.from({length: 12}, (_, j) => ((i * 7 + j * 13) % 23) + 1);
 
 export function Root({size}) {
   const widgets = [];

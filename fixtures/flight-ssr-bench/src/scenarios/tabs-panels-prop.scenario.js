@@ -14,9 +14,15 @@ export function Root() {
       <Tabs
         labels={['A', 'B', 'C']}
         panels={[
-          <div key="a" className="p"><p>panel-A</p></div>,
-          <div key="b" className="p"><p>panel-B</p></div>,
-          <div key="c" className="p"><p>panel-C</p></div>,
+          <div key="a" className="p">
+            <p>panel-A</p>
+          </div>,
+          <div key="b" className="p">
+            <p>panel-B</p>
+          </div>,
+          <div key="c" className="p">
+            <p>panel-C</p>
+          </div>,
         ]}
       />
     </Document>

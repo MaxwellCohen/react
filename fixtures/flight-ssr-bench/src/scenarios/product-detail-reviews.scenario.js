@@ -11,7 +11,14 @@ export const expectedBenefit = 'high';
 // size = number of reviews.
 export const sizes = {smoke: 10, full: 300};
 
-const AUTHORS = ['Alice J.', 'Bob W.', 'Carol D.', 'Dan M.', 'Eve W.', 'Frank M.'];
+const AUTHORS = [
+  'Alice J.',
+  'Bob W.',
+  'Carol D.',
+  'Dan M.',
+  'Eve W.',
+  'Frank M.',
+];
 const BODIES = [
   'Solid build and the instructions were clear. Would buy again.',
   'Works as described, though packaging could be better.',
@@ -25,7 +32,7 @@ function reviewsFor(n) {
     out.push({
       id: 'r' + i,
       author: AUTHORS[i % AUTHORS.length],
-      rating: (i * 7 + 3) % 5 + 1,
+      rating: ((i * 7 + 3) % 5) + 1,
       date: '2026-02-' + String((i % 28) + 1).padStart(2, '0'),
       body: BODIES[i % BODIES.length] + ' (review ' + i + ')',
       helpful: (i * 11 + 2) % 50,
@@ -38,7 +45,8 @@ function Review({r}) {
   return (
     <article className="review" id={r.id}>
       <header>
-        <strong>{r.author}</strong> <span>{'★'.repeat(r.rating)}</span> <time dateTime={r.date}>{r.date}</time>
+        <strong>{r.author}</strong> <span>{'★'.repeat(r.rating)}</span>{' '}
+        <time dateTime={r.date}>{r.date}</time>
       </header>
       <p>{r.body}</p>
       <footer>{r.helpful} people found this helpful</footer>
@@ -56,7 +64,11 @@ export function Root({size}) {
     sku: p.sku,
     category: p.category,
     offers: {'@type': 'Offer', price: p.price, priceCurrency: 'USD'},
-    aggregateRating: {'@type': 'AggregateRating', ratingValue: p.rating, reviewCount: reviews.length},
+    aggregateRating: {
+      '@type': 'AggregateRating',
+      ratingValue: p.rating,
+      reviewCount: reviews.length,
+    },
     review: reviews.map(r => ({
       '@type': 'Review',
       author: {'@type': 'Person', name: r.author},
@@ -72,7 +84,10 @@ export function Root({size}) {
         <p className="price">${p.price}</p>
         <p>{p.description}</p>
         <AddToCart />
-        <script type="application/ld+json" dangerouslySetInnerHTML={{__html: ld}} />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{__html: ld}}
+        />
         <h2>Specifications</h2>
         <table>
           <tbody>
@@ -95,7 +110,8 @@ export function Root({size}) {
             <tr>
               <th>Dimensions</th>
               <td>
-                {p.dimensions.width} x {p.dimensions.height} x {p.dimensions.depth} {p.dimensions.unit}
+                {p.dimensions.width} x {p.dimensions.height} x{' '}
+                {p.dimensions.depth} {p.dimensions.unit}
               </td>
             </tr>
           </tbody>

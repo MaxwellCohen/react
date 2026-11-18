@@ -88,8 +88,7 @@ export const enableObjectFiber: boolean = false;
 
 export const enableOptimisticKey: boolean = false;
 
-
-export const enableFlightStaticHostElision: boolean = false;
+export const enableFlightHTMLFirst: boolean = false;
 
 export const eprh_enableUseKeyedStateCompilerLint: boolean = false;
 export const eprh_enableVerboseNoSetStateInEffectCompilerLint: boolean = false;

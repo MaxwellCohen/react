@@ -11,20 +11,37 @@ export const expectedBenefit = 'high';
 export const sizes = {smoke: 8, full: 300};
 
 const PIXEL = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
-const TOPICS = ['streaming', 'caching', 'hydration', 'bundling', 'routing', 'suspense'];
+const TOPICS = [
+  'streaming',
+  'caching',
+  'hydration',
+  'bundling',
+  'routing',
+  'suspense',
+];
 
 function sentence(i, j) {
   const t = TOPICS[(i + j) % TOPICS.length];
   return (
-    'Section ' + i + ' paragraph ' + j + ' explains how ' + t + ' interacts with the rendering pipeline, ' +
+    'Section ' +
+    i +
+    ' paragraph ' +
+    j +
+    ' explains how ' +
+    t +
+    ' interacts with the rendering pipeline, ' +
     'including the trade-offs around payload size, ordering, and the cost of repeated work on each navigation.'
   );
 }
 
 function Code({i}) {
   const src =
-    'export function step' + i + '(input) {\n' +
-    '  const out = input.map(x => x * ' + ((i % 7) + 2) + ');\n' +
+    'export function step' +
+    i +
+    '(input) {\n' +
+    '  const out = input.map(x => x * ' +
+    ((i % 7) + 2) +
+    ');\n' +
     '  return out.filter(Boolean);\n' +
     '}';
   return (
@@ -37,13 +54,23 @@ function Code({i}) {
 function Section({i}) {
   return (
     <section>
-      <h2>Part {i + 1}: notes on {TOPICS[i % TOPICS.length]}</h2>
+      <h2>
+        Part {i + 1}: notes on {TOPICS[i % TOPICS.length]}
+      </h2>
       <p>{sentence(i, 0)}</p>
       <p>{sentence(i, 1)}</p>
-      <img src={PIXEL} alt={'Diagram ' + i + ' for ' + TOPICS[i % TOPICS.length]} width={640} height={360} />
+      <img
+        src={PIXEL}
+        alt={'Diagram ' + i + ' for ' + TOPICS[i % TOPICS.length]}
+        width={640}
+        height={360}
+      />
       <p>{sentence(i, 2)}</p>
       <blockquote>
-        <p>Measure first. Section {i} is a reminder that {TOPICS[i % TOPICS.length]} wins are easy to lose.</p>
+        <p>
+          Measure first. Section {i} is a reminder that{' '}
+          {TOPICS[i % TOPICS.length]} wins are easy to lose.
+        </p>
       </blockquote>
       <p>{sentence(i, 3)}</p>
       <Code i={i} />

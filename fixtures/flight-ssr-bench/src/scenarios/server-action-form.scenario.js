@@ -12,7 +12,9 @@ export function Root() {
   return (
     <Document title="Form">
       <Form>
-        <label htmlFor="q" className="lbl">Query</label>
+        <label htmlFor="q" className="lbl">
+          Query
+        </label>
         <p className="help">Static server help text.</p>
       </Form>
     </Document>

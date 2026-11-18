@@ -149,9 +149,9 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // enableFlightStaticHostElision: `true` elides static hosts for in-process SSR
+  // enableFlightHTMLFirst: `true` stubs static hosts for in-process SSR
   // (internal registry); {onRow, onValue} receive the rows instead.
-  elideStaticHosts?:
+  htmlFirst?:
     | boolean
     | {
         onRow?: (id: number, json: string) => void,
@@ -205,7 +205,7 @@ function renderToPipeableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
-    options ? options.elideStaticHosts : undefined,
+    options ? options.htmlFirst : undefined,
   );
   let hasStartedFlowing = false;
   startWork(request);
@@ -365,7 +365,7 @@ function renderToReadableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
-    options ? options.elideStaticHosts : undefined,
+    options ? options.htmlFirst : undefined,
   );
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);

@@ -10,8 +10,14 @@ const BENEFITS = ['high', 'low', 'none'];
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const STEPS = ['click', 'fill', 'expectText', 'expectCount', 'navigate'];
 const FORBIDDEN = [
-  [/Date\.now|new Date\(|performance\.now|Math\.random|crypto\.random/, 'non-deterministic API'],
-  [/\bfetch\s*\(|XMLHttpRequest|WebSocket|require\(['"](https?|net|fs|child_process)['"]\)|from ['"](https?|net|fs|child_process|node:[a-z]+)['"]/, 'network/IO'],
+  [
+    /Date\.now|new Date\(|performance\.now|Math\.random|crypto\.random/,
+    'non-deterministic API',
+  ],
+  [
+    /\bfetch\s*\(|XMLHttpRequest|WebSocket|require\(['"](https?|net|fs|child_process)['"]\)|from ['"](https?|net|fs|child_process|node:[a-z]+)['"]/,
+    'network/IO',
+  ],
 ];
 
 function lint(file, src, errors) {
@@ -24,23 +30,37 @@ function lint(file, src, errors) {
   let m;
   while ((m = re.exec(src))) {
     if (!m[1].startsWith('.') && m[1] !== 'react') {
-      errors.push(name + ': import of "' + m[1] + '" is not allowed (only "react" and relative imports)');
+      errors.push(
+        name +
+          ': import of "' +
+          m[1] +
+          '" is not allowed (only "react" and relative imports)'
+      );
     }
   }
 }
 
 function validate(mod, id, errors) {
   const e = msg => errors.push(id + ': ' + msg);
-  if (mod.id !== id) e('export `id` must equal the file name prefix "' + id + '"');
+  if (mod.id !== id)
+    e('export `id` must equal the file name prefix "' + id + '"');
   if (!KEBAB.test(id)) e('id must be kebab-case');
   for (const k of ['title', 'category', 'description']) {
-    if (typeof mod[k] !== 'string' || !mod[k]) e('missing string export `' + k + '`');
+    if (typeof mod[k] !== 'string' || !mod[k])
+      e('missing string export `' + k + '`');
   }
   if (!BENEFITS.includes(mod.expectedBenefit)) {
     e('`expectedBenefit` must be one of ' + BENEFITS.join('|'));
   }
-  if (typeof mod.Root !== 'function') e('missing named export `Root` (server component)');
-  if (mod.sizes !== undefined && (mod.sizes === null || typeof mod.sizes !== 'object' || !('smoke' in mod.sizes) || !('full' in mod.sizes))) {
+  if (typeof mod.Root !== 'function')
+    e('missing named export `Root` (server component)');
+  if (
+    mod.sizes !== undefined &&
+    (mod.sizes === null ||
+      typeof mod.sizes !== 'object' ||
+      !('smoke' in mod.sizes) ||
+      !('full' in mod.sizes))
+  ) {
     e('`sizes` must be {smoke, full}');
   }
   if (mod.interact !== undefined) {
@@ -48,14 +68,29 @@ function validate(mod, id, errors) {
     else {
       mod.interact.forEach((s, i) => {
         const keys = STEPS.filter(k => s && k in s);
-        if (keys.length !== 1) e('interact[' + i + '] needs exactly one of ' + STEPS.join('|'));
-        else if (keys[0] === 'fill' && typeof s.value !== 'string') e('interact[' + i + '] fill needs `value`');
-        else if (keys[0] === 'expectText' && (typeof s.expectText.selector !== 'string' || typeof s.expectText.text !== 'string')) e('interact[' + i + '] expectText needs {selector, text}');
-        else if (keys[0] === 'expectCount' && (typeof s.expectCount.selector !== 'string' || s.expectCount.count === undefined)) e('interact[' + i + '] expectCount needs {selector, count}');
+        if (keys.length !== 1)
+          e('interact[' + i + '] needs exactly one of ' + STEPS.join('|'));
+        else if (keys[0] === 'fill' && typeof s.value !== 'string')
+          e('interact[' + i + '] fill needs `value`');
+        else if (
+          keys[0] === 'expectText' &&
+          (typeof s.expectText.selector !== 'string' ||
+            typeof s.expectText.text !== 'string')
+        )
+          e('interact[' + i + '] expectText needs {selector, text}');
+        else if (
+          keys[0] === 'expectCount' &&
+          (typeof s.expectCount.selector !== 'string' ||
+            s.expectCount.count === undefined)
+        )
+          e('interact[' + i + '] expectCount needs {selector, count}');
       });
     }
   }
-  if (mod.knownFailure !== undefined && (typeof mod.knownFailure.error !== 'string' || !mod.knownFailure.error)) {
+  if (
+    mod.knownFailure !== undefined &&
+    (typeof mod.knownFailure.error !== 'string' || !mod.knownFailure.error)
+  ) {
     e('`knownFailure` must be {error: <verbatim message>, variants?: [..]}');
   }
 }
@@ -64,27 +99,37 @@ function load(only) {
   const errors = [];
   const files = fs.readdirSync(DIR).sort();
   const scenarios = [];
-  const allIds = files.filter(f => f.endsWith('.scenario.js')).map(f => f.slice(0, -'.scenario.js'.length));
+  const allIds = files
+    .filter(f => f.endsWith('.scenario.js'))
+    .map(f => f.slice(0, -'.scenario.js'.length));
   if (only && only.length) {
     const missing = only.filter(id => !allIds.includes(id));
-    if (missing.length) throw new Error('Unknown scenario id(s): ' + missing.join(', '));
+    if (missing.length)
+      throw new Error('Unknown scenario id(s): ' + missing.join(', '));
   }
-  const ids = only && only.length ? allIds.filter(id => only.includes(id)) : allIds;
+  const ids =
+    only && only.length ? allIds.filter(id => only.includes(id)) : allIds;
   for (const f of files) {
     if (!f.endsWith('.js') || f === 'index.js') continue;
-    if (only && only.length && !ids.some(id => f.startsWith(id + '.'))) continue;
+    if (only && only.length && !ids.some(id => f.startsWith(id + '.')))
+      continue;
     const file = path.join(DIR, f);
     const src = fs.readFileSync(file, 'utf8');
     const isClient = /^\s*['"]use client['"]/.test(src);
-    if (isClient && !f.endsWith('.client.js')) errors.push(f + ': files with \'use client\' must be named *.client.js');
+    if (isClient && !f.endsWith('.client.js'))
+      errors.push(f + ": files with 'use client' must be named *.client.js");
     if (f.endsWith('.client.js')) {
-      if (!isClient) errors.push(f + ': *.client.js must start with \'use client\'');
-      if (!allIds.some(id => f.startsWith(id + '.'))) errors.push(f + ': name must start with "<scenario-id>."');
+      if (!isClient)
+        errors.push(f + ": *.client.js must start with 'use client'");
+      if (!allIds.some(id => f.startsWith(id + '.')))
+        errors.push(f + ': name must start with "<scenario-id>."');
     }
-    if (f.endsWith('.scenario.js') && isClient) errors.push(f + ': scenario roots must be server modules');
+    if (f.endsWith('.scenario.js') && isClient)
+      errors.push(f + ': scenario roots must be server modules');
     lint(file, src, errors);
   }
-  if (errors.length) throw new Error('Scenario contract violations:\n  ' + errors.join('\n  '));
+  if (errors.length)
+    throw new Error('Scenario contract violations:\n  ' + errors.join('\n  '));
   for (const id of ids) {
     const file = path.join(DIR, id + '.scenario.js');
     let mod;

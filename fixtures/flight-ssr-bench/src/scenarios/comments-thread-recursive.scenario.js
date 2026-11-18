@@ -9,7 +9,15 @@ export const description =
 export const expectedBenefit = 'high';
 export const sizes = {smoke: 30, full: 500};
 
-const names = ['Alice Johnson', 'Bob Williams', 'Carol Davis', 'Dan Miller', 'Eve Wilson', 'Frank Moore', 'Grace Taylor'];
+const names = [
+  'Alice Johnson',
+  'Bob Williams',
+  'Carol Davis',
+  'Dan Miller',
+  'Eve Wilson',
+  'Frank Moore',
+  'Grace Taylor',
+];
 const bodies = [
   'Great write-up. The part about boundaries finally made it click for me.',
   'I disagree with the last point, the cache behaviour is different on mobile.',
@@ -26,11 +34,18 @@ function Comment({k, n}) {
   return (
     <li className="comment" data-depth={Math.floor(Math.log2(k + 1))}>
       <div className="meta">
-        <span className="avatar">{name.split(' ').map(w => w[0]).join('')}</span>
+        <span className="avatar">
+          {name
+            .split(' ')
+            .map(w => w[0])
+            .join('')}
+        </span>
         <strong className="author">{name}</strong>
         <span className="time">{(k % 23) + 1} hours ago</span>
       </div>
-      <p className="text">{bodies[k % bodies.length] + ' (#' + (k + 1) + ')'}</p>
+      <p className="text">
+        {bodies[k % bodies.length] + ' (#' + (k + 1) + ')'}
+      </p>
       {kids.length > 0 && (
         <ul className="replies">
           {kids.map(c => (

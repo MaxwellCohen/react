@@ -20,8 +20,8 @@ import type {ReactServerValue} from 'react-client/src/ReactFlightReplyClient';
 
 import {
   createResponse,
-  attachElidedRows,
-  attachElidedContentMissing,
+  attachStubbedRows,
+  attachMissingHTML,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -47,9 +47,9 @@ export type {TemporaryReferenceSet};
 type CallServerCallback = <A, T>(string, args: A) => Promise<T>;
 
 export type Options = {
-  // Prototype (enableFlightStaticHostElision): rows withheld by the server.
-  elidedHostRows?: {get(id: number): void | string, ...},
-  onElidedContentMissing?: () => void,
+  // Prototype (enableFlightHTMLFirst): rows withheld by the server.
+  htmlFirstRows?: {get(id: number): void | string, ...},
+  onMissingHTML?: () => void,
   moduleBaseURL?: string,
   callServer?: CallServerCallback,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},
@@ -120,11 +120,11 @@ function createResponseFromOptions(options: void | Options) {
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
   );
-  if (options && options.elidedHostRows) {
-    attachElidedRows(response, options.elidedHostRows);
+  if (options && options.htmlFirstRows) {
+    attachStubbedRows(response, options.htmlFirstRows);
   }
-  if (options && options.onElidedContentMissing) {
-    attachElidedContentMissing(response, options.onElidedContentMissing);
+  if (options && options.onMissingHTML) {
+    attachMissingHTML(response, options.onMissingHTML);
   }
   return response;
 }

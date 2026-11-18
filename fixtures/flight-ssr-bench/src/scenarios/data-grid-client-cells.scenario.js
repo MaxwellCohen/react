@@ -5,12 +5,13 @@ export const id = 'data-grid-client-cells';
 export const title = '20-column data grid, all client cells';
 export const category = 'table';
 export const description =
-  'Same wide grid, but every cell is a client component receiving its value as a prop (worst case for elision). size = rows.';
+  'Same wide grid, but every cell is a client component receiving its value as a prop (worst case for stubbing). size = rows.';
 export const expectedBenefit = 'none';
 export const sizes = {smoke: 10, full: 300};
 
 const COLS = 20;
-const cellValue = (r, c) => 'R' + r + '-C' + c + ':' + ((r * 31 + c * 17) % 997);
+const cellValue = (r, c) =>
+  'R' + r + '-C' + c + ':' + ((r * 31 + c * 17) % 997);
 
 export function Root({size}) {
   const rows = [];

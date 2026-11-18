@@ -14,7 +14,9 @@ export function Root() {
     <Document title="Keyed list">
       <List>
         {keys.map(k => (
-          <li key={k} className="it">item-{k}</li>
+          <li key={k} className="it">
+            item-{k}
+          </li>
         ))}
       </List>
     </Document>

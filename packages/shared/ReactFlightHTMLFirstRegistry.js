@@ -7,20 +7,20 @@
  * @flow
  */
 
-// enableFlightStaticHostElision: in-process Flight → SSR without framework callbacks.
-// The server registers elided rows under a request id emitted in the stream
+// enableFlightHTMLFirst: in-process Flight → SSR without framework callbacks.
+// The server registers stubbed rows under a request id emitted in the stream
 // (`:Q…`). The first createFrom* in this isolate claims the map; later
 // consumers (browser / second tee branch) see stubs and adopt SSR HTML.
 //
 // Stored on globalThis so Flight server and client share one map even when
 // bundlers or tests load them as separate module graphs (jest.resetModules).
 
-type ElidedRowMap = Map<number, mixed>;
+type StubbedRowMap = Map<number, mixed>;
 
-// Shared by the Flight request that elided the rows and the consumer that
+// Shared by the Flight request that stubbed the rows and the consumer that
 // claimed them to render HTML.
-export type ElidedRowsEntry = {
-  rows: ElidedRowMap,
+export type StubbedRowsEntry = {
+  rows: StubbedRowMap,
   // Ids of the rows the claimer actually rendered. The HTML for the others was
   // never produced (children of a closed modal, a client-only wrapper), so the
   // server writes those to the stream after all ("late rows").
@@ -31,17 +31,17 @@ export type ElidedRowsEntry = {
   settle: null | (() => void),
 };
 
-type ElidedRowsStore = {
+type StubbedRowsStore = {
   nextId: number,
-  pending: Map<number, ElidedRowsEntry>,
+  pending: Map<number, StubbedRowsEntry>,
 };
 
-const STORE_KEY = '__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__';
+const STORE_KEY = '__REACT_FLIGHT_HTML_FIRST_REGISTRY__';
 
-function getStore(): ElidedRowsStore {
+function getStore(): StubbedRowsStore {
   // $FlowFixMe[cannot-resolve-name] globalThis
   const root: any = typeof globalThis !== 'undefined' ? globalThis : global;
-  let store: void | ElidedRowsStore = root[STORE_KEY];
+  let store: void | StubbedRowsStore = root[STORE_KEY];
   if (store === undefined) {
     store = {nextId: 1, pending: new Map()};
     root[STORE_KEY] = store;
@@ -49,13 +49,13 @@ function getStore(): ElidedRowsStore {
   return store;
 }
 
-export function allocateElidedRowsRegistry(): {
+export function allocateStubbedRowsRegistry(): {
   requestId: number,
-  entry: ElidedRowsEntry,
+  entry: StubbedRowsEntry,
 } {
   const store = getStore();
   const requestId = store.nextId++;
-  const entry: ElidedRowsEntry = {
+  const entry: StubbedRowsEntry = {
     rows: new Map(),
     rendered: new Set(),
     claimed: false,
@@ -65,9 +65,9 @@ export function allocateElidedRowsRegistry(): {
   return {requestId, entry};
 }
 
-export function claimElidedRowsRegistry(
+export function claimStubbedRowsRegistry(
   requestId: number,
-): void | ElidedRowsEntry {
+): void | StubbedRowsEntry {
   const store = getStore();
   const entry = store.pending.get(requestId);
   if (entry !== undefined) {
@@ -77,7 +77,7 @@ export function claimElidedRowsRegistry(
   return entry;
 }
 
-export function releaseElidedRowsRegistry(requestId: number): void {
+export function releaseStubbedRowsRegistry(requestId: number): void {
   getStore().pending.delete(requestId);
 }
 
@@ -92,10 +92,10 @@ const releaseWhenCollected: null | FinalizationRegistry<number> =
   // $FlowFixMe[cannot-resolve-name]
   typeof FinalizationRegistry === 'function'
     ? // $FlowFixMe[cannot-resolve-name]
-      new FinalizationRegistry(releaseElidedRowsRegistry)
+      new FinalizationRegistry(releaseStubbedRowsRegistry)
     : null;
 
-export function releaseElidedRowsWhenCollected(
+export function releaseStubbedRowsWhenCollected(
   owner: interface {},
   requestId: number,
 ): void {

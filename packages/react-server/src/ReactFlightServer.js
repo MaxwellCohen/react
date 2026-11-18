@@ -17,14 +17,14 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
-  enableFlightStaticHostElision,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
 import {
-  allocateElidedRowsRegistry,
-  releaseElidedRowsRegistry,
-  releaseElidedRowsWhenCollected,
-} from 'shared/ReactFlightElidedRowsRegistry';
-import type {ElidedRowsEntry} from 'shared/ReactFlightElidedRowsRegistry';
+  allocateStubbedRowsRegistry,
+  releaseStubbedRowsRegistry,
+  releaseStubbedRowsWhenCollected,
+} from 'shared/ReactFlightHTMLFirstRegistry';
+import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import {
   scheduleWork,
@@ -560,7 +560,7 @@ type Task = {
   keyPath: ReactKey, // parent server component keys
   implicitSlot: boolean, // true if the root server component of this sequence had a null key
   formatContext: FormatContext, // an approximate parent context from host components
-  hostPosition: boolean, // enableFlightStaticHostElision: the root of this task is in host position
+  hostPosition: boolean, // enableFlightHTMLFirst: the root of this task is in host position
   thenableState: ThenableState | null,
   timed: boolean, // Profiling-only. Whether we need to track the completion time of this task.
   time: number, // Profiling-only. The last time stamp emitted for this task.
@@ -596,9 +596,9 @@ const PRERENDER = 21;
 // emitTypedArrayChunk for why, and flushCompletedChunks for how it's read.
 const NEXT_TWO_CHUNKS_ARE_ATOMIC: symbol = Symbol();
 
-// enableFlightStaticHostElision: `true` uses the internal registry, an object
-// receives the elided rows (JSON) and/or live values instead.
-export type ElideStaticHosts =
+// enableFlightHTMLFirst: `true` uses the internal registry, an object
+// receives the stubbed rows (JSON) and/or live values instead.
+export type HTMLFirstOption =
   | boolean
   | {
       onRow?: (id: number, json: string) => void,
@@ -638,16 +638,16 @@ export type Request = {
   writtenImportStringsSize: number,
   temporaryReferences: void | TemporaryReferenceSet,
   identifierPrefix: string,
-  onElidedRow: null | ((id: number, json: string) => void),
-  onElidedValue: null | ((id: number, value: mixed) => void),
-  // enableFlightStaticHostElision: internal registry id when no framework callbacks.
-  elidedRequestId: number,
-  // enableFlightStaticHostElision: non-null while the stream is kept open for
-  // late rows (see settleElidedRows). Counts as one pending chunk.
-  elidedEntry: null | ElidedRowsEntry,
-  elidedEnd: 0 | 1 | 2, // nothing yet, `:q` emitted, `:q` written
-  elidedTimeout: null | TimeoutID,
-  // enableFlightStaticHostElision: memoized isStaticHostNode results.
+  onStubbedRow: null | ((id: number, json: string) => void),
+  onStubbedValue: null | ((id: number, value: mixed) => void),
+  // enableFlightHTMLFirst: internal registry id when no framework callbacks.
+  stubbedRequestId: number,
+  // enableFlightHTMLFirst: non-null while the stream is kept open for
+  // late rows (see settleStubbedRows). Counts as one pending chunk.
+  stubbedEntry: null | StubbedRowsEntry,
+  stubbedEnd: 0 | 1 | 2, // nothing yet, `:q` emitted, `:q` written
+  stubbedTimeout: null | TimeoutID,
+  // enableFlightHTMLFirst: memoized isStaticHostNode results.
   staticHostCache: null | WeakMap<any, boolean>,
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
@@ -725,7 +725,7 @@ function RequestInstance(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  elideStaticHosts: void | ElideStaticHosts,
+  htmlFirst: void | HTMLFirstOption,
 ) {
   if (
     ReactSharedInternals.A !== null &&
@@ -777,50 +777,50 @@ function RequestInstance(
   this.writtenImportStringsSize = 0;
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
-  // enableFlightStaticHostElision: elision is opt-in per request, so a stream
+  // enableFlightHTMLFirst: stubbing is opt-in per request, so a stream
   // that goes straight to the browser (navigation, refetch, action result) is
-  // never elided by accident. The framework opts in on the response that feeds
-  // SSR: `elideStaticHosts: true` collects rows in an internal registry keyed
+  // never stubbed by accident. The framework opts in on the response that feeds
+  // SSR: `htmlFirst: true` collects rows in an internal registry keyed
   // by a request id emitted in the stream (`:Q…`), which the first in-process
   // createFrom* claims. `{onRow, onValue}` (JSON row / live value) is the
   // override for out-of-process or custom consumers.
-  this.elidedRequestId = 0;
-  this.elidedEntry = null;
-  this.elidedEnd = 0;
-  this.elidedTimeout = null;
-  this.onElidedValue = null;
-  this.onElidedRow = null;
-  if (enableFlightStaticHostElision && elideStaticHosts) {
-    if (elideStaticHosts === true) {
-      // Allocated on the first elided element, so a response with nothing to
-      // elide is byte-identical to one without the option. Hint rows flush
+  this.stubbedRequestId = 0;
+  this.stubbedEntry = null;
+  this.stubbedEnd = 0;
+  this.stubbedTimeout = null;
+  this.onStubbedValue = null;
+  this.onStubbedRow = null;
+  if (enableFlightHTMLFirst && htmlFirst) {
+    if (htmlFirst === true) {
+      // Allocated on the first stubbed element, so a response with nothing to
+      // stub is byte-identical to one without the option. Hint rows flush
       // before regular rows, so `:Q` still precedes the first stub.
       const request: Request = this;
-      let entry: null | ElidedRowsEntry = null;
-      this.onElidedValue = (id: number, value: mixed) => {
+      let entry: null | StubbedRowsEntry = null;
+      this.onStubbedValue = (id: number, value: mixed) => {
         let current = entry;
         if (current === null) {
-          const registry = allocateElidedRowsRegistry();
+          const registry = allocateStubbedRowsRegistry();
           current = entry = registry.entry;
-          request.elidedRequestId = registry.requestId;
-          releaseElidedRowsWhenCollected(request, registry.requestId);
-          emitElidedRowsRequestIdChunk(request, registry.requestId);
-          holdForLateElidedRows(request, current);
+          request.stubbedRequestId = registry.requestId;
+          releaseStubbedRowsWhenCollected(request, registry.requestId);
+          emitStubbedRowsRequestIdChunk(request, registry.requestId);
+          holdForLateStubbedRows(request, current);
         }
         current.rows.set(id, value);
       };
-      this.onElidedRow = noop;
+      this.onStubbedRow = noop;
     } else {
-      const {onRow, onValue} = elideStaticHosts;
+      const {onRow, onValue} = htmlFirst;
       if (typeof onValue === 'function') {
-        this.onElidedValue = onValue;
-        this.onElidedRow = typeof onRow === 'function' ? onRow : noop;
+        this.onStubbedValue = onValue;
+        this.onStubbedRow = typeof onRow === 'function' ? onRow : noop;
       } else if (typeof onRow === 'function') {
-        this.onElidedRow = onRow;
+        this.onStubbedRow = onRow;
       }
     }
   }
-  this.staticHostCache = enableFlightStaticHostElision ? new WeakMap() : null;
+  this.staticHostCache = enableFlightHTMLFirst ? new WeakMap() : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
   this.onError = onError === undefined ? defaultErrorHandler : onError;
@@ -907,7 +907,7 @@ export function createRequest(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
-  elideStaticHosts?: ElideStaticHosts,
+  htmlFirst?: HTMLFirstOption,
 ): Request {
   if (__DEV__) {
     resetOwnerStackLimit();
@@ -927,7 +927,7 @@ export function createRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
-    elideStaticHosts,
+    htmlFirst,
   );
 }
 
@@ -2252,17 +2252,17 @@ function renderAsyncFragment(
   return serializeAsyncIterable(request, task, children, asyncIterator);
 }
 
-// Host elision (see tryElideHostElement): > 0 while serializing an elided row.
-let elisionDepth = 0;
+// Host stubbing (see tryStubHostElement): > 0 while serializing an stubbed row.
+let stubbingDepth = 0;
 
-// Host elision is only safe for a static host element that React renders in
+// Host stubbing is only safe for a static host element that React renders in
 // place and hydrates in place: output of a Server Component, children of a
 // host element or Suspense boundary, or `children` of a Client Component
 // (composition slots / layout providers). True while resolving such a
 // position. Cleared for every non-`children` prop (e.g. Suspense `fallback`,
 // a Tabs `panels` prop) and for non-composition wrappers (Activity, ...).
-// When a client later mounts an elided child without server DOM (modal,
-// ClientOnly), ElidedHost recovers via onElidedContentMissing.
+// When a client later mounts an stubbed child without server DOM (modal,
+// ClientOnly), StaticStub recovers via onMissingHTML.
 let hostPosition = true;
 // The props object of the element tuple that is being resolved, and whether its
 // `children` are in host position.
@@ -2299,9 +2299,9 @@ function renderClientElement(
       // So that we can refer to it directly.
       outlineComponentInfo(request, debugOwner);
     }
-    // Elided subtrees don't ship per-element debug stacks, they would be the
+    // Stubbed subtrees don't ship per-element debug stacks, they would be the
     // bulk of what is left in the payload (the rows can't be dropped with it).
-    if (task.debugStack !== null && elisionDepth === 0) {
+    if (task.debugStack !== null && stubbingDepth === 0) {
       // Outline the debug stack so that we write to the completedDebugChunks instead.
       debugStack = filterStackTrace(
         request,
@@ -3121,8 +3121,8 @@ function resolveModelChildren(
 ): ReactJSONValue {
   if (isArray(rendered)) {
     if (
-      enableFlightStaticHostElision &&
-      request.onElidedRow !== null &&
+      enableFlightHTMLFirst &&
+      request.onStubbedRow !== null &&
       rendered[0] === REACT_ELEMENT_TYPE
     ) {
       return resolveElementTuple(request, task, rendered);
@@ -3138,7 +3138,7 @@ function resolveModelChildren(
   // assignment would hit Object.prototype's setter instead of creating a key.
   const resolved: {[key: string]: ReactJSONValue} = {} as any;
   const trackHostPosition =
-    enableFlightStaticHostElision && request.onElidedRow !== null;
+    enableFlightHTMLFirst && request.onStubbedRow !== null;
   const prevHostPosition = hostPosition;
   const isElementProps =
     trackHostPosition && (rendered as any) === elementProps;
@@ -3820,23 +3820,23 @@ function serializeImportString(request: Request, value: string): string {
 
 let modelRoot: null | ReactClientValue = false;
 
-// --- Host elision (prototype, enableFlightStaticHostElision) ---------------------
+// --- Host stubbing (prototype, enableFlightHTMLFirst) ---------------------
 // Host elements produced by Server Components whose whole subtree is static
 // (host elements, text, and primitive-only props; no client references,
 // Suspense, lazy, Promises or Server Components still to render) are not
 // serialized into the primary payload. We serialize the full element to JSON,
 // hand (id, json) to the request's onRow callback, and replace it with
 // the placeholder "$J<id>:<tag>". The framework gives the rows to the Flight
-// client that feeds SSR (the `elidedHostRows` client option), so HTML contains the
+// client that feeds SSR (the `htmlFirstRows` client option), so HTML contains the
 // content, while the main stream, which it can inline for the browser as is,
-// does not. A client without the row renders ElidedHost and adopts the DOM
+// does not. A client without the row renders StaticStub and adopts the DOM
 // (see ReactFlightClient's "$J" handling).
-// While > 0 we are serializing an elided subtree, so nested hosts are inlined
-// in that same row instead of being elided again.
+// While > 0 we are serializing an stubbed subtree, so nested hosts are inlined
+// in that same row instead of being stubbed again.
 
 // Tags that are not rendered in place by Fizz (hoistables / document-level),
 // have special hydration or form handling, or switch the format context.
-const nonElidableTags = new Set([
+const nonStubbableTags = new Set([
   'html',
   'head',
   'body',
@@ -3868,8 +3868,8 @@ const nonElidableTags = new Set([
 ]);
 
 // Void elements can't take the stub's dangerouslySetInnerHTML, and a stub
-// would be no smaller than they are. They are still static inside an elided
-// parent; they are just never elided on their own.
+// would be no smaller than they are. They are still static inside an stubbed
+// parent; they are just never stubbed on their own.
 const voidTags = new Set([
   'area',
   'br',
@@ -3885,10 +3885,10 @@ const voidTags = new Set([
   'wbr',
 ]);
 
-// enableFlightStaticHostElision: Fizz renders these in place (not hoisted) unless
+// enableFlightHTMLFirst: Fizz renders these in place (not hoisted) unless
 // they are resources, and they carry no behavior the client must re-create:
 // <style> without precedence+href, and non-executable data-block scripts.
-function isElidableStyleOrScript(type: string, props: any): boolean {
+function isStubbableStyleOrScript(type: string, props: any): boolean {
   if (props.itemProp != null) {
     return false;
   }
@@ -3964,11 +3964,11 @@ function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
     return false;
   }
   const props = node.props;
-  if (nonElidableTags.has(type)) {
+  if (nonStubbableTags.has(type)) {
     if (
-      !enableFlightStaticHostElision ||
+      !enableFlightHTMLFirst ||
       (type !== 'style' && type !== 'script') ||
-      !isElidableStyleOrScript(type, props)
+      !isStubbableStyleOrScript(type, props)
     ) {
       return false;
     }
@@ -3984,17 +3984,17 @@ function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
   return isStaticHostNode(cache, props.children);
 }
 
-function tryElideHostElement(
+function tryStubHostElement(
   request: Request,
   task: Task,
   element: ReactElement,
 ): null | string {
-  const onElidedRow = request.onElidedRow;
+  const onStubbedRow = request.onStubbedRow;
   const cache = request.staticHostCache;
   if (
-    onElidedRow === null ||
+    onStubbedRow === null ||
     cache === null ||
-    elisionDepth > 0 ||
+    stubbingDepth > 0 ||
     typeof element.type !== 'string' ||
     voidTags.has(element.type) ||
     !isStaticHostNode(cache, element)
@@ -4016,20 +4016,20 @@ function tryElideHostElement(
   }
   const keySuffix = key === null ? '' : ':' + key;
   const id = request.nextChunkId++;
-  const onElidedValue = request.onElidedValue;
-  if (onElidedValue !== null) {
+  const onStubbedValue = request.onStubbedValue;
+  if (onStubbedValue !== null) {
     if (enableTaint) {
       assertNoTaint(element, new Set());
     }
-    onElidedValue(id, element);
+    onStubbedValue(id, element);
     return '$J' + id.toString(16) + ':' + element.type + keySuffix;
   }
   const prevSize = serializedSize;
   const prevKeyPath = task.keyPath;
   const prevImplicitSlot = task.implicitSlot;
-  // The elided row is emitted whole; never defer pieces of it into new tasks.
+  // The stubbed row is emitted whole; never defer pieces of it into new tasks.
   serializedSize = -Infinity;
-  elisionDepth++;
+  stubbingDepth++;
   let json: string;
   try {
     const rendered = renderModelDestructive(
@@ -4052,13 +4052,13 @@ function tryElideHostElement(
     // $FlowFixMe[incompatible-type] stringify can return null for undefined but we never do
     json = stringify(resolved);
   } finally {
-    elisionDepth--;
+    stubbingDepth--;
     serializedSize = prevSize;
     task.keyPath = prevKeyPath;
     task.implicitSlot = prevImplicitSlot;
   }
   // Not written to the stream: handed to the framework instead.
-  onElidedRow(id, json);
+  onStubbedRow(id, json);
   return '$J' + id.toString(16) + ':' + element.type + keySuffix;
 }
 
@@ -4240,13 +4240,13 @@ function renderModelDestructive(
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
         if (
-          enableFlightStaticHostElision &&
-          request.onElidedRow !== null &&
+          enableFlightHTMLFirst &&
+          request.onStubbedRow !== null &&
           hostPosition
         ) {
-          const elided = tryElideHostElement(request, task, value as any);
-          if (elided !== null) {
-            return elided;
+          const stubbed = tryStubHostElement(request, task, value as any);
+          if (stubbed !== null) {
+            return stubbed;
           }
         }
         let elementReference = null;
@@ -4722,10 +4722,10 @@ function renderModelDestructive(
       value.length >= 1024 &&
       // $FlowFixMe[invalid-compare]
       byteLengthOfChunk !== null &&
-      // An elided row is one self-contained JSON string
+      // An stubbed row is one self-contained JSON string
       // for the side channel. Its big strings stay inline in that string so
       // nothing it contains reaches the main stream.
-      !(elisionDepth > 0)
+      !(stubbingDepth > 0)
     ) {
       // For large strings, we encode them outside the JSON payload so that we
       // don't have to double encode and double parse the strings. This can also
@@ -4905,8 +4905,8 @@ function logRecoverableError(
 function fatalError(request: Request, error: mixed): void {
   const onFatalError = request.onFatalError;
   onFatalError(error);
-  if (enableFlightStaticHostElision) {
-    releaseElidedHold(request);
+  if (enableFlightHTMLFirst) {
+    releaseStubbedHold(request);
   }
   if (enableTaint) {
     cleanupTaintQueue(request);
@@ -5262,17 +5262,17 @@ function emitHintChunk<Code: HintCode>(
   request.completedHintChunks.push(processedChunk);
 }
 
-function emitElidedRowsRequestIdChunk(
+function emitStubbedRowsRequestIdChunk(
   request: Request,
   requestId: number,
 ): void {
-  // enableFlightStaticHostElision: identify the internal row registry across tee().
+  // enableFlightHTMLFirst: identify the internal row registry across tee().
   const row = ':Q' + requestId.toString(16) + '\n';
   request.completedHintChunks.push(stringToChunk(row));
 }
 
-// enableFlightStaticHostElision, late rows. The consumer that renders HTML only
-// renders part of what was elided: the children of a closed modal or of a
+// enableFlightHTMLFirst, late rows. The consumer that renders HTML only
+// renders part of what was stubbed: the children of a closed modal or of a
 // client-only wrapper never reach the HTML, so a browser that mounts them later
 // has nothing to adopt. Once the claimer has rendered, the rows it did not
 // render are written to the stream as ordinary rows under the id their stub
@@ -5283,80 +5283,83 @@ function emitElidedRowsRequestIdChunk(
 // claimer calls entry.settle() once its renderer had a chance to run. A wrong
 // guess is safe either way: a late row for content that is in the HTML only
 // costs bytes, and a stub without HTML or a late row asks the framework for
-// the full payload as before (onElidedContentMissing).
-function holdForLateElidedRows(request: Request, entry: ElidedRowsEntry): void {
-  request.elidedEntry = entry;
+// the full payload as before (onMissingHTML).
+function holdForLateStubbedRows(
+  request: Request,
+  entry: StubbedRowsEntry,
+): void {
+  request.stubbedEntry = entry;
   request.pendingChunks++;
   // The entry is reachable from the global registry until it is claimed, and
-  // must not keep the request alive (see releaseElidedRowsWhenCollected).
+  // must not keep the request alive (see releaseStubbedRowsWhenCollected).
   if (typeof WeakRef === 'function') {
     const weakRequest = new WeakRef(request);
     entry.settle = () => {
       const strongRequest = weakRequest.deref();
       if (strongRequest !== undefined) {
-        settleElidedRows(strongRequest);
+        settleStubbedRows(strongRequest);
       }
     };
   } else {
-    entry.settle = settleElidedRows.bind(null, request);
+    entry.settle = settleStubbedRows.bind(null, request);
   }
 }
 
 // How long a claimer that never settles (it stopped reading the stream) can
 // keep the stream open after everything else was written.
-const ELIDED_SETTLE_TIMEOUT = 1000;
+const STUBBED_SETTLE_TIMEOUT = 1000;
 
 // Called at the end of a flush that left nothing but the hold pending.
-function flushElidedEnd(request: Request): void {
-  if (request.elidedEnd === 0) {
-    request.elidedEnd = 1;
+function flushStubbedEnd(request: Request): void {
+  if (request.stubbedEnd === 0) {
+    request.stubbedEnd = 1;
     request.completedHintChunks.push(stringToChunk(':q\n'));
     if (request.destination !== null) {
       flushCompletedChunks(request);
     }
     return;
   }
-  if (request.elidedEnd === 1 && request.completedHintChunks.length === 0) {
-    request.elidedEnd = 2;
+  if (request.stubbedEnd === 1 && request.completedHintChunks.length === 0) {
+    request.stubbedEnd = 2;
     // A consumer in this process claims the rows as soon as it reads the first
     // bytes. If nothing did shortly after the last bytes were written, the
     // stream goes somewhere else (or is read later, from a buffer) and nobody
     // is going to settle it.
     scheduleWork(() => {
       scheduleWork(() => {
-        const entry = request.elidedEntry;
+        const entry = request.stubbedEntry;
         if (entry === null) {
           return;
         }
         if (entry.claimed) {
-          request.elidedTimeout = setTimeout(
-            settleElidedRows.bind(null, request),
-            ELIDED_SETTLE_TIMEOUT,
+          request.stubbedTimeout = setTimeout(
+            settleStubbedRows.bind(null, request),
+            STUBBED_SETTLE_TIMEOUT,
           );
         } else {
-          finishElidedHold(request);
+          finishStubbedHold(request);
         }
       });
     });
   }
 }
 
-function releaseElidedHold(request: Request): void {
-  const entry = request.elidedEntry;
+function releaseStubbedHold(request: Request): void {
+  const entry = request.stubbedEntry;
   if (entry !== null) {
     entry.settle = null;
-    request.elidedEntry = null;
+    request.stubbedEntry = null;
     request.pendingChunks--;
-    if (request.elidedTimeout !== null) {
-      clearTimeout(request.elidedTimeout);
-      request.elidedTimeout = null;
+    if (request.stubbedTimeout !== null) {
+      clearTimeout(request.stubbedTimeout);
+      request.stubbedTimeout = null;
     }
   }
 }
 
-function finishElidedHold(request: Request): void {
+function finishStubbedHold(request: Request): void {
   try {
-    releaseElidedHold(request);
+    releaseStubbedHold(request);
     flushCompletedChunks(request);
   } catch (error) {
     logRecoverableError(request, error, null);
@@ -5364,15 +5367,15 @@ function finishElidedHold(request: Request): void {
   }
 }
 
-function settleElidedRows(request: Request): void {
-  const entry = request.elidedEntry;
+function settleStubbedRows(request: Request): void {
+  const entry = request.stubbedEntry;
   if (entry === null || request.status > OPEN) {
     return;
   }
   // The late rows are complete, and nothing after this point has a consumer
   // that could still render it to HTML.
-  request.onElidedRow = null;
-  request.onElidedValue = null;
+  request.onStubbedRow = null;
+  request.onStubbedValue = null;
   // All ready was already reported if it was reached, the late rows are not
   // part of it.
   const onAllReady = request.onAllReady;
@@ -5404,7 +5407,7 @@ function settleElidedRows(request: Request): void {
   } finally {
     request.onAllReady = onAllReady;
   }
-  finishElidedHold(request);
+  finishStubbedHold(request);
 }
 
 function emitSymbolChunk(request: Request, id: number, name: string): void {
@@ -7287,12 +7290,12 @@ function flushCompletedChunks(request: Request): void {
     flushBuffered(destination);
   }
   if (
-    enableFlightStaticHostElision &&
+    enableFlightHTMLFirst &&
     request.pendingChunks === 1 &&
-    request.elidedEntry !== null &&
-    request.elidedEnd !== 2
+    request.stubbedEntry !== null &&
+    request.stubbedEnd !== 2
   ) {
-    flushElidedEnd(request);
+    flushStubbedEnd(request);
     return;
   }
   if (request.pendingChunks === 0) {
@@ -7515,14 +7518,14 @@ export function abort(request: Request, reason: mixed): void {
   }
   try {
     request.status = ABORTING;
-    if (enableFlightStaticHostElision && request.elidedRequestId !== 0) {
+    if (enableFlightHTMLFirst && request.stubbedRequestId !== 0) {
       // No createFrom* claimed the rows (cancelled before SSR). Drop them.
-      releaseElidedRowsRegistry(request.elidedRequestId);
-      request.elidedRequestId = 0;
+      releaseStubbedRowsRegistry(request.stubbedRequestId);
+      request.stubbedRequestId = 0;
     }
-    if (enableFlightStaticHostElision) {
+    if (enableFlightHTMLFirst) {
       // Nothing waits for late rows of an aborted render.
-      releaseElidedHold(request);
+      releaseStubbedHold(request);
     }
     if (enableProfilerTimer) {
       request.abortTime = performance.now();

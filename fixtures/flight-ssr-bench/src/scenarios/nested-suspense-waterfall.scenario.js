@@ -3,7 +3,8 @@ import {Document} from './doc';
 import Counter from './nested-suspense-waterfall.counter.client';
 
 export const id = 'nested-suspense-waterfall';
-export const title = 'Three nested async server components with staggered delays';
+export const title =
+  'Three nested async server components with staggered delays';
 export const category = 'streaming';
 export const description =
   'Nested Suspense waterfall (20/30/40 ms), static content at each level, client counter at the leaf.';

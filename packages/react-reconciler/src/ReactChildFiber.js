@@ -40,7 +40,7 @@ import {
   REACT_CONTEXT_TYPE,
   REACT_LEGACY_ELEMENT_TYPE,
   REACT_OPTIMISTIC_KEY,
-  REACT_ELIDED_HOST_TYPE,
+  REACT_STATIC_STUB_TYPE,
 } from 'shared/ReactSymbols';
 import {
   HostRoot,
@@ -55,7 +55,7 @@ import {
   enableAsyncIterableChildren,
   disableLegacyMode,
   enableOptimisticKey,
-  enableFlightStaticHostElision,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
 import {
   supportsHydration,
@@ -273,17 +273,17 @@ function validateFragmentProps(
   }
 }
 
-// enableFlightStaticHostElision: `current` is a stub that a Flight client
+// enableFlightHTMLFirst: `current` is a stub that a Flight client
 // rendered for a static host element the server left out of the payload. It
 // adopted the server rendered DOM. When the real element shows up in its place
 // and would render that same DOM, keep the stub rather than replace the DOM.
-function canKeepElidedHost(current: Fiber, element: ReactElement): boolean {
-  if (enableFlightStaticHostElision && supportsHydration) {
+function canKeepStaticStub(current: Fiber, element: ReactElement): boolean {
+  if (enableFlightHTMLFirst && supportsHydration) {
     const type = element.type;
     if (
       typeof type === 'string' &&
       current.tag === FunctionComponent &&
-      current.type.$$typeof === REACT_ELIDED_HOST_TYPE
+      current.type.$$typeof === REACT_STATIC_STUB_TYPE
     ) {
       const child = current.child;
       return (
@@ -641,7 +641,7 @@ function createChildReconciler(
         }
         return existing;
       }
-      if (canKeepElidedHost(current, element)) {
+      if (canKeepStaticStub(current, element)) {
         const existing = useFiber(current, current.pendingProps);
         existing.return = returnFiber;
         return existing;
@@ -1785,7 +1785,7 @@ function createChildReconciler(
             }
             return existing;
           }
-          if (canKeepElidedHost(child, element)) {
+          if (canKeepStaticStub(child, element)) {
             deleteRemainingChildren(returnFiber, child.sibling);
             const existing = useFiber(child, child.pendingProps);
             existing.return = returnFiber;

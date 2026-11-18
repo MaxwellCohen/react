@@ -8,7 +8,9 @@ export default function Layout({header, footer, sidebar, slots, children}) {
       <header>{header}</header>
       <aside>{sidebar}</aside>
       <main>
-        <button className="n" onClick={() => setN(n + 1)}>n: {n}</button>
+        <button className="n" onClick={() => setN(n + 1)}>
+          n: {n}
+        </button>
         {children}
         <div className="slots">{slots.map(s => s)}</div>
       </main>

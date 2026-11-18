@@ -12,7 +12,7 @@ const jsonLd = makeJsonLd();
 // a large table, and interactive client components mixed in (every 100th row
 // has a Counter). makePage(false): rows are client components (full props in
 // Flight, hydrated normally). makePage(true): rows are server components that
-// render plain <tr> host elements (static server output, elidable).
+// render plain <tr> host elements (static server output, stubbable).
 export function makePage(serverRows) {
   const Row = serverRows ? TableRowServer : TableRowLean;
   return function PageApp({itemCount}) {

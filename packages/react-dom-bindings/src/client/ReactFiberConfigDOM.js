@@ -137,7 +137,7 @@ import {
   enableViewTransition,
   enableHydrationChangeEvent,
   enableProfilerTimer,
-  enableFlightStaticHostElision,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
 import {
   HostComponent,
@@ -4562,11 +4562,11 @@ export function describeHydratableInstanceForDevWarnings(
   }
 }
 
-// enableFlightStaticHostElision: whether a client render of <type {...props}>
+// enableFlightHTMLFirst: whether a client render of <type {...props}>
 // would produce the same DOM as `instance`, which was adopted from server HTML
 // without its props (a Flight stub). Then the stub can stay instead of being
 // replaced by an identical new subtree. This must not have false positives, so
-// it only accepts what the server elides (host elements and text with
+// it only accepts what the server stubs (host elements and text with
 // primitive props) and compares against what the client would create: the
 // attributes that setInitialProperties leaves on a detached element in an
 // inert document.
@@ -4579,7 +4579,7 @@ export function instanceMatchesStaticElement(
   type: string,
   props: Props,
 ): boolean {
-  if (!enableFlightStaticHostElision) {
+  if (!enableFlightHTMLFirst) {
     return false;
   }
   // A stub stays a stub after it matched, so every later full payload asks

@@ -14,7 +14,12 @@ export const sizes = {smoke: 20, full: 1000};
 function Card({p}) {
   return (
     <li className="product">
-      <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt={p.name} width={160} height={160} />
+      <img
+        src="data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        alt={p.name}
+        width={160}
+        height={160}
+      />
       <h2>{p.name}</h2>
       <p className="sku">{p.sku}</p>
       <p className="category">{p.category}</p>

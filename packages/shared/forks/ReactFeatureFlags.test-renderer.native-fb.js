@@ -67,8 +67,7 @@ export const enableDefaultTransitionIndicator = true;
 export const ownerStackLimit = 1e4;
 export const enableOptimisticKey = false;
 
-
-export const enableFlightStaticHostElision: boolean = false;
+export const enableFlightHTMLFirst: boolean = false;
 
 export const eprh_enableUseKeyedStateCompilerLint: boolean = false;
 export const eprh_enableVerboseNoSetStateInEffectCompilerLint: boolean = false;

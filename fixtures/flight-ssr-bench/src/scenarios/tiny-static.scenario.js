@@ -3,7 +3,8 @@ import {Document} from './doc';
 export const id = 'tiny-static';
 export const title = 'Tiny static page';
 export const category = 'static';
-export const description = 'A few host elements, no client components, no styles.';
+export const description =
+  'A few host elements, no client components, no styles.';
 export const expectedBenefit = 'low';
 export const sizes = {smoke: 3, full: 12};
 

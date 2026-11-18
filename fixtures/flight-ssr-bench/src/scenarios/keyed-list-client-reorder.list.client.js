@@ -9,8 +9,12 @@ export default function List({children}) {
   if (rev) items = items.slice().reverse();
   return (
     <div>
-      <button className="rev" onClick={() => setRev(r => !r)}>reverse</button>
-      <button className="even" onClick={() => setEven(e => !e)}>even</button>
+      <button className="rev" onClick={() => setRev(r => !r)}>
+        reverse
+      </button>
+      <button className="even" onClick={() => setEven(e => !e)}>
+        even
+      </button>
       <ul className="list">{items}</ul>
     </div>
   );

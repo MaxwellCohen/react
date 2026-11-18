@@ -35,11 +35,10 @@ export function Root({size}) {
           data-index={0}
           aria-label="Demo paragraph"
           aria-level={2}
-          hidden={false}
-        >
+          hidden={false}>
           Inline style object with numeric values and custom properties.
         </p>
-        {groups.map((i) => (
+        {groups.map(i => (
           <section key={i} className={'g-' + i} id={'group-' + i}>
             <div
               className={'box ' + (i % 2 ? 'odd' : 'even')}
@@ -53,12 +52,14 @@ export function Root({size}) {
               }}
               data-pos={i}
               aria-describedby={'desc-' + i}
-              tabIndex={i % 3 === 0 ? 0 : undefined}
-            >
+              tabIndex={i % 3 === 0 ? 0 : undefined}>
               Box {i}
             </div>
             <p id={'desc-' + i} aria-live="polite" aria-hidden={i % 4 === 0}>
-              Description {i} <span aria-label={'star ' + i} role="img">★</span>
+              Description {i}{' '}
+              <span aria-label={'star ' + i} role="img">
+                ★
+              </span>
             </p>
             <div hidden={i % 5 === 0} inert={i % 7 === 0}>
               <details open={i % 2 === 0}>
@@ -71,8 +72,7 @@ export function Root({size}) {
               className="act"
               tabIndex={(i % 3) - 1 === 0 ? undefined : 0}
               disabled={i % 11 === 0}
-              aria-pressed={i % 2 === 0}
-            >
+              aria-pressed={i % 2 === 0}>
               Act {i}
             </button>
             <img
@@ -87,8 +87,7 @@ export function Root({size}) {
             <a
               href={'/page-' + i}
               target={i % 3 === 0 ? '_blank' : undefined}
-              rel={i % 3 === 0 ? 'noopener noreferrer' : undefined}
-            >
+              rel={i % 3 === 0 ? 'noopener noreferrer' : undefined}>
               Link {i}
             </a>
             <table className="tbl">
@@ -107,10 +106,10 @@ export function Root({size}) {
                 cx="20"
                 cy="20"
                 r="10"
-                strokeWidth={i % 3 + 1}
+                strokeWidth={(i % 3) + 1}
                 clipPath="url(#clip-0)"
                 strokeLinecap="round"
-                fill={`hsl(${i * 5 % 360}, 50%, 50%)`}
+                fill={`hsl(${(i * 5) % 360}, 50%, 50%)`}
               />
             </svg>
           </section>

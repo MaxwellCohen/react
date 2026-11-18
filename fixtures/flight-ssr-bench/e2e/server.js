@@ -29,13 +29,13 @@ async function start(port) {
   await build(require('./webpack.client.config'));
   const b = require('../build/rsc-bundle.js');
   const pages = {
-    // Client-component rows, nothing elided (flag-off behavior).
+    // Client-component rows, nothing stubbed (flag-off behavior).
     baseline: b.PageAppBaseline,
-    // Client-component rows, CSS/JSON-LD elided, live hand-off.
+    // Client-component rows, CSS/JSON-LD stubbed, live hand-off.
     'client-rows': b.PageAppBaseline,
-    // Server-component rows, nothing elided.
+    // Server-component rows, nothing stubbed.
     'server-rows-baseline': b.PageAppHtmlFirst,
-    // Server-component rows, elided (JSON rows / live rows).
+    // Server-component rows, stubbed (JSON rows / live rows).
     'html-first': b.PageAppHtmlFirst,
     'html-first-json': b.PageAppHtmlFirst,
   };
@@ -51,12 +51,12 @@ async function start(port) {
       }
       if (kind === 'rsc' && pages[name]) {
         // (html-first-json shares the page; only the SSR hand-off differs.)
-        // Navigation response: full Flight. It does not opt in to elision
-        // (elideStaticHosts: false states that explicitly).
+        // Navigation response: full Flight. It does not opt in to stubbing
+        // (htmlFirst: false states that explicitly).
         res.writeHead(200, {'Content-Type': 'text/x-component'});
         return b
           .renderRSCNode(clientManifest, pages[name], rows, {
-            elideStaticHosts: false,
+            htmlFirst: false,
           })
           .pipe(res);
       }
@@ -69,7 +69,7 @@ async function start(port) {
             clientManifest,
             ssrManifest,
             {
-              elide: kind !== 'baseline' && kind !== 'server-rows-baseline',
+              stub: kind !== 'baseline' && kind !== 'server-rows-baseline',
               // html-first / client-rows: zero opt-in (internal registry).
               // html-first-json: explicit JSON side channel (legacy API demo).
               sideChannel: kind === 'html-first-json',

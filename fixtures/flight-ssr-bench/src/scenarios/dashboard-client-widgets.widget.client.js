@@ -12,16 +12,28 @@ export default function Widget({title, values}) {
   const barW = W / values.length - 2;
   return (
     <div className="chart">
-      <button className="widget-toggle" onClick={() => setMode(mode === 'line' ? 'bar' : 'line')}>
+      <button
+        className="widget-toggle"
+        onClick={() => setMode(mode === 'line' ? 'bar' : 'line')}>
         {'Mode: ' + mode}
       </button>
-      <svg width={W} height={H} viewBox={'0 0 ' + W + ' ' + H} role="img" aria-label={title}>
+      <svg
+        width={W}
+        height={H}
+        viewBox={'0 0 ' + W + ' ' + H}
+        role="img"
+        aria-label={title}>
         {mode === 'line' ? (
           <polyline
             fill="none"
             stroke="#2563eb"
             strokeWidth="2"
-            points={values.map((v, i) => (i * step).toFixed(1) + ',' + (H - (v / max) * H).toFixed(1)).join(' ')}
+            points={values
+              .map(
+                (v, i) =>
+                  (i * step).toFixed(1) + ',' + (H - (v / max) * H).toFixed(1)
+              )
+              .join(' ')}
           />
         ) : (
           values.map((v, i) => (

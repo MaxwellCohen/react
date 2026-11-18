@@ -4,7 +4,7 @@ export const id = 'all-client';
 export const title = 'Everything is a client component';
 export const category = 'client';
 export const description =
-  'The server root only renders one client component that renders the whole document; nothing to elide.';
+  'The server root only renders one client component that renders the whole document; nothing to stub.';
 export const expectedBenefit = 'none';
 export const sizes = {smoke: 5, full: 200};
 

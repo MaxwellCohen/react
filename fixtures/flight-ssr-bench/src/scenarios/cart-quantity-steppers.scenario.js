@@ -33,7 +33,16 @@ export function Root({size}) {
         <ul className="cart">
           {lines.map(i => (
             <li className="line" key={i}>
-              <img alt="" width="64" height="64" src={'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2264%22 height=%2264%22%3E%3Ctext y=%2232%22%3E' + (i % 40) + '%3C/text%3E%3C/svg%3E'} />
+              <img
+                alt=""
+                width="64"
+                height="64"
+                src={
+                  'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2264%22 height=%2264%22%3E%3Ctext y=%2232%22%3E' +
+                  (i % 40) +
+                  '%3C/text%3E%3C/svg%3E'
+                }
+              />
               <div className="line-info">
                 <h2>Product {i}</h2>
                 <p className="sku">SKU-{String(i).padStart(6, '0')}</p>
@@ -49,7 +58,9 @@ export function Root({size}) {
           <p>Subtotal: {money(total)}</p>
           <p>Shipping: free over $50.00</p>
           <p>Estimated total: {money(total)}</p>
-          <a className="checkout" href="/checkout">Checkout</a>
+          <a className="checkout" href="/checkout">
+            Checkout
+          </a>
         </aside>
       </main>
       <footer>

@@ -9,10 +9,10 @@
 
 'use strict';
 
-// Run the whole file with enableFlightStaticHostElision turned on.
+// Run the whole file with enableFlightHTMLFirst turned on.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightStaticHostElision: true,
+  enableFlightHTMLFirst: true,
 }));
 
 // Polyfills for test environment
@@ -42,7 +42,7 @@ let ReactServerDOMClient;
 let use;
 let reportedErrors;
 
-describe('ReactFlightDOMBrowser host elision', () => {
+describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   beforeEach(() => {
     jest.resetModules();
     // Errors reported to window.onerror (reportError).
@@ -112,11 +112,11 @@ describe('ReactFlightDOMBrowser host elision', () => {
     return encoder.encode(text).length;
   }
 
-  // `elidedHostRows` is only given to the consumer that renders HTML (SSR). The
+  // `htmlFirstRows` is only given to the consumer that renders HTML (SSR). The
   // browser consumer doesn't get them and adopts the server DOM instead.
-  function consume(rsc, elidedRows, extraOptions) {
+  function consume(rsc, stubbedRows, extraOptions) {
     return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
-      elidedHostRows: elidedRows,
+      htmlFirstRows: stubbedRows,
       ...extraOptions,
     });
   }
@@ -141,11 +141,11 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
   // Returns {main, rows}: the stream (what is inlined for the browser) and
   // the rows the server withheld from it, keyed by id (only for SSR).
-  async function renderApp(count, elide) {
+  async function renderApp(count, stub) {
     const rows = new Map();
-    const options = elide
-      ? {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}
-      : {elideStaticHosts: false};
+    const options = stub
+      ? {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}
+      : {htmlFirst: false};
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -193,42 +193,42 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
   it('shrinks the payload of a static 1000 row server table', async () => {
     const baseline = await renderApp(1000, false);
-    const elided = await renderApp(1000, true);
-    const rowBytes = Array.from(elided.rows.values()).reduce(
+    const stubbed = await renderApp(1000, true);
+    const rowBytes = Array.from(stubbed.rows.values()).reduce(
       (n, json) => n + byteLength(json),
       0,
     );
     console.log(
       `1000 rows, Flight bytes: baseline=${byteLength(baseline.main)} ` +
-        `elided stream (inlined in HTML)=${byteLength(elided.main)} ` +
+        `stubbed stream (inlined in HTML)=${byteLength(stubbed.main)} ` +
         `withheld rows (SSR only)=${rowBytes}`,
     );
     expect(baseline.main).not.toContain('$J');
-    expect(elided.rows.size).toBeGreaterThan(0);
-    expect(byteLength(elided.main)).toBeLessThan(
+    expect(stubbed.rows.size).toBeGreaterThan(0);
+    expect(byteLength(stubbed.main)).toBeLessThan(
       byteLength(baseline.main) / 20,
     );
-    expect(elided.main).toContain('"clicks"');
-    expect(elided.main).not.toContain('name-999');
-    expect(elided.main).not.toContain('line1');
+    expect(stubbed.main).toContain('"clicks"');
+    expect(stubbed.main).not.toContain('name-999');
+    expect(stubbed.main).not.toContain('line1');
   });
 
-  it('hydrates from a payload with elided static host elements', async () => {
+  it('hydrates from a payload with stubbed static host elements', async () => {
     // Fizz's chunk count per segment trips the jest infinite loop guard (6000
     // iterations) at 1000 rows, so hydration uses fewer rows than the byte test.
     const ROWS = 500;
-    // Small page: SSR output must be identical with and without elision.
+    // Small page: SSR output must be identical with and without stubbing.
     expect(await ssr(await renderApp(10, true))).toBe(
       await ssr(await renderApp(10, false)),
     );
-    const elided = await renderApp(ROWS, true);
-    const elidedForBrowser = elided.main;
+    const stubbed = await renderApp(ROWS, true);
+    const stubbedForBrowser = stubbed.main;
     // Client references are still serialized normally.
-    expect(elidedForBrowser).toContain('"clicks"');
-    expect(elidedForBrowser).not.toContain('name-499');
+    expect(stubbedForBrowser).toContain('"clicks"');
+    expect(stubbedForBrowser).not.toContain('name-499');
 
     // SSR gets the withheld rows through the side channel.
-    const html = await ssr(elided);
+    const html = await ssr(stubbed);
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
@@ -238,7 +238,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
     // Hydrate from the stripped payload. Any mismatch warning fails the test
     // (console.error is asserted to be empty by the test setup).
-    const response = consume(elidedForBrowser);
+    const response = consume(stubbedForBrowser);
     await response;
     let root;
     await act(() => {
@@ -259,7 +259,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     });
     expect(button.textContent).toBe('clicks:1');
 
-    // A later (non elided) payload replaces the adopted region.
+    // A later (non stubbed) payload replaces the adopted region.
     const next = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
@@ -287,11 +287,11 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toBe('Reportonly');
   });
 
-  // Zero framework opt-in: flag on, no elideStaticHosts / elidedHostRows. The server
+  // Zero framework opt-in: flag on, no htmlFirst / htmlFirstRows. The server
   // registers rows internally; the first createFrom* claims them for SSR.
-  // `flightOpts` is undefined (auto registry) or {elideStaticHosts: false} (SPA nav).
+  // `flightOpts` is undefined (auto registry) or {htmlFirst: false} (SPA nav).
   async function renderSharedApp(count, ...rest) {
-    const flightOpts = rest.length ? rest[0] : {elideStaticHosts: true};
+    const flightOpts = rest.length ? rest[0] : {htmlFirst: true};
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -337,7 +337,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     return main;
   }
 
-  it('SSRs and hydrates with no elideStaticHosts or elidedHostRows (internal registry)', async () => {
+  it('SSRs and hydrates with no htmlFirst or htmlFirstRows (internal registry)', async () => {
     const ROWS = 50;
     const main = await renderSharedApp(ROWS);
     expect(main).toContain(':Q');
@@ -370,18 +370,18 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(button.textContent).toBe('clicks:1');
   });
 
-  it('does not elide unless the request opts in', async () => {
+  it('does not stub unless the request opts in', async () => {
     const main = await renderSharedApp(10, undefined);
     expect(main).not.toContain('$J');
     expect(main).not.toContain(':Q');
     expect(main).toContain('name-9');
-    const off = await renderSharedApp(10, {elideStaticHosts: false});
+    const off = await renderSharedApp(10, {htmlFirst: false});
     expect(off).not.toContain('$J');
     expect(off).not.toContain(':Q');
     expect(off).toContain('name-9');
   });
 
-  it('writes nothing extra when there is nothing to elide', async () => {
+  it('writes nothing extra when there is nothing to stub', async () => {
     const Counter = clientExports(function Counter({label}) {
       return <button>{label}</button>;
     });
@@ -395,12 +395,12 @@ describe('ReactFlightDOMBrowser host elision', () => {
           ),
         ),
       );
-    const store = globalThis.__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__;
+    const store = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
     const pendingBefore = store === undefined ? 0 : store.pending.size;
 
     // Rendered from one call site with the DEV timestamp row dropped, so
     // debug info cannot differ between the two.
-    const options = [{elideStaticHosts: true}, undefined];
+    const options = [{htmlFirst: true}, undefined];
     const outputs = [];
     for (let i = 0; i < options.length; i++) {
       outputs.push(await render(options[i]));
@@ -409,7 +409,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const withoutTime = text => text.replace(/^:N.*\n/gm, '');
     expect(withoutTime(main)).toBe(withoutTime(stock));
     expect(main).not.toContain(':Q');
-    const storeAfter = globalThis.__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__;
+    const storeAfter = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
     expect(storeAfter === undefined ? 0 : storeAfter.pending.size).toBe(
       pendingBefore,
     );
@@ -443,7 +443,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          elideStaticHosts: true,
+          htmlFirst: true,
         }),
       ),
     );
@@ -451,7 +451,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const root = rows.findIndex(row => row.startsWith('0:'));
     const id = rows.findIndex(row => row.startsWith(':Q'));
     const stub = rows.findIndex(row => row.includes('$J'));
-    // The root row is written before anything is elided, so it comes first.
+    // The root row is written before anything is stubbed, so it comes first.
     expect(root).not.toBe(-1);
     expect(id).toBeGreaterThan(root);
     expect(stub).toBeGreaterThan(id);
@@ -473,7 +473,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
     // The store is created on first use.
     const pending = () => {
-      const store = globalThis.__REACT_FLIGHT_ELIDED_ROWS_REGISTRY__;
+      const store = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
       return store === undefined ? new Map() : store.pending;
     };
 
@@ -488,7 +488,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     function render() {
       const App = () => <article>{'important '.repeat(10)}</article>;
       return ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-        elideStaticHosts: true,
+        htmlFirst: true,
       });
     }
 
@@ -538,7 +538,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(htmlB.match(/name-\d+/g).length).toBe(7);
   });
 
-  it('SPA navigation uses elideStaticHosts: false for a full payload', async () => {
+  it('SPA navigation uses htmlFirst: false for a full payload', async () => {
     const ROWS = 20;
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
@@ -582,7 +582,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
 
-    const main = await renderOnce({elideStaticHosts: true});
+    const main = await renderOnce({htmlFirst: true});
     const html = await ssr({main, rows: undefined});
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -601,7 +601,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelectorAll('tr').length).toBe(ROWS);
 
     // Same module identity, full Flight (what /rsc navigation must emit).
-    const nextMain = await renderOnce({elideStaticHosts: false});
+    const nextMain = await renderOnce({htmlFirst: false});
     expect(nextMain).not.toContain('$J');
     expect(nextMain).not.toContain(':Q');
     const nextResponse = consume(nextMain);
@@ -615,7 +615,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelector('button')).toBe(button);
   });
 
-  it('navigation to different content replaces the elided regions', async () => {
+  it('navigation to different content replaces the stubbed regions', async () => {
     const Counter = clientExports(function Counter() {
       const [n, setN] = React.useState(0);
       return <button onClick={() => setN(n + 1)}>c:{n}</button>;
@@ -641,7 +641,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
           <Page v="a" />,
           webpackMap,
           {
-            elideStaticHosts: true,
+            htmlFirst: true,
           },
         ),
       ),
@@ -892,7 +892,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     });
   });
 
-  it('elides static output under the entries of a root element map', async () => {
+  it('stubs static output under the entries of a root element map', async () => {
     function Page() {
       return (
         <table>
@@ -907,13 +907,13 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
     const model = {page: <Page />, later: Promise.resolve(<Page />)};
-    const render = (opts = {elideStaticHosts: true}) =>
+    const render = (opts = {htmlFirst: true}) =>
       serverAct(async () =>
         readAll(
           ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
         ),
       );
-    const full = await render({elideStaticHosts: false});
+    const full = await render({htmlFirst: false});
     const main = await render();
     expect(main.length).toBeLessThan(full.length / 10);
     expect(main).not.toContain('name-99');
@@ -944,7 +944,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelectorAll('tr').length).toBe(100);
   });
 
-  it('elides static output nested in plain data around elements', async () => {
+  it('stubs static output nested in plain data around elements', async () => {
     function Page() {
       return (
         <table>
@@ -965,13 +965,13 @@ describe('ReactFlightDOMBrowser host elision', () => {
         slots: new Map([['children', {data: {rsc: <Page />}}]]),
       },
     };
-    const render = (opts = {elideStaticHosts: true}) =>
+    const render = (opts = {htmlFirst: true}) =>
       serverAct(async () =>
         readAll(
           ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
         ),
       );
-    const full = await render({elideStaticHosts: false});
+    const full = await render({htmlFirst: false});
     const main = await render();
     expect(main.length).toBeLessThan(full.length / 10);
     expect(main).not.toContain('name-99');
@@ -1010,7 +1010,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelectorAll('tr').length).toBe(100);
   });
 
-  it('elides the children of a keyed Fragment', async () => {
+  it('stubs the children of a keyed Fragment', async () => {
     const Counter = clientExports(function Counter() {
       return <button>count</button>;
     });
@@ -1028,7 +1028,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(model, webpackMap, {
-          elideStaticHosts: true,
+          htmlFirst: true,
         }),
       ),
     );
@@ -1051,7 +1051,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(html).toContain('count');
   });
 
-  it('never elides a void element on its own', async () => {
+  it('never stubs a void element on its own', async () => {
     const Counter = clientExports(function Counter() {
       return <button>count</button>;
     });
@@ -1069,7 +1069,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
     const {main, rows} = await flight(<App />);
-    // The <hr> stays inline; the <p> around the <br> is still elided.
+    // The <hr> stays inline; the <p> around the <br> is still stubbed.
     expect(main).not.toMatch(/\$J[0-9a-f]+:hr/);
     expect(main).toMatch(/\$J[0-9a-f]+:p/);
     expect(main).not.toContain('line-one');
@@ -1081,7 +1081,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toContain('line-two');
   });
 
-  it('restores elided content from the adopted DOM when it mounts again', async () => {
+  it('restores stubbed content from the adopted DOM when it mounts again', async () => {
     function App() {
       return (
         <main className="page" data-kind="static">
@@ -1098,7 +1098,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     container.innerHTML = html;
     const missing = [];
     const response = consume(main, undefined, {
-      onElidedContentMissing: () => missing.push('missing'),
+      onMissingHTML: () => missing.push('missing'),
     });
     await response;
     let root;
@@ -1134,7 +1134,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const main = await serverAct(() =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          elideStaticHosts: true,
+          htmlFirst: true,
         }),
       ),
     );
@@ -1144,8 +1144,8 @@ describe('ReactFlightDOMBrowser host elision', () => {
     document.body.appendChild(container);
     container.innerHTML = html;
     const missing = [];
-    const onElidedContentMissing = () => missing.push('missing');
-    const first = consume(main, undefined, {onElidedContentMissing});
+    const onMissingHTML = () => missing.push('missing');
+    const first = consume(main, undefined, {onMissingHTML});
     await first;
     let root;
     await act(() => {
@@ -1153,7 +1153,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     });
     // A framework decodes the payload again for its cache and renders that
     // copy later, after the page was replaced.
-    const second = consume(main, undefined, {onElidedContentMissing});
+    const second = consume(main, undefined, {onMissingHTML});
     await second;
     await act(() => root.render(<p>elsewhere</p>));
     await act(() => root.render(<Shell response={second} />));
@@ -1163,11 +1163,11 @@ describe('ReactFlightDOMBrowser host elision', () => {
   });
 
   describe('inside a hidden Activity', () => {
-    async function hydrateElided(App) {
+    async function hydrateStubbed(App) {
       const main = await serverAct(() =>
         readAll(
           ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-            elideStaticHosts: true,
+            htmlFirst: true,
           }),
         ),
       );
@@ -1192,7 +1192,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       document.body.appendChild(container);
       container.innerHTML = html;
       const response = consume(main, undefined, {
-        onElidedContentMissing: () => {
+        onMissingHTML: () => {
           throw new Error('missing');
         },
       });
@@ -1207,7 +1207,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       return {container, root, Page, response};
     }
 
-    it('keeps the inline display of an elided element through hide and show', async () => {
+    it('keeps the inline display of an stubbed element through hide and show', async () => {
       function App() {
         return (
           <section style={{display: 'flex'}}>
@@ -1215,7 +1215,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
           </section>
         );
       }
-      const {container, root, Page, response} = await hydrateElided(App);
+      const {container, root, Page, response} = await hydrateStubbed(App);
       const section = container.querySelector('section');
       expect(section.style.display).toBe('flex');
       await act(() => root.render(<Page mode="hidden" response={response} />));
@@ -1229,7 +1229,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       function App() {
         return <h2>page-heading</h2>;
       }
-      const {container, root, Page, response} = await hydrateElided(App);
+      const {container, root, Page, response} = await hydrateStubbed(App);
       await act(() => root.render(<Page mode="hidden" response={response} />));
       expect(container.querySelector('h2').style.display).toBe('none');
       // Evicted while hidden, then rendered again from the same payload.
@@ -1262,7 +1262,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     container.innerHTML = html;
     const missing = [];
     const response = consume(main, undefined, {
-      onElidedContentMissing: () => missing.push('missing'),
+      onMissingHTML: () => missing.push('missing'),
     });
     await response;
     let root;
@@ -1284,12 +1284,12 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(restored.textContent).toBe('snapshot-heading');
   });
 
-  // Returns {main, rows}: rendered with or without elision.
-  async function flight(element, elide = true) {
+  // Returns {main, rows}: rendered with or without stubbing.
+  async function flight(element, stub = true) {
     const rows = new Map();
-    const options = elide
-      ? {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}
-      : {elideStaticHosts: false};
+    const options = stub
+      ? {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}
+      : {htmlFirst: false};
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
@@ -1307,7 +1307,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
   }
 
   // Hydrates `html` with the (row-less) browser payload `main`.
-  // `flightOptions` go to createFromReadableStream (e.g. onElidedContentMissing).
+  // `flightOptions` go to createFromReadableStream (e.g. onMissingHTML).
   // `rootOptions` go to hydrateRoot.
   async function hydrate(main, html, flightOptions, rootOptions) {
     const container = document.createElement('div');
@@ -1332,7 +1332,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     return {container, errors, root};
   }
 
-  // Framework recovery: replace the tree with a full, non-elided payload.
+  // Framework recovery: replace the tree with a full, non-stubbed payload.
   async function renderFullPayload(root, app) {
     const full = await flight(app, false);
     expect(full.main).not.toContain('$J');
@@ -1341,7 +1341,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     await act(() => root.render(<Shell response={response} />));
   }
 
-  it('does not elide host elements passed as props to a client component', async () => {
+  it('does not stub host elements passed as props to a client component', async () => {
     const Tabs = clientExports(function Tabs({panels}) {
       const [i, setI] = React.useState(0);
       return (
@@ -1389,7 +1389,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelector('ul').textContent).toBe('zyx');
   });
 
-  it('elides keyed static children of a client list; reorder moves adopted DOM', async () => {
+  it('stubs keyed static children of a client list; reorder moves adopted DOM', async () => {
     const List = clientExports(function List({children}) {
       const [rev, setRev] = React.useState(false);
       const items = React.Children.toArray(children);
@@ -1418,7 +1418,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelector('ul').textContent).toBe('zyx');
   });
 
-  it('elides client-panel children and recovers when they mount without server DOM', async () => {
+  it('stubs client-panel children and recovers when they mount without server DOM', async () => {
     const Panel = clientExports(function Panel({children}) {
       const [open, setOpen] = React.useState(false);
       return (
@@ -1439,7 +1439,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const html = await ssr(f);
     const missing = jest.fn();
     const {container, errors, root} = await hydrate(f.main, html, {
-      onElidedContentMissing: () => {
+      onMissingHTML: () => {
         missing();
       },
     });
@@ -1461,7 +1461,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       await serverAct(async () => {
         const [forSsr, forBrowser] =
           ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
-            elideStaticHosts: true,
+            htmlFirst: true,
             ...options,
           }).tee();
         const browser = readAll(forBrowser);
@@ -1482,7 +1482,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       return serverAct(() =>
         readAll(
           ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
-            elideStaticHosts: true,
+            htmlFirst: true,
           }),
         ),
       );
@@ -1523,7 +1523,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       expect(unrendered).not.toContain('modal-body');
       const lateBytes = byteLength(main) - byteLength(unrendered);
       console.log(
-        `late rows: elided=${byteLength(unrendered)} ` +
+        `late rows: stubbed=${byteLength(unrendered)} ` +
           `with the modal's row=${byteLength(main)} (+${lateBytes})`,
       );
       // One row. In DEV it comes with its debug info.
@@ -1531,7 +1531,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
 
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
-        onElidedContentMissing: missing,
+        onMissingHTML: missing,
       });
       expect(container.innerHTML).toBe(html);
       expect(container.textContent).not.toContain('modal-body');
@@ -1567,7 +1567,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       expect(html).not.toContain('client-only-content');
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
-        onElidedContentMissing: missing,
+        onMissingHTML: missing,
       });
       expect(container.innerHTML).toBe('<div><p>client-only-content</p></div>');
       expect(missing).not.toHaveBeenCalled();
@@ -1643,7 +1643,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
             </main>,
             webpackMap,
             {
-              elideStaticHosts: true,
+              htmlFirst: true,
               signal: controller.signal,
               onError(error) {
                 errors.push(error.message);
@@ -1686,12 +1686,12 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(reportedErrors).toHaveLength(1);
     expect(reportedErrors[0]).toContain('a <section>');
     expect(reportedErrors[0]).toContain('mounts after hydration');
-    expect(reportedErrors[0]).toContain('onElidedContentMissing');
+    expect(reportedErrors[0]).toContain('onMissingHTML');
     reportedErrors.length = 0;
     expect(container.textContent).not.toContain('modal-body');
   });
 
-  it('keeps the key on the stub of an elided element', async () => {
+  it('keeps the key on the stub of an stubbed element', async () => {
     const Client = clientExports(function Client() {
       return <i>c</i>;
     });
@@ -1717,7 +1717,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelectorAll('li').length).toBe(3);
   });
 
-  it('does not elide a Suspense fallback that is shown after hydration', async () => {
+  it('does not stub a Suspense fallback that is shown after hydration', async () => {
     const p = new Promise(() => {});
     const Loader = clientExports(function Loader() {
       const [go, setGo] = React.useState(false);
@@ -1742,7 +1742,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toContain('loading...');
   });
 
-  it('elides client-only-wrapper children and recovers after mount', async () => {
+  it('stubs client-only-wrapper children and recovers after mount', async () => {
     const ClientOnly = clientExports(function ClientOnly({children}) {
       const [mounted, setMounted] = React.useState(false);
       React.useEffect(() => setMounted(true), []);
@@ -1761,7 +1761,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     const html = await ssr(f);
     const missing = jest.fn();
     const {container, errors, root} = await hydrate(f.main, html, {
-      onElidedContentMissing: () => {
+      onMissingHTML: () => {
         missing();
       },
     });
@@ -1772,7 +1772,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toContain('client-only-content');
   });
 
-  it('fails the SSR consumer when an elided row is missing', async () => {
+  it('fails the SSR consumer when an stubbed row is missing', async () => {
     const App = () => <article>{'important '.repeat(10)}</article>;
     const f = await flight(<App />);
     expect(f.rows.size).toBe(1);
@@ -1791,10 +1791,10 @@ describe('ReactFlightDOMBrowser host elision', () => {
     } catch (e) {
       error = e;
     }
-    expect(error && error.message).toContain('Missing elided row');
+    expect(error && error.message).toContain('Missing stubbed row');
   });
 
-  it('elides host-position static hosts including client children, not other props', async () => {
+  it('stubs host-position static hosts including client children, not other props', async () => {
     const Client = clientExports(function Client({children, fallback}) {
       return (
         <div>
@@ -1832,18 +1832,18 @@ describe('ReactFlightDOMBrowser host elision', () => {
       </main>
     );
     const f = await flight(<App />);
-    const elided = rowsText(f.rows);
-    // Elided: server output, host children, Suspense children, and client children.
-    expect(elided).toContain('server-row-text');
-    expect(elided).toContain('host-child-text');
-    expect(elided).toContain('suspense-content-text');
-    expect(elided).toContain('client-child-text');
+    const stubbed = rowsText(f.rows);
+    // Stubbed: server output, host children, Suspense children, and client children.
+    expect(stubbed).toContain('server-row-text');
+    expect(stubbed).toContain('host-child-text');
+    expect(stubbed).toContain('suspense-content-text');
+    expect(stubbed).toContain('client-child-text');
     expect(f.main).not.toContain('host-child-text');
     expect(f.main).not.toContain('suspense-content-text');
     expect(f.main).not.toContain('client-child-text');
     // Kept: non-children client props, and Suspense fallbacks.
     ['client-prop-text', 'suspense-fallback-text'].forEach(kept => {
-      expect(elided).not.toContain(kept);
+      expect(stubbed).not.toContain(kept);
       expect(f.main).toContain(kept);
     });
     expect(f.main).toMatch(/\$J[0-9a-f]+:table/);
@@ -1889,7 +1889,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(deep / shallow).toBeLessThan(6);
   });
 
-  it('keeps everything from elided rows out of the main stream', async () => {
+  it('keeps everything from stubbed rows out of the main stream', async () => {
     const T = 'this is a long static paragraph that repeats across rows';
     const BIG_TEXT = 'big-text-'.repeat(300);
     const App = () => (
@@ -1912,7 +1912,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     }
 
     // Streams the HTML of `app` like a server does. The SSR consumer gets the
-    // Flight rows of the elided content that contains each marker in `later`
+    // Flight rows of the stubbed content that contains each marker in `later`
     // one at a time, in that order, so Fizz completes those boundaries in that
     // order. Returns the browser payload and the HTML chunks (the shell, then
     // one chunk per released row).
@@ -1946,7 +1946,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
       const response = ReactServerDOMClient.createFromReadableStream(
         ssrStream,
-        {elidedHostRows: f.rows},
+        {htmlFirstRows: f.rows},
       );
       let buffer = '';
       await act(async () => {
@@ -1997,7 +1997,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
     }
 
     // Hydrates with the browser payload once the first `ready` chunks are in.
-    async function hydrateStream(main, chunks, ready, onElidedContentMissing) {
+    async function hydrateStream(main, chunks, ready, onMissingHTML) {
       const container = document.createElement('div');
       document.body.appendChild(container);
       for (let i = 0; i < ready; i++) {
@@ -2006,7 +2006,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       const errors = [];
       const response = ReactServerDOMClient.createFromReadableStream(
         stringToStream(main),
-        {onElidedContentMissing},
+        {onMissingHTML},
       );
       await response;
       let root;
@@ -2065,7 +2065,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       );
     }
 
-    it('elides and adopts late server components in nested boundaries completed out of order', async () => {
+    it('stubs and adopts late server components in nested boundaries completed out of order', async () => {
       const App = makeStreamingApp();
       // Fizz completes the outer, then the side, then the inner boundary.
       const {main, chunks} = await streamHTML(<App />, [
@@ -2224,7 +2224,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
       errors.forEach(e => expect(e).toContain('recoverable'));
     });
 
-    it('reports an error and keeps the page when onElidedContentMissing is not provided', async () => {
+    it('reports an error and keeps the page when onMissingHTML is not provided', async () => {
       for (let i = 0; i < 2; i++) {
         const withSuspense = i === 0;
         const {App, goToClient} = makeFragileApp(withSuspense, withSuspense);
@@ -2237,7 +2237,7 @@ describe('ReactFlightDOMBrowser host elision', () => {
           undefined,
         );
         expect(reportedErrors.length).toBe(1);
-        expect(reportedErrors.pop()).toContain('onElidedContentMissing');
+        expect(reportedErrors.pop()).toContain('onMissingHTML');
         expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
         // Not blank: the shell and the boundary fallback (or the server HTML
         // of the root) stay on screen.

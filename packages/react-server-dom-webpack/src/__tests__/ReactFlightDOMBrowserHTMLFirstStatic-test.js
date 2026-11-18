@@ -9,10 +9,10 @@
 
 'use strict';
 
-// Run the whole file with enableFlightStaticHostElision turned on.
+// Run the whole file with enableFlightHTMLFirst turned on.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightStaticHostElision: true,
+  enableFlightHTMLFirst: true,
 }));
 
 // Polyfills for test environment
@@ -39,7 +39,7 @@ let ReactServerDOMServer;
 let ReactServerDOMClient;
 let use;
 
-describe('ReactFlightDOMBrowser html-first elision', () => {
+describe('ReactFlightDOMBrowser html-first stubbing', () => {
   beforeEach(() => {
     jest.resetModules();
 
@@ -102,11 +102,11 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     return encoder.encode(text).length;
   }
 
-  // `elidedHostRows` is only given to the consumer that renders HTML (SSR). The
+  // `htmlFirstRows` is only given to the consumer that renders HTML (SSR). The
   // browser consumer doesn't get them and adopts the server DOM instead.
-  function consume(rsc, elidedRows) {
+  function consume(rsc, stubbedRows) {
     return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
-      elidedHostRows: elidedRows,
+      htmlFirstRows: stubbedRows,
     });
   }
 
@@ -137,11 +137,11 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
   });
   const BIG = 'big-text-'.repeat(300);
 
-  async function flight(element, elide) {
+  async function flight(element, stub) {
     const rows = new Map();
-    const options = elide
-      ? {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}
-      : {elideStaticHosts: false};
+    const options = stub
+      ? {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}
+      : {htmlFirst: false};
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
@@ -181,23 +181,23 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
   it('keeps style, JSON-LD and big strings out of the inlined stream', async () => {
     const App = makeApp();
     const baseline = await flight(<App />, false);
-    const elided = await flight(<App />, true);
+    const stubbed = await flight(<App />, true);
     expect(baseline.main).toContain('item-199');
     expect(baseline.main).toContain('.a{color:red}');
-    expect(elided.main).not.toContain('item-199');
-    expect(elided.main).not.toContain('.a{color:red}');
-    expect(elided.main).not.toContain('big-text-');
+    expect(stubbed.main).not.toContain('item-199');
+    expect(stubbed.main).not.toContain('.a{color:red}');
+    expect(stubbed.main).not.toContain('big-text-');
     // No text rows (2:T...) leaked into the main stream either.
-    expect(elided.main).not.toMatch(/^[0-9a-f]+:T/m);
-    expect(elided.main).toContain('"clicks"');
-    expect(byteLength(elided.main)).toBeLessThan(2000);
+    expect(stubbed.main).not.toMatch(/^[0-9a-f]+:T/m);
+    expect(stubbed.main).toContain('"clicks"');
+    expect(byteLength(stubbed.main)).toBeLessThan(2000);
     // The withheld rows carry the content for SSR.
-    const rows = Array.from(elided.rows.values()).join('');
+    const rows = Array.from(stubbed.rows.values()).join('');
     expect(rows).toContain('item-199');
     expect(rows).toContain('big-text-');
   });
 
-  it('does not elide resources or executable scripts', async () => {
+  it('does not stub resources or executable scripts', async () => {
     const {main, rows} = await flight(
       <div>
         <script>{'window.__x=1'}</script>
@@ -215,8 +215,8 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
 
   it('hydrates SSR HTML with the stripped stream without mismatches', async () => {
     const App = makeApp();
-    const elided = await flight(<App />, true);
-    const html = await ssr(elided);
+    const stubbed = await flight(<App />, true);
+    const html = await ssr(stubbed);
     expect(html).toContain('item-199');
     expect(html).toContain('.a{color:red}');
     expect(html).toContain('big-text-');
@@ -230,7 +230,7 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     const button = container.querySelector('button');
 
     // The browser only gets the stripped stream (no side channel).
-    const response = consume(elided.main);
+    const response = consume(stubbed.main);
     await response;
     let root;
     await act(() => {
@@ -254,7 +254,7 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     });
     expect(button.textContent).toBe('clicks:1');
 
-    // Navigation: a full (non elided) payload has the real new content.
+    // Navigation: a full (non stubbed) payload has the real new content.
     const NextApp = () => (
       <div id="root">
         <style dangerouslySetInnerHTML={{__html: '.next{color:green}'}} />
@@ -317,14 +317,14 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
         </html>
       );
     }
-    const elided = await flight(<Doc />, true);
-    expect(elided.main).not.toContain('item-199');
-    // Static content inside a Suspense boundary is elided too and adopted
+    const stubbed = await flight(<Doc />, true);
+    expect(stubbed.main).not.toContain('item-199');
+    // Static content inside a Suspense boundary is stubbed too and adopted
     // once the boundary hydrates.
-    expect(elided.main).not.toContain('late-text');
-    expect(elided.rows.size).toBeGreaterThan(0);
+    expect(stubbed.main).not.toContain('late-text');
+    expect(stubbed.rows.size).toBeGreaterThan(0);
 
-    const html = await ssr(elided);
+    const html = await ssr(stubbed);
     expect(html).toContain('item-199');
     expect(html).toContain('late-text');
     document.open();
@@ -335,7 +335,7 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     const late = document.getElementById('late');
     const button = document.querySelector('button');
 
-    const response = consume(elided.main);
+    const response = consume(stubbed.main);
     await response;
     await act(() => {
       ReactDOMClient.hydrateRoot(document, <Shell response={response} />);
@@ -350,7 +350,7 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     expect(button.textContent).toBe('late:1');
   });
 
-  it('never elides client components: they keep their full props', async () => {
+  it('never stubs client components: they keep their full props', async () => {
     const Row = clientExports(function Row({name, details}) {
       return (
         <li>
@@ -365,13 +365,13 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
         <Row name="a" details={details} />
       </ul>
     );
-    const elided = await flight(<App />, true);
+    const stubbed = await flight(<App />, true);
     // The client element and its props stay in the stream (hydration needs
     // them); the host skeleton around it is not static.
-    expect(elided.main).toContain('client-notes-');
-    expect(elided.main).toContain('"name"');
-    expect(elided.rows.size).toBe(0);
-    const browser = await consume(elided.main);
+    expect(stubbed.main).toContain('client-notes-');
+    expect(stubbed.main).toContain('"name"');
+    expect(stubbed.rows.size).toBe(0);
+    const browser = await consume(stubbed.main);
     expect(browser.props.children.props.details).toEqual(details);
   });
 
@@ -469,7 +469,7 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          elideStaticHosts: {
+          htmlFirst: {
             onRow: () => {},
             onValue: (id, value) => live.set(id, value),
           },
@@ -485,7 +485,7 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
     expect(await ssr({main, rows: live})).toBe(await ssr(json));
   });
 
-  it('elides keyed server components that render array children', async () => {
+  it('stubs keyed server components that render array children', async () => {
     const Row = ({name}) => (
       <tr className="r">
         <td>
@@ -506,10 +506,10 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
         </tbody>
       </table>
     );
-    const elided = await flight(<App />, true);
-    expect(elided.rows.size).toBe(2);
-    expect(Array.from(elided.rows.values())[0]).toContain('"a"');
-    const html = await ssr(elided);
+    const stubbed = await flight(<App />, true);
+    expect(stubbed.rows.size).toBe(2);
+    expect(Array.from(stubbed.rows.values())[0]).toContain('"a"');
+    const html = await ssr(stubbed);
     expect(html).toContain('<tr class="r"><td>a<!-- --> <b>x</b></td></tr>');
   });
 
@@ -524,8 +524,8 @@ describe('ReactFlightDOMBrowser html-first elision', () => {
           errors.push(e.message);
         },
         ...(live
-          ? {elideStaticHosts: {onValue: (id, v) => rows.set(id, v)}}
-          : {elideStaticHosts: {onRow: (id, json) => rows.set(id, json)}}),
+          ? {htmlFirst: {onValue: (id, v) => rows.set(id, v)}}
+          : {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}),
       };
       const main = await serverAct(async () =>
         readAll(

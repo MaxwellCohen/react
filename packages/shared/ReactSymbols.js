@@ -30,7 +30,7 @@ export const REACT_SUSPENSE_LIST_TYPE: symbol = Symbol.for(
 export const REACT_MEMO_TYPE: symbol = Symbol.for('react.memo');
 export const REACT_LAZY_TYPE: symbol = Symbol.for('react.lazy');
 export const REACT_SCOPE_TYPE: symbol = Symbol.for('react.scope');
-export const REACT_ELIDED_HOST_TYPE: symbol = Symbol.for('react.elided_host');
+export const REACT_STATIC_STUB_TYPE: symbol = Symbol.for('react.static_stub');
 export const REACT_ACTIVITY_TYPE: symbol = Symbol.for('react.activity');
 export const REACT_LEGACY_HIDDEN_TYPE: symbol = Symbol.for(
   'react.legacy_hidden',

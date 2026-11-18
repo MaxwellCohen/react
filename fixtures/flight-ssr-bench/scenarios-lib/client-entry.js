@@ -13,7 +13,8 @@ window.__webpack_chunk_load__ = () => Promise.resolve();
 function Shell({response}) {
   const tree = use(response);
   useEffect(() => {
-    if (window.__hydratedAt === undefined) window.__hydratedAt = performance.now();
+    if (window.__hydratedAt === undefined)
+      window.__hydratedAt = performance.now();
   }, []);
   return tree;
 }
@@ -36,12 +37,14 @@ const root = hydrateRoot(
   document,
   <Shell
     response={createFromReadableStream(flightStream, {
-      // A boundary or the root client-rendered where static HTML was elided:
+      // A boundary or the root client-rendered where static HTML was stubbed:
       // re-render from the full payload, like a navigation to the same URL.
-      onElidedContentMissing() {
+      onMissingHTML() {
         const [, v, id] = location.pathname.split('/');
-        window.__elidedRecoveries = (window.__elidedRecoveries || 0) + 1;
-        root.render(<Shell response={createFromFetch(fetch('/' + v + '/rsc/' + id))} />);
+        window.__stubbedRecoveries = (window.__stubbedRecoveries || 0) + 1;
+        root.render(
+          <Shell response={createFromFetch(fetch('/' + v + '/rsc/' + id))} />
+        );
       },
     })}
   />,

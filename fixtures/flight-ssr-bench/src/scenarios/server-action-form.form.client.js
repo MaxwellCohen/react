@@ -12,8 +12,14 @@ export default function Form({children}) {
     <form action={action}>
       {children}
       <input name="q" id="q" />
-      <button type="submit" className="save">save</button>
-      <output className="res">{state.count ? 'Saved: ' + state.last + ' (' + state.count + ')' : 'none'}</output>
+      <button type="submit" className="save">
+        save
+      </button>
+      <output className="res">
+        {state.count
+          ? 'Saved: ' + state.last + ' (' + state.count + ')'
+          : 'none'}
+      </output>
     </form>
   );
 }

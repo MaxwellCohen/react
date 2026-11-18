@@ -16,7 +16,7 @@ export function Root({size}) {
     <Document title="Hoistables">
       <main id="main">
         <h1>Hoistables</h1>
-        {sections.map((i) => (
+        {sections.map(i => (
           <section key={i} id={'section-' + i}>
             <title>Hoistables section {i}</title>
             <meta name={'hoistable-' + i} content={'value-' + i} />
@@ -29,7 +29,9 @@ export function Root({size}) {
                 '%3C/text%3E%3C/svg%3E'
               }
             />
-            <style href={'s-' + i} precedence="default">{`.sec-${i} { color: hsl(${i * 7 % 360}, 50%, 50%); padding: ${i % 10}px; }`}</style>
+            <style
+              href={'s-' + i}
+              precedence="default">{`.sec-${i} { color: hsl(${(i * 7) % 360}, 50%, 50%); padding: ${i % 10}px; }`}</style>
             <h2>Section {i}</h2>
             <p>Body content for section {i}.</p>
           </section>

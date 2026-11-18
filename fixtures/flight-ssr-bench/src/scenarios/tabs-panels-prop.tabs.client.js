@@ -6,7 +6,9 @@ export default function Tabs({labels, panels}) {
   return (
     <div className="tabs">
       {labels.map((l, n) => (
-        <button key={n} className="tab" onClick={() => setI(n)}>{l}</button>
+        <button key={n} className="tab" onClick={() => setI(n)}>
+          {l}
+        </button>
       ))}
       <section className="shown">{panels[i]}</section>
     </div>

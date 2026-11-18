@@ -23,7 +23,7 @@ export function Root() {
           {''}
           {0}
         </>
-        text-1{' '}text-2{3}
+        text-1 text-2{3}
         {['u', 'v', 'w']}
       </div>
       <div id="b">

@@ -41,7 +41,12 @@ const REVIEWS = [
 function Card({p}) {
   return (
     <li className="product">
-      <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt={p.name} width={160} height={160} />
+      <img
+        src="data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        alt={p.name}
+        width={160}
+        height={160}
+      />
       <h3>{p.name}</h3>
       <p className="price">${p.price}</p>
       <p>
@@ -60,13 +65,17 @@ export function Root({size}) {
       head={
         <>
           <style dangerouslySetInnerHTML={{__html: CSS}} />
-          <script type="application/ld+json" dangerouslySetInnerHTML={{__html: LD}} />
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{__html: LD}}
+          />
         </>
       }>
       <header>
         <strong>Example Storefront</strong>
         <nav>
-          <a href="/men">Men</a> <a href="/women">Women</a> <a href="/sale">Sale</a> <a href="/cart">Cart</a>
+          <a href="/men">Men</a> <a href="/women">Women</a>{' '}
+          <a href="/sale">Sale</a> <a href="/cart">Cart</a>
         </nav>
         <CartCounter />
       </header>
@@ -101,7 +110,8 @@ export function Root({size}) {
       </main>
       <footer>
         <p>
-          &copy; Example Storefront &middot; <a href="/privacy">Privacy</a> &middot; <a href="/terms">Terms</a>
+          &copy; Example Storefront &middot; <a href="/privacy">Privacy</a>{' '}
+          &middot; <a href="/terms">Terms</a>
         </p>
       </footer>
     </Document>
@@ -116,6 +126,11 @@ export const interact = [
   {expectText: {selector: 'button.carousel-next', text: 'Slide 2 of 3'}},
   {fill: 'input#newsletter-email', value: 'shopper@example.test'},
   {click: 'button.newsletter-submit'},
-  {expectText: {selector: 'p.newsletter-status', text: 'Subscribed: shopper@example.test'}},
+  {
+    expectText: {
+      selector: 'p.newsletter-status',
+      text: 'Subscribed: shopper@example.test',
+    },
+  },
   {expectCount: {selector: 'li.product', count: 'size'}},
 ];

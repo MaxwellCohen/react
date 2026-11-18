@@ -12,7 +12,7 @@
 
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
-  enableFlightStaticHostElision: true,
+  enableFlightHTMLFirst: true,
 }));
 
 let ReactServer;
@@ -20,7 +20,7 @@ let ReactServerDOMServer;
 let serverAct;
 let turbopackMap;
 
-describe('ReactFlightTurbopackDOMNode static host elision', () => {
+describe('ReactFlightTurbopackDOMNode HTML-first Flight', () => {
   beforeEach(() => {
     jest.resetModules();
     serverAct = require('internal-test-utils').serverAct;
@@ -54,12 +54,12 @@ describe('ReactFlightTurbopackDOMNode static host elision', () => {
     }
   }
 
-  it('forwards elideStaticHosts from renderToReadableStream', async () => {
+  it('forwards htmlFirst from renderToReadableStream', async () => {
     const stream = await serverAct(() =>
       ReactServerDOMServer.renderToReadableStream(
         ReactServer.createElement(App),
         turbopackMap,
-        {elideStaticHosts: {onValue() {}}},
+        {htmlFirst: {onValue() {}}},
       ),
     );
     const text = await readWebStream(stream);
@@ -67,7 +67,7 @@ describe('ReactFlightTurbopackDOMNode static host elision', () => {
     expect(text).not.toContain('static-heading');
   });
 
-  it('forwards elideStaticHosts from renderToPipeableStream', async () => {
+  it('forwards htmlFirst from renderToPipeableStream', async () => {
     const {PassThrough} = require('stream');
     const out = new PassThrough();
     let text = '';
@@ -79,7 +79,7 @@ describe('ReactFlightTurbopackDOMNode static host elision', () => {
       ReactServerDOMServer.renderToPipeableStream(
         ReactServer.createElement(App),
         turbopackMap,
-        {elideStaticHosts: {onValue() {}}},
+        {htmlFirst: {onValue() {}}},
       ).pipe(out),
     );
     await finished;

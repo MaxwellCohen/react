@@ -20,12 +20,23 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
   const rows = [];
   try {
     for (const s of ctx.scenarios) {
-      const acc = Object.fromEntries(ctx.workers.map(w => [w.name, {times: [], lens: new Set()}]));
+      const acc = Object.fromEntries(
+        ctx.workers.map(w => [w.name, {times: [], lens: new Set()}])
+      );
       const bytes = {};
       const run = async (w, record) => {
-        const r = await w.call('render', {id: s.id, size: s.size, recoverErrors: s.allowRecoverableErrors});
-        const probs = r.problems.filter(p => !(s.allowRecoverableErrors && /Fizz Node error/.test(p)));
-        if (probs.length) throw new Error(s.id + ' [' + w.name + '] server console output: ' + probs[0]);
+        const r = await w.call('render', {
+          id: s.id,
+          size: s.size,
+          recoverErrors: s.allowRecoverableErrors,
+        });
+        const probs = r.problems.filter(
+          p => !(s.allowRecoverableErrors && /Fizz Node error/.test(p))
+        );
+        if (probs.length)
+          throw new Error(
+            s.id + ' [' + w.name + '] server console output: ' + probs[0]
+          );
         const buf = Buffer.from(r.html);
         acc[w.name].lens.add(buf.length);
         if (record) acc[w.name].times.push(r.ms);
@@ -33,13 +44,20 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
           bytes[w.name] = {
             html: buf.length,
             gzip: zlib.gzipSync(buf, {level: 9}).length,
-            brotli: zlib.brotliCompressSync(buf, {params: {[zlib.constants.BROTLI_PARAM_QUALITY]: 11}}).length,
-            flight: (r.html.match(FLIGHT_RE) || []).reduce((n, x) => n + Buffer.byteLength(x), 0),
+            brotli: zlib.brotliCompressSync(buf, {
+              params: {[zlib.constants.BROTLI_PARAM_QUALITY]: 11},
+            }).length,
+            flight: (r.html.match(FLIGHT_RE) || []).reduce(
+              (n, x) => n + Buffer.byteLength(x),
+              0
+            ),
           };
         }
       };
-      for (let i = 0; i < 2; i++) for (const w of ctx.workers) await run(w, false);
-      for (let i = 0; i < N; i++) for (const w of ctx.workers) await run(w, true);
+      for (let i = 0; i < 2; i++)
+        for (const w of ctx.workers) await run(w, false);
+      for (let i = 0; i < N; i++)
+        for (const w of ctx.workers) await run(w, true);
       for (const w of ctx.workers) {
         const t = acc[w.name].times.slice().sort((a, b) => a - b);
         rows.push({
@@ -63,15 +81,33 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
   }
   console.log('');
   for (const r of rows) {
-    const off = rows.find(x => x.scenario === r.scenario && x.variant === 'off');
-    r.deltas = {html: pct(r.html, off.html), gzip: pct(r.gzip, off.gzip), brotli: pct(r.brotli, off.brotli), flight: pct(r.flight, off.flight)};
+    const off = rows.find(
+      x => x.scenario === r.scenario && x.variant === 'off'
+    );
+    r.deltas = {
+      html: pct(r.html, off.html),
+      gzip: pct(r.gzip, off.gzip),
+      brotli: pct(r.brotli, off.brotli),
+      flight: pct(r.flight, off.flight),
+    };
     r.timeRatio = r.median / off.median;
     r.flags = [];
     if (r.variant !== 'off') {
       const timeRegress = r.timeRatio > 1.05 && r.q1 > off.q3;
-      if (r.deltas.html > 0.5 || r.deltas.gzip > 0.5 || r.deltas.brotli > 0.5 || timeRegress) r.flags.push('REGRESSION');
+      if (
+        r.deltas.html > 0.5 ||
+        r.deltas.gzip > 0.5 ||
+        r.deltas.brotli > 0.5 ||
+        timeRegress
+      )
+        r.flags.push('REGRESSION');
       if (Math.abs(r.deltas.gzip) <= 1) r.flags.push('NO-BENEFIT');
-      if (r.expectedBenefit === 'high' && r.variant === 'all' && r.deltas.gzip > -1) r.flags.push('EXPECTED-HIGH-GOT-NONE');
+      if (
+        r.expectedBenefit === 'high' &&
+        r.variant === 'all' &&
+        r.deltas.gzip > -1
+      )
+        r.flags.push('EXPECTED-HIGH-GOT-NONE');
     }
     if (!r.bytesDeterministic) r.flags.push('NONDETERMINISTIC-BYTES');
   }
@@ -79,7 +115,17 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
   fs.mkdirSync(resultsDir, {recursive: true});
   fs.writeFileSync(
     path.join(resultsDir, 'scenarios.json'),
-    JSON.stringify({size: opts.size, n: N, builds: opts.builds, variants: opts.variants, rows}, null, 2) + '\n'
+    JSON.stringify(
+      {
+        size: opts.size,
+        n: N,
+        builds: opts.builds,
+        variants: opts.variants,
+        rows,
+      },
+      null,
+      2
+    ) + '\n'
   );
   const md = [
     '# Scenario corpus results',
@@ -91,16 +137,23 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
     '|---|---|---|---|---|---|---|---|---|---|',
   ];
   for (const r of rows) {
-    const cell = (v, d) => (r.variant === 'off' ? String(v) : `${v} (${fmtPct(d)})`);
+    const cell = (v, d) =>
+      r.variant === 'off' ? String(v) : `${v} (${fmtPct(d)})`;
     md.push(
       `| ${r.scenario} | ${r.expectedBenefit} | ${r.variant} | ${cell(r.html, r.deltas.html)} | ${cell(r.gzip, r.deltas.gzip)} | ${cell(r.brotli, r.deltas.brotli)} | ${cell(r.flight, r.deltas.flight)} | ${r.median.toFixed(2)} [${r.q1.toFixed(2)}-${r.q3.toFixed(2)}] | ${r.timeRatio.toFixed(2)} | ${r.flags.join(' ')} |`
     );
   }
-  fs.writeFileSync(path.join(resultsDir, 'RESULTS-SCENARIOS.md'), md.join('\n') + '\n');
+  fs.writeFileSync(
+    path.join(resultsDir, 'RESULTS-SCENARIOS.md'),
+    md.join('\n') + '\n'
+  );
   console.log(md.slice(6).join('\n'));
   const bad = rows.filter(r => r.flags.includes('NONDETERMINISTIC-BYTES'));
   if (bad.length) {
-    console.error('Non-deterministic byte counts: ' + bad.map(r => r.scenario + '/' + r.variant).join(', '));
+    console.error(
+      'Non-deterministic byte counts: ' +
+        bad.map(r => r.scenario + '/' + r.variant).join(', ')
+    );
     process.exit(1);
   }
 })().catch(e => {

@@ -10,7 +10,13 @@ export const expectedBenefit = 'high';
 // size = number of docs sections (each has 4 sidebar links and 1 TOC entry).
 export const sizes = {smoke: 12, full: 400};
 
-const GROUPS = ['Getting started', 'Guides', 'Concepts', 'API reference', 'Operations'];
+const GROUPS = [
+  'Getting started',
+  'Guides',
+  'Concepts',
+  'API reference',
+  'Operations',
+];
 
 function sectionId(i) {
   return 'section-' + i;
@@ -73,11 +79,14 @@ function Section({i}) {
     <section id={sectionId(i)}>
       <h2>Topic {i}</h2>
       <p>
-        This section documents topic {i}. It covers the configuration surface, the defaults that ship with the
-        package, and the common mistakes teams make when they first wire it into an existing project.
+        This section documents topic {i}. It covers the configuration surface,
+        the defaults that ship with the package, and the common mistakes teams
+        make when they first wire it into an existing project.
       </p>
       <pre>
-        <code>{'const config' + i + ' = {enabled: true, retries: ' + (i % 4) + '};'}</code>
+        <code>
+          {'const config' + i + ' = {enabled: true, retries: ' + (i % 4) + '};'}
+        </code>
       </pre>
     </section>
   );
@@ -103,6 +112,11 @@ export function Root({size}) {
 
 export const interact = [
   {click: 'button.collapse-toggle'},
-  {expectText: {selector: 'button.collapse-toggle', text: 'Sidebar: collapsed'}},
+  {
+    expectText: {
+      selector: 'button.collapse-toggle',
+      text: 'Sidebar: collapsed',
+    },
+  },
   {expectCount: {selector: 'nav.toc a', count: 'size'}},
 ];

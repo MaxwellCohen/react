@@ -1,9 +1,9 @@
 'use strict';
 
 // Smoke test for every server binding x entry (webpack, turbopack, parcel,
-// unbundled, esm; node, browser, edge): elided rows as JSON and as live values,
+// unbundled, esm; node, browser, edge): stubbed rows as JSON and as live values,
 // zero-opt-in (no callbacks → internal registry), and explicit off
-// (elideStaticHosts: false). Needs a build with the flags on (see the fixture
+// (htmlFirst: false). Needs a build with the flags on (see the fixture
 // README) that also contains react and react-dom in build/node_modules.
 //   node e2e/bindings-smoke.js            (runs every combination)
 //   node --conditions react-server e2e/bindings-smoke.js <pkg> <entry>   (one)
@@ -37,7 +37,7 @@ if (process.argv.length < 4) {
   }
   process.exit(failed ? 1 : 0);
 }
-// Smoke-tests every server binding x entry: elided rows (JSON + live), inline fallback.
+// Smoke-tests every server binding x entry: stubbed rows (JSON + live), inline fallback.
 const path = require('path');
 const B = path.resolve(__dirname, '../../../build/node_modules') + '/';
 const React = require(B + 'react');
@@ -108,13 +108,13 @@ let failed = false;
         const rowsJ = new Map(),
           rowsL = new Map();
         const mJ = await render({
-          elideStaticHosts: {onRow: (id, j) => rowsJ.set(id, j)},
+          htmlFirst: {onRow: (id, j) => rowsJ.set(id, j)},
         });
         const mL = await render({
-          elideStaticHosts: {onValue: (id, v) => rowsL.set(id, v)},
+          htmlFirst: {onValue: (id, v) => rowsL.set(id, v)},
         });
         const mAuto = await render({});
-        const mOff = await render({elideStaticHosts: false});
+        const mOff = await render({htmlFirst: false});
         const ok = [
           [
             'json rows',

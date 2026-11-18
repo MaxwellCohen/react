@@ -31,7 +31,10 @@ export function Root({size}) {
           {'trailing spaces   '}
         </section>
         <section>
-          {'a'}{'b'}{1}{'c'}
+          {'a'}
+          {'b'}
+          {1}
+          {'c'}
         </section>
         <pre>
           {`line1
@@ -45,15 +48,15 @@ export function Root({size}) {
           {'x'}
         </section>
         <section>{'&amp; &lt; &gt; &quot; &nbsp;'}</section>
-        <section>
-          {'<param> & "quotes" and \'apostrophes\''}
-        </section>
+        <section>{'<param> & "quotes" and \'apostrophes\''}</section>
         <section>{'emoji ✓ ünïcödé 日本語のテキスト 🚀🌍'}</section>
         <section>{'unbroken: ' + longWord(0)}</section>
-        {groups.map((i) => (
+        {groups.map(i => (
           <div key={i} className="group">
             <p className={'pad-' + i} title={'  padded  ' + i + '  '}>
-              {'  Group ' + i + '  '}{' '}{'with gaps'}{'  '}{'end  '}
+              {'  Group ' + i + '  '} {'with gaps'}
+              {'  '}
+              {'end  '}
             </p>
             <pre>
               {`pre ${i}:
@@ -61,10 +64,20 @@ export function Root({size}) {
 	line`}
             </pre>
             <p>
-              {'adjacent'}{i}{'&'}{'<'}{'>'}{'"'}{'\''}{'—'}{' Dante © ' + i}
+              {'adjacent'}
+              {i}
+              {'&'}
+              {'<'}
+              {'>'}
+              {'"'}
+              {"'"}
+              {'—'}
+              {' Dante © ' + i}
             </p>
             <p className="ents">
-              {i % 2 === 0 ? 'entity set &amp;. &lt;. &gt;. &quot;pairs&quot;&#65292;&#65312;' : 'entity set &nbsp;… ‘quotes’ entity group'}
+              {i % 2 === 0
+                ? 'entity set &amp;. &lt;. &gt;. &quot;pairs&quot;&#65292;&#65312;'
+                : 'entity set &nbsp;… ‘quotes’ entity group'}
             </p>
             <p>{'\u00A0\u2028\u2029'}</p>
             <p>{'CJK ' + i + ' 中文 「quote」 『double』 and 🎉'.repeat(1)}</p>

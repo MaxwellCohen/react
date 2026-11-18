@@ -17,7 +17,7 @@ export function Root({size}) {
       <main id="main">
         <h1>Uncontrolled form controls</h1>
         <form id="form">
-          {groups.map((i) => (
+          {groups.map(i => (
             <fieldset key={i}>
               <legend>Group {i}</legend>
               <label htmlFor={'name-' + i}>Name {i}</label>
@@ -55,12 +55,15 @@ export function Root({size}) {
                   <input type="radio" name={'radio-' + i} value="b" /> B{i}
                 </label>
                 <label>
-                  <input type="radio" name={'radio-' + i} value="c" disabled /> C
-                  {i}
+                  <input type="radio" name={'radio-' + i} value="c" disabled />{' '}
+                  C{i}
                 </label>
               </fieldset>
               <label htmlFor={'flavor-' + i}>Flavor {i}</label>
-              <select id={'flavor-' + i} name={'flavor-' + i} defaultValue={'b' + i}>
+              <select
+                id={'flavor-' + i}
+                name={'flavor-' + i}
+                defaultValue={'b' + i}>
                 <optgroup label="Sweet">
                   <option value={'a' + i}>Vanilla {i}</option>
                   <option value={'b' + i}>Chocolate {i}</option>

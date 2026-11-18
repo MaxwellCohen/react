@@ -10,7 +10,8 @@ export const expectedBenefit = 'high';
 export const sizes = {smoke: 10, full: 1000};
 
 const COLS = 20;
-const cellValue = (r, c) => 'R' + r + '-C' + c + ':' + ((r * 31 + c * 17) % 997);
+const cellValue = (r, c) =>
+  'R' + r + '-C' + c + ':' + ((r * 31 + c * 17) % 997);
 
 export function Root({size}) {
   const rows = [];
@@ -51,6 +52,12 @@ export function Root({size}) {
 
 export const interact = [
   {click: 'button.selected-row', nth: 0},
-  {expectText: {selector: 'button.selected-row', nth: 0, text: 'Selected row: 1'}},
+  {
+    expectText: {
+      selector: 'button.selected-row',
+      nth: 0,
+      text: 'Selected row: 1',
+    },
+  },
   {expectCount: {selector: 'tr.row', count: 'size'}},
 ];

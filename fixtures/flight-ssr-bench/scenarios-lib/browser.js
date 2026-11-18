@@ -9,7 +9,10 @@ const playwright = require('playwright');
 // Launches the browser named by --browser (chromium by default). CHROME_PATH
 // stays an override for a local Chromium build; it does not apply to firefox/webkit.
 function launchBrowser(name) {
-  return playwright[name].launch({executablePath: name === 'chromium' ? process.env.CHROME_PATH || undefined : undefined});
+  return playwright[name].launch({
+    executablePath:
+      name === 'chromium' ? process.env.CHROME_PATH || undefined : undefined,
+  });
 }
 
 function serve(pages, flights, dirs) {
@@ -17,7 +20,9 @@ function serve(pages, flights, dirs) {
     const [, v, a, b] = new URL(req.url, 'http://x').pathname.split('/');
     if (a === 'client.js') {
       res.writeHead(200, {'Content-Type': 'text/javascript'});
-      return res.end(fs.readFileSync(path.join(dirs[v], 'build-client/client.js')));
+      return res.end(
+        fs.readFileSync(path.join(dirs[v], 'build-client/client.js'))
+      );
     }
     if (a === 'rsc' && flights[v + '/' + b] !== undefined) {
       res.writeHead(200, {'Content-Type': 'text/x-component'});
@@ -26,7 +31,12 @@ function serve(pages, flights, dirs) {
     const html = pages[v + '/' + a];
     if (html !== undefined) {
       res.writeHead(200, {'Content-Type': 'text/html'});
-      return res.end(html.replace('</body></html>', `<script src="/${v}/client.js" defer></script></body></html>`));
+      return res.end(
+        html.replace(
+          '</body></html>',
+          `<script src="/${v}/client.js" defer></script></body></html>`
+        )
+      );
     }
     res.writeHead(404);
     res.end();
@@ -40,7 +50,7 @@ function serialize() {
     const t = s.getAttribute('type');
     if (t !== 'application/ld+json' && t !== 'application/json') s.remove();
   });
-  // Not user-visible and legitimately differ after an elided region remounts:
+  // Not user-visible and legitimately differ after an stubbed region remounts:
   // comment nodes (<!-- --> text separators, Suspense markers), React's
   // render-blocking <template id="_R_..."> marker, split text nodes.
   c.querySelectorAll('template[id^="_R_"]').forEach(t => t.remove());
@@ -50,7 +60,7 @@ function serialize() {
   comments.forEach(n => n.remove());
   c.normalize();
   // Fresh client-created nodes serialize style/attrs differently than
-  // server-written HTML after an elided region remounts. Canonicalize so the
+  // server-written HTML after an stubbed region remounts. Canonicalize so the
   // navigation check compares substance, not serializer noise:
   // - style spacing ("margin-top: 8px" vs "margin-top:8px")
   // - zero lengths ("0" vs "0px" / "0%" / …)
@@ -67,7 +77,7 @@ function serialize() {
           // 0px, 0%, 0em, … are the same used length as unitless 0.
           .replace(
             /(^|[^0-9.])0(?:px|%|em|rem|ex|ch|vh|vw|vmin|vmax|pt|pc|in|cm|mm|Q)\b/gi,
-            (_, p) => p + '0',
+            (_, p) => p + '0'
           )
       );
     }
@@ -102,8 +112,16 @@ async function runSteps(page, steps, size, navUrl) {
       if (s.navigate) {
         await page.evaluate(u => window.__navigate(u), navUrl);
         await settle(page);
-      } else if (s.click) await page.locator(s.click).nth(s.nth || 0).click({timeout: 5000});
-      else if (s.fill) await page.locator(s.fill).nth(s.nth || 0).fill(s.value, {timeout: 5000});
+      } else if (s.click)
+        await page
+          .locator(s.click)
+          .nth(s.nth || 0)
+          .click({timeout: 5000});
+      else if (s.fill)
+        await page
+          .locator(s.fill)
+          .nth(s.nth || 0)
+          .fill(s.value, {timeout: 5000});
       else if (s.expectText) {
         const e = s.expectText;
         await page.waitForFunction(
@@ -126,12 +144,27 @@ async function runSteps(page, steps, size, navUrl) {
       let got = '';
       try {
         const e = s.expectText || s.expectCount;
-        if (e) got = await page.evaluate(([sel, n]) => {
-          const els = document.querySelectorAll(sel);
-          return 'matches=' + els.length + (els[n] ? ' text=' + JSON.stringify(els[n].textContent.slice(0, 80)) : '');
-        }, [e.selector, e.nth || 0]);
+        if (e)
+          got = await page.evaluate(
+            ([sel, n]) => {
+              const els = document.querySelectorAll(sel);
+              return (
+                'matches=' +
+                els.length +
+                (els[n]
+                  ? ' text=' + JSON.stringify(els[n].textContent.slice(0, 80))
+                  : '')
+              );
+            },
+            [e.selector, e.nth || 0]
+          );
       } catch (e2) {}
-      throw new Error(where + ' failed: ' + String(err.message).split('\n')[0] + (got ? ' (' + got + ')' : ''));
+      throw new Error(
+        where +
+          ' failed: ' +
+          String(err.message).split('\n')[0] +
+          (got ? ' (' + got + ')' : '')
+      );
     }
   }
 }
@@ -153,17 +186,23 @@ async function runPage(browser, base, v, s) {
     const page = await ctx.newPage();
     const logs = [];
     page.on('console', m => {
-      if (m.type() === 'error' || m.type() === 'warning') logs.push(m.type() + ': ' + m.text().slice(0, 400));
+      if (m.type() === 'error' || m.type() === 'warning')
+        logs.push(m.type() + ': ' + m.text().slice(0, 400));
     });
-    page.on('pageerror', e => logs.push('pageerror: ' + String(e).slice(0, 400)));
+    page.on('pageerror', e =>
+      logs.push('pageerror: ' + String(e).slice(0, 400))
+    );
     await page.goto(`${base}/${v}/${s.id}/`, {waitUntil: 'load'});
-    await page.waitForFunction(() => window.__hydratedAt !== undefined, null, {timeout: 10000});
+    await page.waitForFunction(() => window.__hydratedAt !== undefined, null, {
+      timeout: 10000,
+    });
     return {ctx, page, logs};
   };
   const finish = async ({ctx, page, logs}, tag) => {
     const rec = await page.evaluate(() => window.__recoverable || []);
     for (const l of logs) fail('console', tag + ' ' + l);
-    if (!s.allowRecoverableErrors) for (const r of rec) fail('hydration', tag + ' recoverable error: ' + r);
+    if (!s.allowRecoverableErrors)
+      for (const r of rec) fail('hydration', tag + ' recoverable error: ' + r);
     await ctx.close();
   };
   // Page A: hydrate, interact on the adopted DOM.
@@ -190,7 +229,12 @@ async function runPage(browser, base, v, s) {
     const before = await settle(B.page);
     await B.page.evaluate(u => window.__navigate(u), `/${v}/rsc/${s.id}`);
     snaps.navigated = await settle(B.page);
-    if (snaps.navigated !== before) fail('navigation', 'DOM after full-Flight navigation differs from hydrated DOM: ' + firstDiff(before, snaps.navigated));
+    if (snaps.navigated !== before)
+      fail(
+        'navigation',
+        'DOM after full-Flight navigation differs from hydrated DOM: ' +
+          firstDiff(before, snaps.navigated)
+      );
     try {
       await runSteps(B.page, s.interact, s.size, `/${v}/rsc/${s.id}`);
       snaps.navInteracted = await settle(B.page);
