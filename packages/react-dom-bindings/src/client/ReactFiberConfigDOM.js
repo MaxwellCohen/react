@@ -4582,12 +4582,81 @@ export function instanceMatchesStaticElement(
   if (!enableFlightStaticHostElision) {
     return false;
   }
+  // A stub stays a stub after it matched, so every later full payload asks
+  // again. If the new props equal the ones this node already matched, the DOM
+  // check would give the same answer.
+  const matched = matchedStaticProps.get(instance);
+  if (matched !== undefined && staticValuesEqual(matched, props)) {
+    return true;
+  }
   let twinDocument = staticTwinDocument;
   if (twinDocument === null) {
     twinDocument = staticTwinDocument =
       instance.ownerDocument.implementation.createHTMLDocument('');
   }
-  return matchStaticElement(instance, type, props, twinDocument);
+  const matches = matchStaticElement(instance, type, props, twinDocument);
+  if (matches) {
+    matchedStaticProps.set(instance, props);
+  }
+  return matches;
+}
+
+const matchedStaticProps: WeakMap<Instance, Props> = new WeakMap();
+
+// Structural equality for the static element trees a stub can match: plain
+// objects, arrays, primitives and host elements. Anything else is unequal,
+// which only means the DOM check runs.
+function staticValuesEqual(a: mixed, b: mixed): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (
+    a === null ||
+    b === null ||
+    typeof a !== 'object' ||
+    typeof b !== 'object'
+  ) {
+    return false;
+  }
+  if (isArray(a)) {
+    if (!isArray(b) || a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (!staticValuesEqual(a[i], b[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (isArray(b)) {
+    return false;
+  }
+  const aType = (a as any).$$typeof;
+  if (aType !== (b as any).$$typeof) {
+    return false;
+  }
+  if (aType !== undefined) {
+    if (
+      aType !== REACT_ELEMENT_TYPE ||
+      typeof (a as any).type !== 'string' ||
+      (a as any).type !== (b as any).type ||
+      (a as any).key !== (b as any).key
+    ) {
+      return false;
+    }
+    return staticValuesEqual((a as any).props, (b as any).props);
+  }
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) {
+    return false;
+  }
+  for (let i = 0; i < keys.length; i++) {
+    if (!staticValuesEqual((a as any)[keys[i]], (b as any)[keys[i]])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function matchStaticElement(
