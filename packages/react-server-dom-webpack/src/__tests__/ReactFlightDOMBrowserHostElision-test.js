@@ -848,6 +848,46 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toContain('line-two');
   });
 
+  it('restores elided content from the adopted DOM when it mounts again', async () => {
+    function App() {
+      return (
+        <main className="page" data-kind="static">
+          <h1>restore-heading</h1>
+          <p>restore-text</p>
+        </main>
+      );
+    }
+    const {main, rows} = await flight(<App />);
+    expect(main).toMatch(/\$J[0-9a-f]+:main/);
+    const html = await ssr({main, rows});
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const missing = [];
+    const response = consume(main, undefined, {
+      onElidedContentMissing: () => missing.push('missing'),
+    });
+    await response;
+    let root;
+    await act(() => {
+      root = ReactDOMClient.hydrateRoot(
+        container,
+        <Shell response={response} />,
+      );
+    });
+    expect(container.querySelector('h1').textContent).toBe('restore-heading');
+    // Navigate away and back: the cached payload renders again on the client.
+    await act(() => root.render(<p>elsewhere</p>));
+    expect(container.textContent).toBe('elsewhere');
+    await act(() => root.render(<Shell response={response} />));
+    expect(missing).toEqual([]);
+    const restored = container.querySelector('main');
+    expect(restored.className).toBe('page');
+    expect(restored.getAttribute('data-kind')).toBe('static');
+    expect(restored.querySelector('h1').textContent).toBe('restore-heading');
+    expect(restored.textContent).toBe('restore-headingrestore-text');
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();

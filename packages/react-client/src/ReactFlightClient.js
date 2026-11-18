@@ -2746,6 +2746,9 @@ function getInferredFunctionApproximate(code: string): () => void {
 function ElidedHost(props: {
   tag: string,
   recover: () => Promise<empty>,
+  saved: {node: null | Element},
+  remember: (node: null | Element) => void,
+  restore: (node: null | Element) => void,
 }): React$Node {
   // True while hydrating (React reads the server snapshot), false in a plain
   // client render.
@@ -2754,14 +2757,69 @@ function ElidedHost(props: {
     getFalse,
     getTrue,
   );
-  const [adopts] = React.useState(hydrating);
-  if (!adopts) {
+  // A stub that adopted server DOM keeps that node. When the same stub mounts
+  // again later (a framework re-rendering a cached payload, e.g. on back
+  // navigation), it takes the content from that node instead of asking for
+  // the full payload. Only a stub that never had DOM has to recover.
+  const [mode] = React.useState(
+    hydrating ? ADOPT : props.saved.node !== null ? RESTORE : RECOVER,
+  );
+  if (mode === RECOVER) {
     React.use(props.recover());
   }
   return React.createElement(props.tag, {
     suppressHydrationWarning: true,
-    dangerouslySetInnerHTML: {__html: ''},
+    dangerouslySetInnerHTML: EMPTY_HTML,
+    ref: mode === RESTORE ? props.restore : props.remember,
   });
+}
+
+const ADOPT = 0;
+const RESTORE = 1;
+const RECOVER = 2;
+const EMPTY_HTML = {__html: ''};
+
+function rememberElidedNode(
+  saved: {node: null | Element},
+  node: null | Element,
+): void {
+  if (node !== null) {
+    saved.node = node;
+  }
+}
+
+// Copies the attributes and content of the node this stub had before onto
+// the element React just created for it. The content is moved, or copied if
+// the old node is still in the document.
+function restoreElidedNode(
+  saved: {node: null | Element},
+  node: null | Element,
+): void {
+  if (node === null) {
+    return;
+  }
+  const from = saved.node;
+  saved.node = node;
+  if (from === null || from === node) {
+    return;
+  }
+  const attributes = from.attributes;
+  for (let i = 0; i < attributes.length; i++) {
+    node.setAttribute(attributes[i].name, attributes[i].value);
+  }
+  if (from.isConnected) {
+    let child = from.firstChild;
+    while (child != null) {
+      node.appendChild(child.cloneNode(true));
+      child = child.nextSibling;
+    }
+  } else {
+    let child = from.firstChild;
+    while (child != null) {
+      node.appendChild(child);
+      child = from.firstChild;
+    }
+  }
 }
 
 function subscribeNever(): () => void {
@@ -2817,10 +2875,14 @@ function createElidedHostElement(
   key: null | string,
 ): React$Element<any> {
   const recover = recoverElidedContent.bind(null, response, tag);
-  const element: any = React.createElement(
-    ElidedHost,
-    key === null ? {tag, recover} : {tag, recover, key},
-  );
+  const saved: {node: null | Element} = {node: null};
+  const remember = rememberElidedNode.bind(null, saved);
+  const restore = restoreElidedNode.bind(null, saved);
+  const props: any = {tag, recover, saved, remember, restore};
+  if (key !== null) {
+    props.key = key;
+  }
+  const element: any = React.createElement(ElidedHost, props);
   if (__DEV__) {
     // Elided elements keep their key if they had one, don't warn about it in lists.
     element._store.validated = 1;
