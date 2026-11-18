@@ -3131,26 +3131,15 @@ function resolveModelChildren(
   const prevHostPosition = hostPosition;
   const isElementProps =
     trackHostPosition && (rendered as any) === elementProps;
-  // The entries of the root model object stay in host position: a framework
-  // element map ({page, layout, ...}) is a set of independent roots that the
-  // framework renders in place (e.g. <Slot id="page" />). Without this a map
-  // never elides anything, because every map value is a non-`children` prop.
-  const isRootMap =
-    trackHostPosition &&
-    !isElementProps &&
-    task.id === 0 &&
-    (rendered as any) === task.model;
   const childrenInHostPosition = elementChildrenInHostPosition;
   for (const key in rendered) {
     if (hasOwnProperty.call(rendered, key)) {
-      if (trackHostPosition) {
-        // Only the `children` of a host element stay in host position.
-        hostPosition =
-          isElementProps && key === 'children'
-            ? childrenInHostPosition
-            : isRootMap
-              ? prevHostPosition
-              : false;
+      if (trackHostPosition && isElementProps) {
+        // Of an element's props, only `children` can stay in host position.
+        // Plain data around elements (a framework's element map or route
+        // tree, e.g. {page, layout} or {tree: {data: {rsc}}}) keeps the
+        // position it is in: the framework renders those elements in place.
+        hostPosition = key === 'children' ? childrenInHostPosition : false;
       }
       let resolvedValue;
       try {
