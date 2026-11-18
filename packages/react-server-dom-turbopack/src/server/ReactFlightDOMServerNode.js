@@ -366,6 +366,7 @@ function renderToReadableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.elideStaticHosts : undefined,
   );
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);
