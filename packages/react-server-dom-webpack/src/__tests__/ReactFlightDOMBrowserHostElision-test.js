@@ -777,6 +777,47 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.querySelectorAll('tr').length).toBe(100);
   });
 
+  it('elides the children of a keyed Fragment', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    // Next.js wraps each route segment's output like this.
+    const model = {
+      page: (
+        <React.Fragment key="c">
+          <main>
+            <h1>fragment-heading</h1>
+            <Counter />
+          </main>
+        </React.Fragment>
+      ),
+    };
+    const main = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(model, webpackMap, {
+          elideStaticHosts: true,
+        }),
+      ),
+    );
+    expect(main).toContain('$J');
+    expect(main).not.toContain('fragment-heading');
+    function PageShell({response}) {
+      return use(response).page;
+    }
+    const sResponse = consume(main, undefined);
+    await sResponse;
+    let html;
+    await act(async () => {
+      html = await readAll(
+        await ReactDOMFizzServer.renderToReadableStream(
+          <PageShell response={sResponse} />,
+        ),
+      );
+    });
+    expect(html).toContain('fragment-heading');
+    expect(html).toContain('count');
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();
