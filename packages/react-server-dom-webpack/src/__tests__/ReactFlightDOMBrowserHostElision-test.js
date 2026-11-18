@@ -929,6 +929,91 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(container.textContent).toBe('shared-headingshared-text');
   });
 
+  describe('inside a hidden Activity', () => {
+    async function hydrateElided(App) {
+      const main = await serverAct(() =>
+        readAll(
+          ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+            elideStaticHosts: true,
+          }),
+        ),
+      );
+      function Page({mode, response}) {
+        return (
+          <React.Activity mode={mode}>
+            <Shell response={response} />
+          </React.Activity>
+        );
+      }
+      const ssrResponse = consume(main, undefined);
+      await ssrResponse;
+      let html;
+      await act(async () => {
+        html = await readAll(
+          await ReactDOMFizzServer.renderToReadableStream(
+            <Page mode="visible" response={ssrResponse} />,
+          ),
+        );
+      });
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      container.innerHTML = html;
+      const response = consume(main, undefined, {
+        onElidedContentMissing: () => {
+          throw new Error('missing');
+        },
+      });
+      await response;
+      let root;
+      await act(() => {
+        root = ReactDOMClient.hydrateRoot(
+          container,
+          <Page mode="visible" response={response} />,
+        );
+      });
+      return {container, root, Page, response};
+    }
+
+    it('keeps the inline display of an elided element through hide and show', async () => {
+      function App() {
+        return (
+          <section style={{display: 'flex'}}>
+            <p>flex-child</p>
+          </section>
+        );
+      }
+      const {container, root, Page, response} = await hydrateElided(App);
+      const section = container.querySelector('section');
+      expect(section.style.display).toBe('flex');
+      await act(() => root.render(<Page mode="hidden" response={response} />));
+      expect(section.style.display).toBe('none');
+      await act(() => root.render(<Page mode="visible" response={response} />));
+      expect(container.querySelector('section')).toBe(section);
+      expect(section.style.display).toBe('flex');
+    });
+
+    it('is visible when it mounts again after it was unmounted while hidden', async () => {
+      function App() {
+        return <h2>page-heading</h2>;
+      }
+      const {container, root, Page, response} = await hydrateElided(App);
+      await act(() => root.render(<Page mode="hidden" response={response} />));
+      expect(container.querySelector('h2').style.display).toBe('none');
+      // Evicted while hidden, then rendered again from the same payload.
+      await act(() => root.render(<p>elsewhere</p>));
+      await act(() =>
+        root.render(
+          <React.Activity mode="visible">
+            <Shell response={response} />
+          </React.Activity>,
+        ),
+      );
+      const h2 = container.querySelector('h2');
+      expect(h2.textContent).toBe('page-heading');
+      expect(h2.style.display).toBe('');
+    });
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();

@@ -2759,7 +2759,7 @@ function ElidedHost(props: {
   tag: string,
   late: () => null | React$Node,
   recover: () => Promise<mixed>,
-  saved: {node: null | Element},
+  saved: ElidedNodeHolder,
   remember: (node: null | Element) => void,
   restore: (node: null | Element) => void,
 }): React$Node {
@@ -2777,6 +2777,15 @@ function ElidedHost(props: {
   const [mode] = React.useState(
     hydrating ? ADOPT : props.saved.node !== null ? RESTORE : RECOVER,
   );
+  // React restores `display` from the style prop when it shows a hidden
+  // Activity again. The stub has no props of its own, so it uses the inline
+  // display the server rendered, recorded when the node was adopted.
+  const [display, setDisplay] = React.useState(props.saved.display);
+  React.useLayoutEffect(() => {
+    if (display !== props.saved.display) {
+      setDisplay(props.saved.display);
+    }
+  }, []);
   if (mode === RECOVER) {
     // The server sends the rows that its HTML render did not reach after all.
     const late = props.late();
@@ -2789,6 +2798,7 @@ function ElidedHost(props: {
   return React.createElement(props.tag, {
     suppressHydrationWarning: true,
     dangerouslySetInnerHTML: EMPTY_HTML,
+    style: display === null ? undefined : {display},
     ref: mode === RESTORE ? props.restore : props.remember,
   });
 }
@@ -2798,12 +2808,21 @@ const RESTORE = 1;
 const RECOVER = 2;
 const EMPTY_HTML = {__html: ''};
 
+type ElidedNodeHolder = {node: null | Element, display: null | string};
+
 function rememberElidedNode(
-  saved: {node: null | Element},
+  saved: ElidedNodeHolder,
   node: null | Element,
 ): void {
   if (node !== null) {
     saved.node = node;
+    if (saved.display === null) {
+      // Adopted while hydrating, so this is the server's inline display.
+      const inline = (node as any).style.display;
+      if (typeof inline === 'string' && inline !== '') {
+        saved.display = inline;
+      }
+    }
   }
 }
 
@@ -2811,7 +2830,7 @@ function rememberElidedNode(
 // the element React just created for it. The content is moved, or copied if
 // the old node is still in the document.
 function restoreElidedNode(
-  saved: {node: null | Element},
+  saved: ElidedNodeHolder,
   node: null | Element,
 ): void {
   if (node === null) {
@@ -2825,6 +2844,14 @@ function restoreElidedNode(
   const attributes = from.attributes;
   for (let i = 0; i < attributes.length; i++) {
     node.setAttribute(attributes[i].name, attributes[i].value);
+  }
+  // The old node may have been unmounted while a hidden Activity had set
+  // display: none on it. Put back the display the server rendered.
+  const style = (node as any).style;
+  if (saved.display !== null) {
+    style.setProperty('display', saved.display);
+  } else {
+    style.removeProperty('display');
   }
   if (from.isConnected) {
     let child = from.firstChild;
@@ -2980,18 +3007,15 @@ function scheduleElidedSettle(entry: ElidedRowsEntry): void {
 // some decoded payload still references its stub.
 const elidedNodeHolders: Map<string, any> = new Map();
 
-function getElidedNodeHolder(
-  requestId: number,
-  id: number,
-): {node: null | Element} {
+function getElidedNodeHolder(requestId: number, id: number): ElidedNodeHolder {
   if (requestId === 0 || typeof WeakRef !== 'function') {
-    return {node: null};
+    return {node: null, display: null};
   }
   const key = requestId + ':' + id;
   const ref = elidedNodeHolders.get(key);
   let holder = ref !== undefined ? ref.deref() : undefined;
   if (holder === undefined) {
-    holder = {node: null};
+    holder = {node: null, display: null};
     // $FlowFixMe[cannot-resolve-name]
     elidedNodeHolders.set(key, new WeakRef(holder));
   }
