@@ -888,6 +888,47 @@ describe('ReactFlightDOMBrowser host elision', () => {
     expect(restored.textContent).toBe('restore-headingrestore-text');
   });
 
+  it('restores from the adopted DOM in another decode of the same payload', async () => {
+    function App() {
+      return (
+        <main className="page">
+          <h1>shared-heading</h1>
+          <p>shared-text</p>
+        </main>
+      );
+    }
+    // Uses the internal registry, so the payload carries its :Q id.
+    const main = await serverAct(() =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+          elideStaticHosts: true,
+        }),
+      ),
+    );
+    expect(main).toMatch(/:Q[0-9a-f]+\n/);
+    const html = await ssr({main, rows: undefined});
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const missing = [];
+    const onElidedContentMissing = () => missing.push('missing');
+    const first = consume(main, undefined, {onElidedContentMissing});
+    await first;
+    let root;
+    await act(() => {
+      root = ReactDOMClient.hydrateRoot(container, <Shell response={first} />);
+    });
+    // A framework decodes the payload again for its cache and renders that
+    // copy later, after the page was replaced.
+    const second = consume(main, undefined, {onElidedContentMissing});
+    await second;
+    await act(() => root.render(<p>elsewhere</p>));
+    await act(() => root.render(<Shell response={second} />));
+    expect(missing).toEqual([]);
+    expect(container.querySelector('main').className).toBe('page');
+    expect(container.textContent).toBe('shared-headingshared-text');
+  });
+
   // Returns {main, rows}: rendered with or without elision.
   async function flight(element, elide = true) {
     const rows = new Map();

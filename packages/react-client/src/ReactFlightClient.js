@@ -403,6 +403,8 @@ type Response = {
   // enableFlightStaticHostElision: the registry entry this response claimed. It
   // records which rows get rendered, see ElidedRendered.
   _elidedEntry: null | ElidedRowsEntry,
+  // enableFlightStaticHostElision: the `:Q` id of the payload, which names it.
+  _elidedRequestId: number,
   // enableFlightStaticHostElision: resolves when the stream ends, for stubs that
   // wait for a late row.
   _elidedEnd: null | {promise: Promise<void>, resolve: () => void},
@@ -2971,6 +2973,31 @@ function scheduleElidedSettle(entry: ElidedRowsEntry): void {
   }, 0);
 }
 
+// A framework can decode the same payload more than once (Next.js decodes part
+// of the initial payload again for its client cache). The stubs of every
+// decode share the node that hydration adopted, keyed by the payload's `:Q` id
+// and the row id. The map holds them weakly, so a node lives only as long as
+// some decoded payload still references its stub.
+const elidedNodeHolders: Map<string, any> = new Map();
+
+function getElidedNodeHolder(
+  requestId: number,
+  id: number,
+): {node: null | Element} {
+  if (requestId === 0 || typeof WeakRef !== 'function') {
+    return {node: null};
+  }
+  const key = requestId + ':' + id;
+  const ref = elidedNodeHolders.get(key);
+  let holder = ref !== undefined ? ref.deref() : undefined;
+  if (holder === undefined) {
+    holder = {node: null};
+    // $FlowFixMe[cannot-resolve-name]
+    elidedNodeHolders.set(key, new WeakRef(holder));
+  }
+  return holder;
+}
+
 function createElidedHostElement(
   response: Response,
   id: number,
@@ -2979,7 +3006,7 @@ function createElidedHostElement(
 ): React$Element<any> {
   const late = getLateElidedRow.bind(null, response, id);
   const recover = recoverElidedContent.bind(null, response, tag);
-  const saved: {node: null | Element} = {node: null};
+  const saved = getElidedNodeHolder(response._elidedRequestId, id);
   const remember = rememberElidedNode.bind(null, saved);
   const restore = restoreElidedNode.bind(null, saved);
   const props: any = {tag, late, recover, saved, remember, restore};
@@ -3435,6 +3462,7 @@ function ResponseInstance(
   this._chunks = chunks;
   this._elidedRows = null;
   this._elidedEntry = null;
+  this._elidedRequestId = 0;
   this._elidedEnd = null;
   this._onElidedContentMissing = null;
   this._elidedRecovery = null;
@@ -5663,6 +5691,7 @@ function processFullStringRow(
       // enableFlightStaticHostElision: in-process registry id for elided rows.
       if (enableFlightStaticHostElision) {
         const requestId = parseInt(row, 16);
+        response._elidedRequestId = requestId;
         if (response._elidedRows !== null) {
           // Framework already supplied elidedHostRows; drop the unused registry.
           releaseElidedRowsRegistry(requestId);
