@@ -3213,11 +3213,13 @@ function resolveElementTuple(
     for (let i = 0; i < rendered.length; i++) {
       if (i === 3) {
         elementProps = rendered[3];
-        // children of host tags, Suspense, and Client Components stay in host
-        // position. Other props never do (see resolveModelChildren).
+        // children of host tags, Fragments, Suspense, and Client Components
+        // stay in host position. Other props never do (see
+        // resolveModelChildren).
         elementChildrenInHostPosition =
           prevHostPosition &&
           (typeof rendered[1] === 'string' ||
+            rendered[1] === REACT_FRAGMENT_TYPE ||
             rendered[1] === REACT_SUSPENSE_TYPE ||
             isClientReference(rendered[1]));
       }
