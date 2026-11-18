@@ -4661,14 +4661,9 @@ function flattenStaticChildren(
   if (typeof children === 'object') {
     const child: any = children;
     if (child.$$typeof === REACT_LAZY_TYPE) {
-      let resolved;
-      try {
-        const init = child._init;
-        resolved = init(child._payload);
-      } catch (x) {
-        return null;
-      }
-      return flattenStaticChildren(resolved, out);
+      // Suspends like the matcher if it hasn't loaded.
+      const init = child._init;
+      return flattenStaticChildren(init(child._payload), out);
     }
     if (
       child.$$typeof === REACT_ELEMENT_TYPE &&
@@ -4713,15 +4708,46 @@ function createStaticNode(
 
 // Makes `instance` render `props`, keeping the nodes that already match.
 // Returns false (and leaves the rest to a client render) if it can't.
+function canPatchStatic(props: Props): boolean {
+  if (!hasOnlyStaticProps(props)) {
+    return false;
+  }
+  if (props.dangerouslySetInnerHTML != null) {
+    return true;
+  }
+  const children = flattenStaticChildren(props.children, []);
+  if (children === null) {
+    return false;
+  }
+  for (let i = 0; i < children.length; i++) {
+    const child: any = children[i];
+    if (typeof child !== 'string' && !canPatchStatic(child.props)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Checks the whole subtree first, so the DOM is either fully patched or left
+// alone.
 function patchStaticElement(
   instance: Element,
   type: string,
   props: Props,
   twinDocument: Document,
 ): boolean {
-  if (!hasOnlyStaticProps(props)) {
+  if (!canPatchStatic(props)) {
     return false;
   }
+  return patchCheckedStaticElement(instance, type, props, twinDocument);
+}
+
+function patchCheckedStaticElement(
+  instance: Element,
+  type: string,
+  props: Props,
+  twinDocument: Document,
+): boolean {
   const twin: any = twinDocument.createElementNS(
     instance.namespaceURI as any,
     type,
@@ -4801,7 +4827,7 @@ function patchStaticElement(
         element.props,
         twinDocument,
       ) ||
-        patchStaticElement(
+        patchCheckedStaticElement(
           node as any,
           element.type,
           element.props,
@@ -4981,14 +5007,10 @@ function matchStaticChildren(
   if (typeof children === 'object') {
     const child: any = children;
     if (child.$$typeof === REACT_LAZY_TYPE) {
-      let resolved;
-      try {
-        const init = child._init;
-        resolved = init(child._payload);
-      } catch (x) {
-        // Not loaded yet.
-        return false;
-      }
+      // Rendering the element would suspend on a lazy that hasn't loaded, so
+      // the check does too, and runs again once it has.
+      const init = child._init;
+      const resolved = init(child._payload);
       return matchStaticChildren(cursor, resolved, twinDocument);
     }
     if (child.$$typeof === REACT_ELEMENT_TYPE) {

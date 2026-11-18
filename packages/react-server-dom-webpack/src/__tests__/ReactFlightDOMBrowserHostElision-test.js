@@ -773,6 +773,38 @@ describe('ReactFlightDOMBrowser host elision', () => {
       expect(Array.from(container.querySelectorAll('*'))).toEqual(nodes);
     });
 
+    it('keeps the adopted DOM when rows of the full payload arrive later', async () => {
+      const props = {
+        ...base,
+        rows: Array.from({length: 100}, (_, i) => i + '-'.repeat(200)),
+      };
+      const {container, root, errors, nodes, mutations} =
+        await hydratePage(props);
+      const full = await flight(<Page {...props} />, false);
+      const lines = full.main.split('\n');
+      const half = Math.floor(lines.length / 2);
+      let controller;
+      const stream = new ReadableStream({
+        start(c) {
+          controller = c;
+        },
+      });
+      controller.enqueue(
+        encoder.encode(lines.slice(0, half).join('\n') + '\n'),
+      );
+      const response = ReactServerDOMClient.createFromReadableStream(stream);
+      // Rendered while half of the rows are still pending lazy nodes.
+      await act(() => root.render(<Shell response={response} />));
+      await act(() => {
+        controller.enqueue(encoder.encode(lines.slice(half).join('\n')));
+        controller.close();
+      });
+      expect(errors).toEqual([]);
+      expect(container.querySelectorAll('tr').length).toBe(100);
+      expect(mutations.takeRecords()).toEqual([]);
+      expect(Array.from(container.querySelectorAll('*'))).toEqual(nodes);
+    });
+
     it.each([
       ['text', {rows: ['one', 'two', 'four']}],
       ['an attribute', {rowClass: 'row selected'}],
