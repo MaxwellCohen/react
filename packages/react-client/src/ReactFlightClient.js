@@ -1320,17 +1320,22 @@ export type RowInitialization = {
 // Begins initializing the model row `id`, whose value the caller builds by
 // calling `parseModelString`, `beginElement` and `completeElement` before it
 // calls `endRow`. This does what `resolveModelChunk` and `initializeModelChunk`
-// do together, with the build in place of the parse. The row must not have
-// resolved yet. Rows can nest: each `beginRow` is paired with its own `endRow`.
+// do together, with the build in place of the parse. Returns null if the row
+// has already resolved, e.g. because it's a stream, so it can only be parsed.
+// Rows can nest: each `beginRow` is paired with its own `endRow` or `abortRow`.
 export function beginRow(
   weakResponse: WeakResponse,
+  streamState: StreamState,
   id: number,
-): RowInitialization {
+): null | RowInitialization {
   const response = unwrapWeakResponse(weakResponse);
-  const chunk: PendingChunk<any> | PendingWeakChunk<any> = getChunk(
-    response,
-    id,
-  ) as any;
+  const chunk: SomeChunk<any> = getChunk(response, id);
+  if (chunk.status !== PENDING && chunk.status !== PENDING_WEAK) {
+    return null;
+  }
+  if (__DEV__) {
+    resolveChunkDebugInfo(response, streamState, chunk);
+  }
   releasePendingChunk(response, chunk);
   const resolveListeners = chunk.value;
   const rejectListeners = chunk.reason;
@@ -1374,6 +1379,22 @@ export function endRow(
       row.resolveListeners,
       row.rejectListeners,
     );
+  }
+}
+
+// Abandons a row begun with `beginRow` whose build threw. The row keeps
+// waiting, with the listeners it had before, so the error row the server emits
+// next rejects them, as it would on the wire. References the build registered
+// on the row are dropped with the rest of the partial value.
+export function abortRow(row: RowInitialization): void {
+  const chunk: SomeChunk<any> = row.chunk;
+  initializingHandler = row.prevHandler;
+  if ((enableProfilerTimer && enableComponentPerformanceTrack) || __DEV__) {
+    initializingChunk = row.prevChunk;
+  }
+  if (chunk.status === BLOCKED) {
+    chunk.value = row.resolveListeners;
+    chunk.reason = row.rejectListeners;
   }
 }
 

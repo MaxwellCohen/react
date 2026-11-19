@@ -64,14 +64,27 @@ export function isGetter(object: any, name: string): boolean {
 }
 
 export function isSimpleObject(object: any): boolean {
+  return getSimpleObjectKind(object) !== NOT_SIMPLE_OBJECT;
+}
+
+export const NOT_SIMPLE_OBJECT = 0;
+// A simple object with an accessor, such as a getter. Its properties are what
+// a read returns, which can differ from read to read.
+export const SIMPLE_OBJECT_WITH_ACCESSORS = 1;
+export const SIMPLE_DATA_OBJECT = 2;
+
+// Like `isSimpleObject`, but also tells apart a simple object that has an
+// accessor, from the same descriptors.
+export function getSimpleObjectKind(object: any): 0 | 1 | 2 {
   if (!isObjectPrototype(getPrototypeOf(object))) {
-    return false;
+    return NOT_SIMPLE_OBJECT;
   }
+  let kind: 0 | 1 | 2 = SIMPLE_DATA_OBJECT;
   const names = Object.getOwnPropertyNames(object);
   for (let i = 0; i < names.length; i++) {
     const descriptor = Object.getOwnPropertyDescriptor(object, names[i]);
     if (!descriptor) {
-      return false;
+      return NOT_SIMPLE_OBJECT;
     }
     if (!descriptor.enumerable) {
       if (
@@ -81,12 +94,16 @@ export function isSimpleObject(object: any): boolean {
         // React adds key and ref getters to props objects to issue warnings.
         // Those getters will not be transferred to the client, but that's ok,
         // so we'll special case them.
+        kind = SIMPLE_OBJECT_WITH_ACCESSORS;
         continue;
       }
-      return false;
+      return NOT_SIMPLE_OBJECT;
+    }
+    if (descriptor.get !== undefined || descriptor.set !== undefined) {
+      kind = SIMPLE_OBJECT_WITH_ACCESSORS;
     }
   }
-  return true;
+  return kind;
 }
 
 export function objectName(object: mixed): string {

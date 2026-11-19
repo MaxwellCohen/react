@@ -8,8 +8,16 @@
  */
 
 import type {Thenable} from 'shared/ReactTypes';
-import type {FlightTee, FlightTeeDispatcher} from 'shared/ReactFlightTee';
-import type {Response, StreamState} from './ReactFlightClient';
+import type {
+  FlightTee,
+  FlightTeeDispatcher,
+  FlightTeeRow,
+} from 'shared/ReactFlightTee';
+import type {
+  Response,
+  StreamState,
+  RowInitialization,
+} from './ReactFlightClient';
 
 import {FLIGHT_TEE_VERSION} from 'shared/ReactFlightTee';
 import {enableFlightTee} from 'shared/ReactFeatureFlags';
@@ -21,6 +29,13 @@ import {
   processWireText,
   processWireBinary,
   setReaderContext,
+  beginRow,
+  endRow,
+  abortRow,
+  beginElement,
+  completeElement,
+  decodeModelString,
+  ELEMENT_FIELDS,
   close,
   reportGlobalError,
 } from './ReactFlightClient';
@@ -30,12 +45,15 @@ import {
 type TeeInstance = {
   +_version: number,
   +_dispatcher: FlightTeeDispatcher,
+  +_elementFields: Object,
   _response: Response,
   _streamState: StreamState,
   _connected: boolean,
   _read: boolean,
   // Hints and module preinits that arrived before the reader did.
   _readerTasks: null | Array<() => void>,
+  // How many model rows were built by value, for tests.
+  _rowsByValue: number,
 };
 
 function connect(flightTee: FlightTee): boolean {
@@ -45,6 +63,60 @@ function connect(flightTee: FlightTee): boolean {
   }
   tee._connected = true;
   return true;
+}
+
+function teeBeginRow(flightTee: FlightTee, id: number): null | FlightTeeRow {
+  const tee: TeeInstance = flightTee as any;
+  return beginRow(tee._response, tee._streamState, id);
+}
+
+function teeEndRow(
+  flightTee: FlightTee,
+  row: FlightTeeRow,
+  value: mixed,
+): void {
+  const tee: TeeInstance = flightTee as any;
+  tee._rowsByValue++;
+  endRow(tee._response, row as any as RowInitialization, value);
+}
+
+function teeAbortRow(flightTee: FlightTee, row: FlightTeeRow): void {
+  abortRow(row as any as RowInitialization);
+}
+
+function teeBeginElement(flightTee: FlightTee): void {
+  beginElement();
+}
+
+function teeCompleteElement(
+  flightTee: FlightTee,
+  type: mixed,
+  key: mixed,
+  props: mixed,
+  owner: mixed,
+  stack: mixed,
+  validated: number,
+): mixed {
+  const tee: TeeInstance = flightTee as any;
+  return completeElement(
+    tee._response,
+    type,
+    key,
+    props,
+    owner as any,
+    stack as any,
+    validated as any,
+  );
+}
+
+function teeDecode(
+  flightTee: FlightTee,
+  parent: Object,
+  key: string,
+  value: string,
+): mixed {
+  const tee: TeeInstance = flightTee as any;
+  return decodeModelString(tee._response, parent, key, value);
 }
 
 function teeProcessWireRow(flightTee: FlightTee, row: string): void {
@@ -85,6 +157,12 @@ function teeError(flightTee: FlightTee, error: mixed): void {
 // monomorphic.
 export const teeDispatcher: FlightTeeDispatcher = Object.freeze({
   c /* connect */: connect,
+  b /* beginRow */: teeBeginRow,
+  f /* endRow */: teeEndRow,
+  a /* abortRow */: teeAbortRow,
+  e /* beginElement */: teeBeginElement,
+  m /* completeElement */: teeCompleteElement,
+  d /* decode */: teeDecode,
   w /* processWireRow */: teeProcessWireRow,
   t /* processWireText */: teeProcessWireText,
   y /* processWireBinary */: teeProcessWireBinary,
@@ -100,12 +178,14 @@ export function createTee(response: Response): FlightTee {
   const tee: TeeInstance = {
     _version: FLIGHT_TEE_VERSION,
     _dispatcher: teeDispatcher,
+    _elementFields: ELEMENT_FIELDS,
     _response: response,
     // There's no stream to show as the I/O's value in DEV.
     _streamState: createStreamState(response, null),
     _connected: false,
     _read: false,
     _readerTasks: readerTasks,
+    _rowsByValue: 0,
   };
   setReaderContext(response, task => {
     readerTasks.push(task);

@@ -26,6 +26,7 @@ let ReactServerDOMClient;
 let Stream;
 let AsyncLocalStorage;
 let serverAct;
+let assertConsoleErrorDev;
 
 // A tee reads one Flight render in the same process. Each test reads the same
 // model through the tee and through the bytes, and compares what Fizz renders.
@@ -35,6 +36,8 @@ describe('ReactFlightTurbopackDOMTee', () => {
 
     patchSetImmediate();
     serverAct = require('internal-test-utils').serverAct;
+    assertConsoleErrorDev =
+      require('internal-test-utils').assertConsoleErrorDev;
     AsyncLocalStorage = require('async_hooks').AsyncLocalStorage;
 
     // Simulate the condition resolution
@@ -135,6 +138,17 @@ describe('ReactFlightTurbopackDOMTee', () => {
     };
   }
 
+  // Renders the Client Component that reads `flight` with Fizz.
+  async function renderFizz(flight, options) {
+    const ssrStream = await serverAct(() =>
+      ReactDOMServer.renderToPipeableStream(
+        React.createElement(createClientRoot(flight)),
+        options && options.fizz,
+      ),
+    );
+    return readResult(ssrStream);
+  }
+
   // The Flight render runs to completion before Fizz starts, so every row,
   // hint and preinit arrives before the reader exists.
   async function renderAfterFlight(createModel, useTee, options) {
@@ -142,13 +156,361 @@ describe('ReactFlightTurbopackDOMTee', () => {
     await serverAct(() => {
       flight = startFlight(createModel(), useTee, options);
     });
-    const ssrStream = await serverAct(() =>
-      ReactDOMServer.renderToPipeableStream(
-        React.createElement(createClientRoot(flight)),
-      ),
-    );
-    return readResult(ssrStream);
+    return renderFizz(flight, options);
   }
+
+  // Reads one render through the tee and, as the browser would, through its
+  // bytes.
+  async function readTeeAndBytes(model, onError) {
+    const tee = ReactServerDOMClient.createTee(manifest());
+    const readable = new Stream.PassThrough();
+    let fromTee;
+    let fromBytes;
+    await serverAct(() => {
+      ReactServerDOMServer.renderToPipeableStream(model, turbopackMap, {
+        tee,
+        onError,
+      }).pipe(readable);
+      fromTee = ReactServerDOMClient.createFromTee(tee);
+      fromBytes = ReactServerDOMClient.createFromNodeStream(
+        readable,
+        manifest(),
+      );
+    });
+    return {fromTee: await fromTee, fromBytes: await fromBytes, tee};
+  }
+
+  // @gate enableFlightTee
+  it('builds model rows by value, sharing data that parses to the same values', async () => {
+    const data = {a: 1, list: [1, 'two', null, true]};
+    const model = {data, date: new Date(0), text: '$escaped'};
+    const {fromTee, fromBytes, tee} = await readTeeAndBytes(model);
+    expect(fromTee).toEqual(fromBytes);
+    expect(tee._rowsByValue).toBeGreaterThan(0);
+    // An object is copied only once one of its values differs from what was
+    // read, like the decoded Date here.
+    expect(fromTee).not.toBe(model);
+    expect(fromTee.data).toBe(data);
+    expect(fromTee.data.list).toBe(data.list);
+  });
+
+  // @gate enableFlightTee
+  it('deletes undefined in objects and keeps it in arrays', async () => {
+    const {fromTee, fromBytes} = await readTeeAndBytes({
+      obj: {a: undefined, b: 1},
+      arr: [undefined, 1],
+    });
+    expect(fromTee).toEqual(fromBytes);
+    expect('a' in fromBytes.obj).toBe(false);
+    expect('a' in fromTee.obj).toBe(false);
+    expect(0 in fromTee.arr).toBe(true);
+  });
+
+  // @gate enableFlightTee
+  it('decodes values that need it, like an invalid Date or a Map subclass', async () => {
+    class MyMap extends Map {}
+    class MySet extends Set {}
+    const {fromTee, fromBytes} = await readTeeAndBytes({
+      invalid: new Date(NaN),
+      date: new Date(0),
+      big: 10n,
+      nan: NaN,
+      map: new MyMap([['a', 1]]),
+      set: new MySet([1]),
+      text: '$escaped',
+    });
+    expect(fromTee).toEqual(fromBytes);
+    expect(fromTee.invalid).toBe(null);
+    expect(fromTee.date).toEqual(new Date(0));
+    expect(Object.getPrototypeOf(fromTee.map)).toBe(Map.prototype);
+    expect(Object.getPrototypeOf(fromTee.set)).toBe(Set.prototype);
+    expect(fromTee.text).toBe('$escaped');
+  });
+
+  // @gate enableFlightTee
+  it('shares a Map referenced twice in one row, like the browser', async () => {
+    const map = new Map([['a', {b: 1}]]);
+    const {fromTee, fromBytes} = await readTeeAndBytes({x: map, y: [map]});
+    expect(fromTee).toEqual(fromBytes);
+    expect(fromBytes.y[0]).toBe(fromBytes.x);
+    expect(fromTee.y[0]).toBe(fromTee.x);
+  });
+
+  // @gate enableFlightTee
+  it('resolves a cycle through an element’s props', async () => {
+    function Client({data}) {
+      return React.createElement(
+        'span',
+        null,
+        data.self === data ? data.self.label : 'not the same object',
+      );
+    }
+    const ClientReference = clientExports(Client);
+    function createModel() {
+      const data = {label: 'cyclic'};
+      data.self = data;
+      return ReactServer.createElement(ClientReference, {data});
+    }
+    const html = await renderAfterFlight(createModel, true);
+    expect(html).toBe(await renderAfterFlight(createModel, false));
+    expect(html).toContain('cyclic');
+  });
+
+  // @gate enableFlightTee
+  it('reads an iterator the server drained, and keyed Server Components', async () => {
+    function* items() {
+      yield ReactServer.createElement('li', {key: 'a'}, 'a');
+      yield ReactServer.createElement('li', {key: 'b'}, 'b');
+    }
+    function Item({label}) {
+      return ReactServer.createElement('span', null, label);
+    }
+    function createModel() {
+      const keyed = ReactServer.createElement(Item, {key: 'k', label: 'one'});
+      return ReactServer.createElement('div', null, keyed, [
+        keyed,
+        ReactServer.createElement(Item, {key: 'm', label: 'two'}),
+      ]);
+    }
+    expect(await renderAfterFlight(createModel, true)).toBe(
+      await renderAfterFlight(createModel, false),
+    );
+    const {fromTee, fromBytes} = await readTeeAndBytes({
+      node: createModel(),
+      drained: items(),
+    });
+    expect(Array.from(fromTee.drained)).toEqual(Array.from(fromBytes.drained));
+    fromTee.drained = fromBytes.drained = null;
+    expect(fromTee).toEqual(fromBytes);
+  });
+
+  // @gate enableFlightTee
+  it('fills in references inside props that resolve later', async () => {
+    function Client({value, children}) {
+      return React.createElement('p', null, React.use(value), children);
+    }
+    let resolveChunk;
+    const ClientReference = clientExports(
+      Client,
+      'path/to/async-chunk.js',
+      new Promise(resolve => (resolveChunk = resolve)),
+    );
+    async function Later() {
+      await Promise.resolve();
+      return ReactServer.createElement('b', null, 'later');
+    }
+    function createModel() {
+      return ReactServer.createElement(
+        ClientReference,
+        {value: Promise.resolve('resolved')},
+        ReactServer.createElement(Later),
+      );
+    }
+    // Both Flight renders finish before Fizz starts, and the chunk loads only
+    // once both Fizz renders are waiting on it.
+    let flights;
+    await serverAct(() => {
+      flights = {
+        tee: startFlight(createModel(), true),
+        bytes: startFlight(createModel(), false),
+      };
+    });
+    const fromTee = renderFizz(flights.tee);
+    const fromBytes = renderFizz(flights.bytes);
+    await serverAct(() => resolveChunk());
+    expect(await fromTee).toBe(await fromBytes);
+    expect(await fromTee).toContain('later');
+  });
+
+  // @gate enableFlightTee
+  it('makes the element around an errored row an errored lazy', async () => {
+    function Client({children}) {
+      return React.createElement('div', null, children);
+    }
+    const ClientReference = clientExports(Client);
+    function Throws() {
+      throw new Error('server error');
+    }
+    function createModel() {
+      return ReactServer.createElement(
+        'section',
+        null,
+        ReactServer.createElement(
+          ReactServer.Suspense,
+          {fallback: 'loading'},
+          ReactServer.createElement(
+            ClientReference,
+            null,
+            ReactServer.createElement(Throws),
+          ),
+        ),
+      );
+    }
+    const options = {
+      flight: {onError: () => 'digest'},
+      fizz: {onError() {}},
+    };
+    let html;
+    await serverAct(async () => {
+      html = {
+        tee: await renderAfterFlight(createModel, true, options),
+        bytes: await renderAfterFlight(createModel, false, options),
+      };
+    });
+    // DEV puts the error's stack in the HTML. It's created on a different
+    // stack with a tee.
+    const withoutStack = markup => markup.replace(/ data-stck="[^"]*"/g, '');
+    expect(withoutStack(html.tee)).toBe(withoutStack(html.bytes));
+    expect(html.tee).toContain('loading');
+  });
+
+  // @gate enableFlightTee
+  it('moves debug info onto elements, without writing to the server’s arrays', async () => {
+    const shared = ['a', 'b'];
+    function Component() {
+      return shared;
+    }
+    function createModel() {
+      return {node: ReactServer.createElement(Component)};
+    }
+    const {fromTee, fromBytes} = await readTeeAndBytes(createModel());
+    expect(fromTee).toEqual(fromBytes);
+    expect(Object.getOwnPropertyNames(shared)).toEqual(['0', '1', 'length']);
+    if (__DEV__) {
+      const names = value =>
+        (value._debugInfo || []).map(info => info.name).filter(Boolean);
+      expect(names(fromTee.node)).toEqual(names(fromBytes.node));
+      expect(names(fromTee.node)).toEqual(['Component']);
+    }
+  });
+
+  // SSR has to see what parsing the bytes gives. In DEV that includes values
+  // the wire doesn't carry, for objects Flight warns about. Production only
+  // checks prototypes, and shares the rest.
+
+  // @gate enableFlightTee
+  it('copies an object with a getter in DEV, reading it once', async () => {
+    let reads = 0;
+    const data = {
+      get value() {
+        return ++reads;
+      },
+    };
+    const {fromTee, fromBytes} = await readTeeAndBytes({data});
+    if (__DEV__) {
+      expect(fromTee).toEqual(fromBytes);
+      expect(fromTee.data).not.toBe(data);
+      expect(fromTee.data.value).toBe(1);
+      // DEV reads each value once more, only to warn about it.
+      expect(reads).toBe(2);
+      expect(Object.getOwnPropertyDescriptor(fromTee.data, 'value').get).toBe(
+        undefined,
+      );
+    } else {
+      // SSR reads the getter again, as stringify does for the bytes.
+      expect(fromTee.data).toBe(data);
+    }
+  });
+
+  // @gate enableFlightTee
+  it('copies an object with a symbol key or a non-enumerable property in DEV', async () => {
+    const withSymbol = {a: 1, [Symbol('hidden')]: 2};
+    const withHidden = {a: 1};
+    Object.defineProperty(withHidden, 'hidden', {value: 2, enumerable: false});
+    const {fromTee, fromBytes} = await readTeeAndBytes({
+      withSymbol,
+      withHidden,
+    });
+    assertConsoleErrorDev([
+      'Only plain objects can be passed to Client Components from Server Components. ' +
+        'Objects with symbol properties like hidden are not supported.\n' +
+        '  {withSymbol: {a: 1}, withHidden: {a: 1}}\n' +
+        '               ^^^^^^',
+      'Only plain objects can be passed to Client Components from Server Components. ' +
+        'Classes or other objects with methods are not supported.\n' +
+        '  {withSymbol: {a: 1}, withHidden: {a: 1}}\n' +
+        '                                   ^^^^^^',
+    ]);
+    if (__DEV__) {
+      expect(fromTee).toEqual(fromBytes);
+      expect(fromTee.withSymbol).not.toBe(withSymbol);
+      expect(Object.getOwnPropertySymbols(fromTee.withSymbol)).toEqual([]);
+      expect(fromTee.withHidden).not.toBe(withHidden);
+      expect('hidden' in fromTee.withHidden).toBe(false);
+    } else {
+      expect(fromTee.withSymbol).toBe(withSymbol);
+      expect(fromTee.withHidden).toBe(withHidden);
+    }
+  });
+
+  // @gate enableFlightTee
+  it('copies an object from another realm and an array with a hole', async () => {
+    const vm = require('vm');
+    // eslint-disable-next-line no-sparse-arrays
+    const holey = [1, , 3];
+    const otherRealm = vm.runInNewContext('({a: 1})');
+    const withProto = JSON.parse('{"__proto__": {"x": 1}, "a": 1}');
+    const {fromTee, fromBytes} = await readTeeAndBytes({
+      holey,
+      otherRealm,
+      withProto,
+    });
+    assertConsoleErrorDev([
+      'Expected not to serialize an object with own property `__proto__`. When parsed this property will be omitted.\n' +
+        '  {__proto__: {x: 1}, a: 1}\n' +
+        '              ^^^^^^',
+    ]);
+    expect(fromTee.holey).toEqual(fromBytes.holey);
+    expect(1 in fromTee.holey).toBe(true);
+    expect(fromTee.otherRealm).toEqual(fromBytes.otherRealm);
+    expect(Object.getPrototypeOf(fromTee.otherRealm)).toBe(Object.prototype);
+    if (__DEV__) {
+      expect(fromTee).toEqual(fromBytes);
+      expect(
+        Object.prototype.hasOwnProperty.call(fromTee.withProto, '__proto__'),
+      ).toBe(false);
+    } else {
+      expect(fromTee.withProto).toBe(withProto);
+    }
+  });
+
+  // @gate enableFlightTee
+  it('shares array subclasses and arrays with extra properties', async () => {
+    class MyArray extends Array {}
+    const sub = MyArray.from([1, 2]);
+    const match = 'abc'.match(/b/);
+    const {fromTee, fromBytes} = await readTeeAndBytes({sub, match});
+    expect(Array.from(fromTee.sub)).toEqual(fromBytes.sub);
+    expect(Array.from(fromTee.match)).toEqual(fromBytes.match);
+    expect(fromTee.sub).toBe(sub);
+    expect(fromTee.match).toBe(match);
+  });
+
+  // @gate enableFlightTee && enableTaint
+  it('never shows SSR or the bytes a value a getter returns after it was read in DEV', async () => {
+    const secret = 'secret-token-value';
+    ReactServer.experimental_taintUniqueValue(
+      'Cannot pass a secret token to the client',
+      process,
+      secret,
+    );
+    let reads = 0;
+    const data = {
+      get token() {
+        return ++reads === 1 ? 'public' : secret;
+      },
+    };
+    const {fromTee, fromBytes} = await readTeeAndBytes({data});
+    if (__DEV__) {
+      expect(fromTee.data.token).toBe('public');
+      expect(fromBytes.data.token).toBe('public');
+      expect(reads).toBe(2);
+    } else {
+      // A getter that answers differently per read isn't supported. In
+      // production both outputs read it again.
+      expect(fromTee.data).toBe(data);
+    }
+  });
 
   // @gate enableFlightTee
   it('dispatches hints and module preinits that arrive before the reader', async () => {
