@@ -49,11 +49,7 @@ import {
   enableFlightObjectReferences,
   enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
-import {
-  claimStubbedRowsRegistry,
-  releaseStubbedRowsRegistry,
-} from 'shared/ReactFlightHTMLFirstRegistry';
-import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
+import type {StubbedRowsEntry} from 'shared/ReactFlightTee';
 
 import {
   resolveClientReference,
@@ -402,8 +398,8 @@ type Response = {
   _chunks: Map<number, SomeChunk<any>>,
   // enableFlightHTMLFirst: rows the server withheld from the stream.
   _stubbedRows: null | StubbedRows,
-  // enableFlightHTMLFirst: the registry entry this response claimed. It
-  // records which rows get rendered, see StubbedRendered.
+  // enableFlightHTMLFirst: the rows a tee handed to this response. It records
+  // which rows get rendered, see StubbedRendered.
   _stubbedEntry: null | StubbedRowsEntry,
   // enableFlightHTMLFirst: the `:Q` id of the payload, which names it.
   _stubbedRequestId: number,
@@ -468,6 +464,18 @@ export function attachStubbedRows(
 ): void {
   if (enableFlightHTMLFirst) {
     unwrapWeakResponse(weakResponse)._stubbedRows = rows;
+  }
+}
+
+// enableFlightHTMLFirst: the stubbed elements of the render a tee reads.
+export function setStubbedRowsEntry(
+  weakResponse: WeakResponse,
+  entry: StubbedRowsEntry,
+): void {
+  if (enableFlightHTMLFirst) {
+    const response = unwrapWeakResponse(weakResponse);
+    response._stubbedRows = entry.rows;
+    response._stubbedEntry = entry;
   }
 }
 
@@ -3307,10 +3315,11 @@ function endStubbedRows(response: Response): void {
   if (end !== null) {
     end.resolve();
   }
-  // The consumer that claimed the rows is not going to render more of them.
+  // Everything but the late rows was emitted. Once the renderer has rendered
+  // what that resolved, the reader is not going to render more of the rows.
   const entry = response._stubbedEntry;
   if (entry !== null) {
-    settleStubbedRows(entry);
+    scheduleStubbedSettle(entry);
   }
 }
 
@@ -6125,30 +6134,10 @@ function processFullStringRow(
       return;
     }
     case 81 /* "Q" */: {
-      // enableFlightHTMLFirst: in-process registry id for stubbed rows.
+      // enableFlightHTMLFirst: the id of the payload, see
+      // getStubbedNodeHolder.
       if (enableFlightHTMLFirst) {
-        const requestId = parseInt(row, 16);
-        response._stubbedRequestId = requestId;
-        if (response._stubbedRows !== null) {
-          // Framework already supplied htmlFirstRows; drop the unused registry.
-          releaseStubbedRowsRegistry(requestId);
-        } else {
-          const entry = claimStubbedRowsRegistry(requestId);
-          if (entry !== undefined) {
-            response._stubbedRows = entry.rows as any;
-            response._stubbedEntry = entry;
-          }
-        }
-      }
-      return;
-    }
-    case 113 /* "q" */: {
-      // enableFlightHTMLFirst: everything but the late rows was written.
-      if (enableFlightHTMLFirst) {
-        const entry = response._stubbedEntry;
-        if (entry !== null) {
-          scheduleStubbedSettle(entry);
-        }
+        response._stubbedRequestId = parseInt(row, 16);
       }
       return;
     }
@@ -6382,7 +6371,6 @@ export function processBinaryChunk(
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
           resolvedRowTag === 35 /* "#" */ ||
-          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {
@@ -6554,7 +6542,6 @@ export function processStringChunk(
           i++;
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
-          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {
