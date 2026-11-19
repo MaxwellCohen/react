@@ -38,7 +38,9 @@ import {
   ELEMENT_FIELDS,
   close,
   reportGlobalError,
+  setStubbedRowsEntry,
 } from './ReactFlightClient';
+import type {StubbedRowsEntry} from 'shared/ReactFlightTee';
 
 // The client side of a tee (see shared/ReactFlightTee). It reads one Flight
 // render into one Response.
@@ -143,6 +145,11 @@ function teeProcessWireBinary(
   processWireBinary(tee._response, tee._streamState, id, tag, bytes);
 }
 
+function teeStubbedRows(flightTee: FlightTee, entry: StubbedRowsEntry): void {
+  const tee: TeeInstance = flightTee as any;
+  setStubbedRowsEntry(tee._response, entry);
+}
+
 function teeClose(flightTee: FlightTee): void {
   const tee: TeeInstance = flightTee as any;
   close(tee._response);
@@ -166,6 +173,7 @@ export const teeDispatcher: FlightTeeDispatcher = Object.freeze({
   w /* processWireRow */: teeProcessWireRow,
   t /* processWireText */: teeProcessWireText,
   y /* processWireBinary */: teeProcessWireBinary,
+  h /* stubbedRows */: teeStubbedRows,
   C /* close */: teeClose,
   X /* error */: teeError,
 });

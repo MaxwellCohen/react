@@ -845,20 +845,13 @@ export function resumeAndPrerenderRequest(
 let currentRequest: null | Request = null;
 
 export function resolveRequest(): null | Request {
-  // Prefer AsyncLocalStorage so concurrent Fizz renders stay correct even if
-  // currentRequest is pinned to a suspended sibling (see performWork).
+  if (currentRequest) return currentRequest;
   // $FlowFixMe[constant-condition]
   if (supportsRequestStorage) {
     const store = requestStorage.getStore();
     if (store) return store;
   }
-  return currentRequest;
-}
-
-function clearCurrentRequest(request: Request): void {
-  if (currentRequest === request) {
-    currentRequest = null;
-  }
+  return null;
 }
 
 function pingTask(request: Request, task: Task): void {
@@ -1483,11 +1476,9 @@ function fatalError(
     onFatalError(error);
   }
   endRenderLifetime(request);
-  const destination = request.destination;
-  if (destination !== null) {
+  if (request.destination !== null) {
     request.status = CLOSED;
-    clearCurrentRequest(request);
-    closeWithError(destination, error);
+    closeWithError(request.destination, error);
   } else {
     request.status = CLOSING;
     // abort() already stored the reason that every remaining task must
@@ -5812,20 +5803,7 @@ export function performWork(request: Request): void {
       // we'll to restore the context to what it was before returning.
       switchContext(prevContext);
     }
-    // Keep currentRequest pinned to this in-flight request while it is still
-    // open so Float hints that arrive via an overlapping in-process Flight
-    // write (outside requestStorage) can still resolve resources. Never leave
-    // a closed/aborted request pinned (that breaks later renders in-process).
-    if (request.aborted || request.status > OPEN) {
-      currentRequest =
-        prevRequest !== null &&
-        !prevRequest.aborted &&
-        !(prevRequest.status > OPEN)
-          ? prevRequest
-          : null;
-    } else if (prevRequest !== null) {
-      currentRequest = prevRequest;
-    }
+    currentRequest = prevRequest;
   }
 }
 
@@ -6535,7 +6513,6 @@ function flushCompletedQueues(
       // We're done.
       endRenderLifetime(request);
       request.status = CLOSED;
-      clearCurrentRequest(request);
       close(destination);
       // We need to stop flowing now because we do not want any async contexts which might call
       // float methods to initiate any flushes after this point
@@ -6651,7 +6628,6 @@ export function prepareForStartFlowingIfBeforeAllReady(request: Request) {
 export function startFlowing(request: Request, destination: Destination): void {
   if (request.status === CLOSING) {
     request.status = CLOSED;
-    clearCurrentRequest(request);
     let error = request.fatalError;
     if (isRecoverableError(error)) {
       // An aborted request keeps its original branded reason while tasks

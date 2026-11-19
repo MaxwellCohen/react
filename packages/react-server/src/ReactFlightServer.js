@@ -20,12 +20,6 @@ import {
   enableFlightObjectReferences,
   enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
-import {
-  allocateStubbedRowsRegistry,
-  releaseStubbedRowsRegistry,
-  releaseStubbedRowsWhenCollected,
-} from 'shared/ReactFlightHTMLFirstRegistry';
-import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import {
   scheduleWork,
@@ -76,7 +70,11 @@ import type {
   ReactErrorInfoDev,
   ReactKey,
 } from 'shared/ReactTypes';
-import type {FlightTee, FlightTeeDispatcher} from 'shared/ReactFlightTee';
+import type {
+  FlightTee,
+  FlightTeeDispatcher,
+  StubbedRowsEntry,
+} from 'shared/ReactFlightTee';
 import {FLIGHT_TEE_VERSION} from 'shared/ReactFlightTee';
 import type {ReactElement} from 'shared/ReactElementType';
 import type {LazyComponent} from 'react/src/ReactLazy';
@@ -652,12 +650,12 @@ export type Request = {
   identifierPrefix: string,
   onStubbedRow: null | ((id: number, json: string) => void),
   onStubbedValue: null | ((id: number, value: mixed) => void),
-  // enableFlightHTMLFirst: internal registry id when no framework callbacks.
-  stubbedRequestId: number,
+  // enableFlightHTMLFirst: `htmlFirst: true`, which stubs once a tee is
+  // attached (see attachTee).
+  htmlFirst: boolean,
   // enableFlightHTMLFirst: non-null while the stream is kept open for
   // late rows (see settleStubbedRows). Counts as one pending chunk.
   stubbedEntry: null | StubbedRowsEntry,
-  stubbedEnd: 0 | 1 | 2, // nothing yet, `:q` emitted, `:q` written
   stubbedTimeout: null | TimeoutID,
   // enableFlightHTMLFirst: memoized isStaticHostNode results.
   staticHostCache: null | WeakMap<any, boolean>,
@@ -797,36 +795,18 @@ function RequestInstance(
   // enableFlightHTMLFirst: stubbing is opt-in per request, so a stream
   // that goes straight to the browser (navigation, refetch, action result) is
   // never stubbed by accident. The framework opts in on the response that feeds
-  // SSR: `htmlFirst: true` collects rows in an internal registry keyed
-  // by a request id emitted in the stream (`:Q…`), which the first in-process
-  // createFrom* claims. `{onRow, onValue}` (JSON row / live value) is the
-  // override for out-of-process or custom consumers.
-  this.stubbedRequestId = 0;
+  // SSR: `htmlFirst: true` hands the stubbed elements to the tee that reads
+  // this render for SSR, so it does nothing without a tee. `{onRow, onValue}`
+  // (JSON row / live value) is the override for out-of-process or custom
+  // consumers.
+  this.htmlFirst = false;
   this.stubbedEntry = null;
-  this.stubbedEnd = 0;
   this.stubbedTimeout = null;
   this.onStubbedValue = null;
   this.onStubbedRow = null;
   if (enableFlightHTMLFirst && htmlFirst) {
     if (htmlFirst === true) {
-      // Allocated on the first stubbed element, so a response with nothing to
-      // stub is byte-identical to one without the option. Hint rows flush
-      // before regular rows, so `:Q` still precedes the first stub.
-      const request: Request = this;
-      let entry: null | StubbedRowsEntry = null;
-      this.onStubbedValue = (id: number, value: mixed) => {
-        let current = entry;
-        if (current === null) {
-          const registry = allocateStubbedRowsRegistry();
-          current = entry = registry.entry;
-          request.stubbedRequestId = registry.requestId;
-          releaseStubbedRowsWhenCollected(request, registry.requestId);
-          emitStubbedRowsRequestIdChunk(request, registry.requestId);
-          holdForLateStubbedRows(request, current);
-        }
-        current.rows.set(id, value);
-      };
-      this.onStubbedRow = noop;
+      this.htmlFirst = true;
     } else {
       const {onRow, onValue} = htmlFirst;
       if (typeof onValue === 'function') {
@@ -937,6 +917,9 @@ export function attachTee(request: Request, tee: FlightTee): void {
   }
   request.tee = tee;
   request.teeDispatcher = teeDispatcher;
+  if (enableFlightHTMLFirst && request.htmlFirst) {
+    stubForTee(request, tee, teeDispatcher);
+  }
   if (__DEV__ && enableProfilerTimer) {
     // The time origin row was emitted when the request was created.
     teeDispatcher.w(
@@ -948,6 +931,30 @@ export function attachTee(request: Request, tee: FlightTee): void {
         '\n',
     );
   }
+}
+
+// enableFlightHTMLFirst: the tee's reader renders the HTML, so it gets the
+// stubbed elements by value, while the bytes only carry their stubs. The rows
+// are handed over on the first stubbed element, so a response with nothing to
+// stub is byte-identical to one without the option.
+function stubForTee(
+  request: Request,
+  tee: FlightTee,
+  teeDispatcher: FlightTeeDispatcher,
+): void {
+  let entry: null | StubbedRowsEntry = null;
+  request.onStubbedValue = (id: number, value: mixed) => {
+    let current = entry;
+    if (current === null) {
+      current = entry = {rows: new Map(), rendered: new Set(), settle: null};
+      // Hint rows flush before regular rows, so `:Q` precedes the first stub.
+      emitStubbedRowsRequestIdChunk(request, nextStubbedRequestId++);
+      holdForLateStubbedRows(request, current);
+      teeDispatcher.h(tee, current);
+    }
+    current.rows.set(id, value);
+  };
+  request.onStubbedRow = noop;
 }
 
 function teeWireRow(request: Request, row: string): void {
@@ -967,9 +974,12 @@ function closeTeeIfComplete(request: Request): void {
   if (tee === null || teeDispatcher === null) {
     return;
   }
-  // Every chunk that counts as pending and is still queued.
+  // Every chunk that counts as pending and is still queued. A hold for late
+  // rows is too: the reader settles it, once the tee has closed.
   let queued =
-    request.completedImportChunks.length + request.completedErrorChunks.length;
+    request.completedImportChunks.length +
+    request.completedErrorChunks.length +
+    (enableFlightHTMLFirst && request.stubbedEntry !== null ? 1 : 0);
   const regularChunks = request.completedRegularChunks;
   for (let i = 0; i < regularChunks.length; i++) {
     if (regularChunks[i] !== NEXT_TWO_CHUNKS_ARE_ATOMIC) {
@@ -993,6 +1003,18 @@ function closeTeeIfComplete(request: Request): void {
   }
   request.tee = null;
   request.teeDispatcher = null;
+  if (
+    enableFlightHTMLFirst &&
+    request.stubbedEntry !== null &&
+    request.stubbedTimeout === null
+  ) {
+    // A reader that never settles (it stopped rendering) can only keep the
+    // stream open for so long.
+    request.stubbedTimeout = setTimeout(
+      settleStubbedRows.bind(null, request),
+      STUBBED_SETTLE_TIMEOUT,
+    );
+  }
   teeDispatcher.C(tee);
 }
 
@@ -4893,7 +4915,7 @@ function renderModelDestructive(
             return stubbed;
           }
         }
-                let elementEntry = null;
+        let elementEntry = null;
         const writtenObjects = request.writtenObjects;
         if (task.keyPath !== null || task.implicitSlot) {
           // If we're in some kind of context we can't reuse the result of this render or
@@ -5944,11 +5966,14 @@ function emitHintChunk<Code: HintCode>(
   teeWireRow(request, row);
 }
 
+// enableFlightHTMLFirst: identifies the payload, so that the stubs of every
+// decode of it in the browser share the node that hydration adopted.
+let nextStubbedRequestId = 1;
+
 function emitStubbedRowsRequestIdChunk(
   request: Request,
   requestId: number,
 ): void {
-  // enableFlightHTMLFirst: identify the internal row registry across tee().
   const row = ':Q' + requestId.toString(16) + '\n';
   request.completedHintChunks.push(stringToChunk(row));
 }
@@ -5961,8 +5986,9 @@ function emitStubbedRowsRequestIdChunk(
 // refers to, and the browser resolves the stub from those.
 //
 // The stream is kept open for that with one pending chunk. When everything
-// else is written, `:q` tells the claimer that it has seen it all, and the
-// claimer calls entry.settle() once its renderer had a chance to run. A wrong
+// else is emitted the tee closes, which tells the reader that it has seen it
+// all, and the reader calls entry.settle() once its renderer had a chance to
+// run. A wrong
 // guess is safe either way: a late row for content that is in the HTML only
 // costs bytes, and a stub without HTML or a late row asks the framework for
 // the full payload as before (onMissingHTML).
@@ -5972,59 +5998,12 @@ function holdForLateStubbedRows(
 ): void {
   request.stubbedEntry = entry;
   request.pendingChunks++;
-  // The entry is reachable from the global registry until it is claimed, and
-  // must not keep the request alive (see releaseStubbedRowsWhenCollected).
-  if (typeof WeakRef === 'function') {
-    const weakRequest = new WeakRef(request);
-    entry.settle = () => {
-      const strongRequest = weakRequest.deref();
-      if (strongRequest !== undefined) {
-        settleStubbedRows(strongRequest);
-      }
-    };
-  } else {
-    entry.settle = settleStubbedRows.bind(null, request);
-  }
+  entry.settle = settleStubbedRows.bind(null, request);
 }
 
 // How long a claimer that never settles (it stopped reading the stream) can
 // keep the stream open after everything else was written.
 const STUBBED_SETTLE_TIMEOUT = 1000;
-
-// Called at the end of a flush that left nothing but the hold pending.
-function flushStubbedEnd(request: Request): void {
-  if (request.stubbedEnd === 0) {
-    request.stubbedEnd = 1;
-    request.completedHintChunks.push(stringToChunk(':q\n'));
-    if (request.destination !== null) {
-      flushCompletedChunks(request);
-    }
-    return;
-  }
-  if (request.stubbedEnd === 1 && request.completedHintChunks.length === 0) {
-    request.stubbedEnd = 2;
-    // A consumer in this process claims the rows as soon as it reads the first
-    // bytes. If nothing did shortly after the last bytes were written, the
-    // stream goes somewhere else (or is read later, from a buffer) and nobody
-    // is going to settle it.
-    scheduleWork(() => {
-      scheduleWork(() => {
-        const entry = request.stubbedEntry;
-        if (entry === null) {
-          return;
-        }
-        if (entry.claimed) {
-          request.stubbedTimeout = setTimeout(
-            settleStubbedRows.bind(null, request),
-            STUBBED_SETTLE_TIMEOUT,
-          );
-        } else {
-          finishStubbedHold(request);
-        }
-      });
-    });
-  }
-}
 
 function releaseStubbedHold(request: Request): void {
   const entry = request.stubbedEntry;
@@ -8060,15 +8039,6 @@ function flushCompletedChunks(request: Request): void {
     flushBuffered(destination);
   }
   closeTeeIfComplete(request);
-  if (
-    enableFlightHTMLFirst &&
-    request.pendingChunks === 1 &&
-    request.stubbedEntry !== null &&
-    request.stubbedEnd !== 2
-  ) {
-    flushStubbedEnd(request);
-    return;
-  }
   if (request.pendingChunks === 0) {
     // There are no pending chunks left, so the render is complete and its cache
     // signal is aborted here. Debug chunks can still be pending, but they carry
@@ -8289,11 +8259,6 @@ export function abort(request: Request, reason: mixed): void {
   }
   try {
     request.status = ABORTING;
-    if (enableFlightHTMLFirst && request.stubbedRequestId !== 0) {
-      // No createFrom* claimed the rows (cancelled before SSR). Drop them.
-      releaseStubbedRowsRegistry(request.stubbedRequestId);
-      request.stubbedRequestId = 0;
-    }
     if (enableFlightHTMLFirst) {
       // Nothing waits for late rows of an aborted render.
       releaseStubbedHold(request);

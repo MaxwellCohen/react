@@ -67,6 +67,10 @@ export type FlightTeeDispatcher = {
     tag: number,
     bytes: Uint8Array,
   ) => void,
+  // enableFlightHTMLFirst: the elements the render left out of its bytes,
+  // which the reader renders in place of their stubs. Called once, before the
+  // first stub. See StubbedRowsEntry.
+  +h /* stubbedRows */: (tee: FlightTee, entry: StubbedRowsEntry) => void,
   // The render finished and both destinations would close.
   +C /* close */: (tee: FlightTee) => void,
   // The render failed with a fatal error and the destination would error.
@@ -86,3 +90,17 @@ export type FlightTee = {
 
 // Opaque to the server.
 export type FlightTeeRow = {...};
+
+// enableFlightHTMLFirst: shared by the render that stubbed the elements and the
+// reader that renders them to HTML.
+export type StubbedRowsEntry = {
+  // The stubbed elements by row id.
+  rows: Map<number, mixed>,
+  // Ids of the rows the reader actually rendered. The HTML for the others was
+  // never produced (children of a closed modal, a client-only wrapper), so the
+  // server writes those to the stream after all ("late rows").
+  rendered: Set<number>,
+  // Set by the server while it keeps the stream open for late rows. Called by
+  // the reader once it has rendered what it is going to render.
+  settle: null | (() => void),
+};
