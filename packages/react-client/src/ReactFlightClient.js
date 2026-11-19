@@ -53,6 +53,7 @@ import {
   claimStubbedRowsRegistry,
   releaseStubbedRowsRegistry,
 } from 'shared/ReactFlightHTMLFirstRegistry';
+import {canUseDOM} from 'shared/ExecutionEnvironment';
 import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import {
@@ -2882,6 +2883,19 @@ function rememberStubbedNode(
   }
 }
 
+// React never renders inline event handlers, so one on the old node was added
+// by something else after hydration and must not be carried over.
+function setStubbedAttribute(node: Element, name: string, value: string) {
+  if (
+    name.length > 2 &&
+    (name[0] === 'o' || name[0] === 'O') &&
+    (name[1] === 'n' || name[1] === 'N')
+  ) {
+    return;
+  }
+  node.setAttribute(name, value);
+}
+
 // Copies the attributes and content of the node this stub had before onto
 // the element React just created for it. The content is moved, or copied if
 // the old node is still in the document.
@@ -2903,7 +2917,7 @@ function restoreStubbedNode(
     const attributes = saved.attributes;
     if (attributes !== null) {
       for (let i = 0; i < attributes.length; i += 2) {
-        node.setAttribute(attributes[i], attributes[i + 1]);
+        setStubbedAttribute(node, attributes[i], attributes[i + 1]);
       }
     }
     if (saved.html !== null) {
@@ -2914,7 +2928,7 @@ function restoreStubbedNode(
   }
   const attributes = from.attributes;
   for (let i = 0; i < attributes.length; i++) {
-    node.setAttribute(attributes[i].name, attributes[i].value);
+    setStubbedAttribute(node, attributes[i].name, attributes[i].value);
   }
   restoreStubbedDisplay(saved, node);
   if (from.isConnected) {
@@ -3082,14 +3096,35 @@ function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
 // of the initial payload again for its client cache). The stubs of every
 // decode share the node that hydration adopted, keyed by the payload's `:Q` id
 // and the row id. The map holds them weakly, so a node lives only as long as
-// some decoded payload still references its stub.
+// some decoded payload still references its stub. The key is dropped once its
+// holder is collected, so the map does not grow with every payload.
 const stubbedNodeHolders: Map<string, any> = new Map();
+
+function dropStubbedNodeHolder(key: string): void {
+  const ref = stubbedNodeHolders.get(key);
+  if (ref !== undefined && ref.deref() === undefined) {
+    stubbedNodeHolders.delete(key);
+  }
+}
+
+const stubbedNodeHolderCleanup: null | FinalizationRegistry<string> =
+  // $FlowFixMe[cannot-resolve-name]
+  typeof FinalizationRegistry === 'function'
+    ? // $FlowFixMe[cannot-resolve-name]
+      new FinalizationRegistry(dropStubbedNodeHolder)
+    : null;
 
 function getStubbedNodeHolder(
   requestId: number,
   id: number,
 ): StubbedNodeHolder {
-  if (requestId === 0 || typeof WeakRef !== 'function') {
+  // Only a document adopts nodes; a server would only accumulate keys.
+  if (
+    requestId === 0 ||
+    !canUseDOM ||
+    typeof WeakRef !== 'function' ||
+    stubbedNodeHolderCleanup === null
+  ) {
     return {node: null, display: null, attributes: null, html: null};
   }
   const key = requestId + ':' + id;
@@ -3099,6 +3134,7 @@ function getStubbedNodeHolder(
     holder = {node: null, display: null, attributes: null, html: null};
     // $FlowFixMe[cannot-resolve-name]
     stubbedNodeHolders.set(key, new WeakRef(holder));
+    stubbedNodeHolderCleanup.register(holder, key);
   }
   return holder;
 }

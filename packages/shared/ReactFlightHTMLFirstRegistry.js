@@ -32,21 +32,44 @@ export type StubbedRowsEntry = {
 };
 
 type StubbedRowsStore = {
-  nextId: number,
   pending: Map<number, StubbedRowsEntry>,
 };
 
-const STORE_KEY = '__REACT_FLIGHT_HTML_FIRST_REGISTRY__';
+// A symbol, so an element id in the document cannot clobber it.
+const STORE_KEY = Symbol.for('react.flight_html_first_registry');
 
 function getStore(): StubbedRowsStore {
   // $FlowFixMe[cannot-resolve-name] globalThis
   const root: any = typeof globalThis !== 'undefined' ? globalThis : global;
-  let store: void | StubbedRowsStore = root[STORE_KEY];
-  if (store === undefined) {
-    store = {nextId: 1, pending: new Map()};
+  let store: any = root[STORE_KEY];
+  if (
+    store === null ||
+    typeof store !== 'object' ||
+    !(store.pending instanceof Map)
+  ) {
+    store = {pending: new Map()};
     root[STORE_KEY] = store;
   }
   return store;
+}
+
+// The id is written to the stream and names the payload in every process that
+// reads it, so it must not repeat across servers or restarts (a browser would
+// mix up the nodes of two payloads) and must not be guessable (a stream from
+// elsewhere could claim another request's rows). Non-zero, at most 2^53 - 1.
+function randomRequestId(): number {
+  // $FlowFixMe[cannot-resolve-name]
+  const crypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+  let high, low;
+  if (crypto != null && typeof crypto.getRandomValues === 'function') {
+    const words = crypto.getRandomValues(new Uint32Array(2));
+    high = words[0] & 0x1fffff;
+    low = words[1];
+  } else {
+    high = Math.floor(Math.random() * 0x200000);
+    low = Math.floor(Math.random() * 0x100000000);
+  }
+  return high * 0x100000000 + low;
 }
 
 export function allocateStubbedRowsRegistry(): {
@@ -54,7 +77,10 @@ export function allocateStubbedRowsRegistry(): {
   entry: StubbedRowsEntry,
 } {
   const store = getStore();
-  const requestId = store.nextId++;
+  let requestId = randomRequestId();
+  while (requestId === 0 || store.pending.has(requestId)) {
+    requestId = randomRequestId();
+  }
   const entry: StubbedRowsEntry = {
     rows: new Map(),
     rendered: new Set(),
@@ -94,6 +120,10 @@ const releaseWhenCollected: null | FinalizationRegistry<number> =
     ? // $FlowFixMe[cannot-resolve-name]
       new FinalizationRegistry(releaseStubbedRowsRegistry)
     : null;
+
+export function canReleaseStubbedRowsWhenCollected(): boolean {
+  return releaseWhenCollected !== null;
+}
 
 export function releaseStubbedRowsWhenCollected(
   owner: interface {},

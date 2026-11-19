@@ -395,7 +395,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           ),
         ),
       );
-    const store = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
+    const store = globalThis[Symbol.for('react.flight_html_first_registry')];
     const pendingBefore = store === undefined ? 0 : store.pending.size;
 
     // Rendered from one call site with the DEV timestamp row dropped, so
@@ -409,7 +409,8 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const withoutTime = text => text.replace(/^:N.*\n/gm, '');
     expect(withoutTime(main)).toBe(withoutTime(stock));
     expect(main).not.toContain(':Q');
-    const storeAfter = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
+    const storeAfter =
+      globalThis[Symbol.for('react.flight_html_first_registry')];
     expect(storeAfter === undefined ? 0 : storeAfter.pending.size).toBe(
       pendingBefore,
     );
@@ -473,7 +474,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
     // The store is created on first use.
     const pending = () => {
-      const store = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
+      const store = globalThis[Symbol.for('react.flight_html_first_registry')];
       return store === undefined ? new Map() : store.pending;
     };
 

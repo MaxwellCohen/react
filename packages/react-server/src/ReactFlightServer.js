@@ -21,6 +21,7 @@ import {
 } from 'shared/ReactFeatureFlags';
 import {
   allocateStubbedRowsRegistry,
+  canReleaseStubbedRowsWhenCollected,
   releaseStubbedRowsRegistry,
   releaseStubbedRowsWhenCollected,
 } from 'shared/ReactFlightHTMLFirstRegistry';
@@ -5337,6 +5338,10 @@ function flushStubbedEnd(request: Request): void {
             STUBBED_SETTLE_TIMEOUT,
           );
         } else {
+          if (!canReleaseStubbedRowsWhenCollected()) {
+            // Without FinalizationRegistry nothing else would ever drop them.
+            releaseStubbedRowsRegistry(request.stubbedRequestId);
+          }
           finishStubbedHold(request);
         }
       });
