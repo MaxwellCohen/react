@@ -16,6 +16,7 @@ import {
   enableProfilerTimer,
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
+  enableFlightTee,
   enableFlightObjectReferences,
 } from 'shared/ReactFeatureFlags';
 
@@ -68,6 +69,8 @@ import type {
   ReactErrorInfoDev,
   ReactKey,
 } from 'shared/ReactTypes';
+import type {FlightTee, FlightTeeDispatcher} from 'shared/ReactFlightTee';
+import {FLIGHT_TEE_VERSION} from 'shared/ReactFlightTee';
 import type {ReactElement} from 'shared/ReactElementType';
 import type {LazyComponent} from 'react/src/ReactLazy';
 import type {
@@ -632,6 +635,11 @@ export type Request = {
   onError: (error: mixed) => ?string,
   onAllReady: () => void,
   onFatalError: mixed => void,
+  // A Flight Client in the same process that also receives every row as it's
+  // emitted. Null when there's no tee, or once it's closed.
+  tee: null | FlightTee,
+  // The tee's methods, read once when it connects.
+  teeDispatcher: null | FlightTeeDispatcher,
   // Profiling-only
   timeOrigin: number,
   abortTime: number,
@@ -759,6 +767,8 @@ function RequestInstance(
   this.onError = onError === undefined ? defaultErrorHandler : onError;
   this.onAllReady = onAllReady;
   this.onFatalError = onFatalError;
+  this.tee = null;
+  this.teeDispatcher = null;
 
   if (__DEV__) {
     this.pendingDebugChunks = 0;
@@ -827,6 +837,86 @@ function RequestInstance(
     null,
   );
   pingedTasks.push(rootTask);
+}
+
+// Connects a tee created by a Flight Client in the same process. It has to be
+// called right after the request is created, before any work starts.
+export function attachTee(request: Request, tee: FlightTee): void {
+  if (!enableFlightTee) {
+    return;
+  }
+  if (tee._version !== FLIGHT_TEE_VERSION) {
+    throw new Error(
+      'The tee was created by a different version of React than the one ' +
+        'rendering. The Flight Client and Server must be the same version.',
+    );
+  }
+  const teeDispatcher = tee._dispatcher;
+  if (!teeDispatcher.c(tee)) {
+    throw new Error(
+      'The tee is already being written to by another render. A tee can ' +
+        'only be passed to one render.',
+    );
+  }
+  request.tee = tee;
+  request.teeDispatcher = teeDispatcher;
+  if (__DEV__ && enableProfilerTimer) {
+    // The time origin row was emitted when the request was created.
+    teeDispatcher.w(
+      tee,
+      ':N' +
+        (request.timeOrigin +
+          // $FlowFixMe[prop-missing]
+          performance.timeOrigin) +
+        '\n',
+    );
+  }
+}
+
+function teeWireRow(request: Request, row: string): void {
+  const tee = request.tee;
+  const teeDispatcher = request.teeDispatcher;
+  if (tee !== null && teeDispatcher !== null) {
+    teeDispatcher.w(tee, row);
+  }
+}
+
+// The tee gets every row when it's emitted, so it closes once nothing is left
+// to emit, even if the rows haven't been written yet. A prerender's rows wait
+// until its prelude is read, or a destination can stop flowing.
+function closeTeeIfComplete(request: Request): void {
+  const tee = request.tee;
+  const teeDispatcher = request.teeDispatcher;
+  if (tee === null || teeDispatcher === null) {
+    return;
+  }
+  // Every chunk that counts as pending and is still queued.
+  let queued =
+    request.completedImportChunks.length + request.completedErrorChunks.length;
+  const regularChunks = request.completedRegularChunks;
+  for (let i = 0; i < regularChunks.length; i++) {
+    if (regularChunks[i] !== NEXT_TWO_CHUNKS_ARE_ATOMIC) {
+      queued++;
+    }
+  }
+  if (request.pendingChunks !== queued) {
+    return;
+  }
+  if (__DEV__) {
+    let queuedDebug = 0;
+    const debugChunks = request.completedDebugChunks;
+    for (let i = 0; i < debugChunks.length; i++) {
+      if (debugChunks[i] !== NEXT_TWO_CHUNKS_ARE_ATOMIC) {
+        queuedDebug++;
+      }
+    }
+    if (request.pendingDebugChunks !== queuedDebug) {
+      return;
+    }
+  }
+  request.tee = null;
+  request.teeDispatcher = null;
+  teeDispatcher.C(tee);
 }
 
 export function createRequest(
@@ -1335,6 +1425,7 @@ function serializeReadableStream(
   const startStreamRow =
     streamTask.id.toString(16) + ':' + (isByteStream ? 'r' : 'R') + '\n';
   request.completedRegularChunks.push(stringToChunk(startStreamRow));
+  teeWireRow(request, startStreamRow);
 
   function progress(entry: {done: boolean, value: ReactClientValue, ...}) {
     if (streamTask.status !== PENDING) {
@@ -1345,6 +1436,7 @@ function serializeReadableStream(
       streamTask.status = COMPLETED;
       const endStreamRow = streamTask.id.toString(16) + ':C\n';
       request.completedRegularChunks.push(stringToChunk(endStreamRow));
+      teeWireRow(request, endStreamRow);
       request.abortableTasks.delete(streamTask);
       request.cacheController.signal.removeEventListener('abort', abortStream);
       enqueueFlush(request);
@@ -1446,6 +1538,7 @@ function serializeAsyncIterable(
   const startStreamRow =
     streamTask.id.toString(16) + ':' + (isIterator ? 'x' : 'X') + '\n';
   request.completedRegularChunks.push(stringToChunk(startStreamRow));
+  teeWireRow(request, startStreamRow);
 
   function progress(
     entry:
@@ -1477,6 +1570,7 @@ function serializeAsyncIterable(
         }
       }
       request.completedRegularChunks.push(stringToChunk(endStreamRow));
+      teeWireRow(request, endStreamRow);
       request.abortableTasks.delete(streamTask);
       request.cacheController.signal.removeEventListener(
         'abort',
@@ -3229,6 +3323,8 @@ function encodeReferenceChunk(
 ): Chunk {
   const json = stringify(reference);
   const row = id.toString(16) + ':' + json + '\n';
+  // Every caller queues the chunk right away.
+  teeWireRow(request, row);
   return stringToChunk(row);
 }
 
@@ -3733,9 +3829,9 @@ function serializeImportString(request: Request, value: string): string {
   // The client reads import metadata synchronously, so this row has to have
   // been written by the time the referencing row arrives. Import chunks are
   // flushed ahead of regular ones, which regular chunks can't guarantee.
-  request.completedImportChunks.push(
-    stringToChunk(outlinedId.toString(16) + ':' + json + '\n'),
-  );
+  const row = outlinedId.toString(16) + ':' + json + '\n';
+  request.completedImportChunks.push(stringToChunk(row));
+  teeWireRow(request, row);
   const ref = serializeByValueID(outlinedId);
   writtenStrings.set(value, ref);
   return ref;
@@ -4557,6 +4653,13 @@ function fatalError(request: Request, error: mixed): void {
     request.status = CLOSING;
     request.fatalError = error;
   }
+  const tee = request.tee;
+  const teeDispatcher = request.teeDispatcher;
+  if (tee !== null && teeDispatcher !== null) {
+    request.tee = null;
+    request.teeDispatcher = null;
+    teeDispatcher.X(tee, error);
+  }
   const abortReason = new Error(
     'The render was aborted due to a fatal error.',
     {
@@ -4744,6 +4847,7 @@ function emitErrorChunk(
   } else {
     request.completedErrorChunks.push(processedChunk);
   }
+  teeWireRow(request, row);
 }
 
 // Null on the debug channel, which can't reference rows in the main stream.
@@ -4887,6 +4991,7 @@ function emitImportChunk(
   } else {
     request.completedImportChunks.push(processedChunk);
   }
+  teeWireRow(request, row);
 }
 
 function emitHintChunk<Code: HintCode>(
@@ -4898,6 +5003,7 @@ function emitHintChunk<Code: HintCode>(
   const row = ':H' + code + json + '\n';
   const processedChunk = stringToChunk(row);
   request.completedHintChunks.push(processedChunk);
+  teeWireRow(request, row);
 }
 
 function emitSymbolChunk(request: Request, id: number, name: string): void {
@@ -4910,6 +5016,7 @@ function emitModelChunk(request: Request, id: number, json: string): void {
   const row = id.toString(16) + ':' + json + '\n';
   const processedChunk = stringToChunk(row);
   request.completedRegularChunks.push(processedChunk);
+  teeWireRow(request, row);
 }
 
 function emitDebugHaltChunk(request: Request, id: number): void {
@@ -4925,6 +5032,7 @@ function emitDebugHaltChunk(request: Request, id: number): void {
   const row = id.toString(16) + ':\n';
   const processedChunk = stringToChunk(row);
   request.completedDebugChunks.push(processedChunk);
+  teeWireRow(request, row);
 }
 
 function emitDebugChunk(
@@ -4947,19 +5055,23 @@ function emitDebugChunk(
       // without an unnecessary indirection.
       const row = serializeRowHeader('D', id) + json + '\n';
       request.completedRegularChunks.push(stringToChunk(row));
+      teeWireRow(request, row);
     } else {
       // Outline the debug information to the debug channel.
       const outlinedId = request.nextChunkId++;
       const debugRow = outlinedId.toString(16) + ':' + json + '\n';
       request.pendingDebugChunks++;
       request.completedDebugChunks.push(stringToChunk(debugRow));
+      teeWireRow(request, debugRow);
       const row =
         serializeRowHeader('D', id) + '"$' + outlinedId.toString(16) + '"\n';
       request.completedRegularChunks.push(stringToChunk(row));
+      teeWireRow(request, row);
     }
   } else {
     const row = serializeRowHeader('D', id) + json + '\n';
     request.completedRegularChunks.push(stringToChunk(row));
+    teeWireRow(request, row);
   }
 }
 
@@ -5087,6 +5199,7 @@ function emitIOInfoChunk(
   const row = id.toString(16) + ':J' + json + '\n';
   const processedChunk = stringToChunk(row);
   request.completedDebugChunks.push(processedChunk);
+  teeWireRow(request, row);
 }
 
 function outlineIOInfo(request: Request, ioInfo: ReactIOInfo): void {
@@ -5263,6 +5376,20 @@ function emitTypedArrayChunk(
       binaryChunk,
     );
   }
+  const tee = request.tee;
+  const teeDispatcher = request.teeDispatcher;
+  if (tee !== null && teeDispatcher !== null) {
+    teeDispatcher.y(
+      tee,
+      id,
+      tag.charCodeAt(0),
+      new Uint8Array(
+        typedArray.buffer,
+        typedArray.byteOffset,
+        typedArray.byteLength,
+      ),
+    );
+  }
 }
 
 function emitTextChunk(
@@ -5300,6 +5427,11 @@ function emitTextChunk(
       headerChunk,
       textChunk,
     );
+  }
+  const tee = request.tee;
+  const teeDispatcher = request.teeDispatcher;
+  if (tee !== null && teeDispatcher !== null) {
+    teeDispatcher.t(tee, id, text);
   }
 }
 
@@ -5917,6 +6049,7 @@ function emitOutlinedDebugModelChunk(
   const row = id.toString(16) + ':' + json + '\n';
   const processedChunk = stringToChunk(row);
   request.completedDebugChunks.push(processedChunk);
+  teeWireRow(request, row);
 }
 
 function outlineDebugModel(
@@ -5981,6 +6114,7 @@ function emitConsoleChunk(
   const row = ':W' + json + '\n';
   const processedChunk = stringToChunk(row);
   request.completedDebugChunks.push(processedChunk);
+  teeWireRow(request, row);
 }
 
 function emitTimeOriginChunk(request: Request, timeOrigin: number): void {
@@ -6196,12 +6330,15 @@ function emitTimingChunk(
     const debugRow = outlinedId.toString(16) + ':' + json + '\n';
     request.pendingDebugChunks++;
     request.completedDebugChunks.push(stringToChunk(debugRow));
+    teeWireRow(request, debugRow);
     const row =
       serializeRowHeader('D', id) + '"$' + outlinedId.toString(16) + '"\n';
     request.completedRegularChunks.push(stringToChunk(row));
+    teeWireRow(request, row);
   } else {
     const row = serializeRowHeader('D', id) + json + '\n';
     request.completedRegularChunks.push(stringToChunk(row));
+    teeWireRow(request, row);
   }
 }
 
@@ -6778,6 +6915,7 @@ function flushCompletedChunks(request: Request): void {
     }
     flushBuffered(destination);
   }
+  closeTeeIfComplete(request);
   if (request.pendingChunks === 0) {
     // There are no pending chunks left, so the render is complete and its cache
     // signal is aborted here. Debug chunks can still be pending, but they carry
