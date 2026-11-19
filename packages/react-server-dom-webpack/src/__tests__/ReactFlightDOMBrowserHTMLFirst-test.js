@@ -1366,6 +1366,87 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('panel-B');
   });
 
+  it('restores a server panel that client Tabs unmounted, without a request', async () => {
+    const Tabs = clientExports(function Tabs({children}) {
+      const [tab, setTab] = React.useState('server');
+      return (
+        <section>
+          <button onClick={() => setTab('server')}>server</button>
+          <button onClick={() => setTab('client')}>client</button>
+          {tab === 'server' ? children : <p>client-panel</p>}
+        </section>
+      );
+    });
+    const App = () => (
+      <Tabs>
+        <article className="panel">
+          <h2>server-panel</h2>
+        </article>
+      </Tabs>
+    );
+    const f = await flight(<App />);
+    expect(f.main).toContain('$J');
+    const html = await ssr(f);
+    const missing = jest.fn();
+    const {container, errors} = await hydrate(f.main, html, {
+      onMissingHTML: missing,
+    });
+    const [serverTab, clientTab] = container.querySelectorAll('button');
+    const adopted = container.querySelector('article');
+    for (let i = 0; i < 3; i++) {
+      await act(() => clientTab.click());
+      expect(container.querySelector('article')).toBe(null);
+      expect(container.textContent).toContain('client-panel');
+      await act(() => serverTab.click());
+      const article = container.querySelector('article');
+      expect(article).not.toBe(adopted);
+      expect(article.outerHTML).toBe(
+        '<article class="panel"><h2>server-panel</h2></article>',
+      );
+    }
+    expect(missing).not.toHaveBeenCalled();
+    expect(errors).toEqual([]);
+  });
+
+  it('refetches once when client Tabs mount a server panel that was not in the HTML', async () => {
+    const Tabs = clientExports(function Tabs({children}) {
+      const [tab, setTab] = React.useState(0);
+      return (
+        <section>
+          <button onClick={() => setTab(0)}>a</button>
+          <button onClick={() => setTab(1)}>b</button>
+          {children[tab]}
+        </section>
+      );
+    });
+    const App = () => (
+      <Tabs>
+        <article key="a">panel-A</article>
+        <article key="b">panel-B</article>
+      </Tabs>
+    );
+    const f = await flight(<App />);
+    const html = await ssr(f);
+    expect(html).not.toContain('panel-B');
+    const missing = jest.fn();
+    const {container, errors, root} = await hydrate(f.main, html, {
+      onMissingHTML: missing,
+    });
+    const [tabA, tabB] = container.querySelectorAll('button');
+    await act(() => tabB.click());
+    expect(missing).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('panel-A');
+    // The framework answers with a full payload; Tabs keeps its state.
+    await renderFullPayload(root, <App />);
+    expect(container.textContent).toContain('panel-B');
+    await act(() => tabA.click());
+    expect(container.textContent).toContain('panel-A');
+    await act(() => tabB.click());
+    expect(container.textContent).toContain('panel-B');
+    expect(missing).toHaveBeenCalledTimes(1);
+    expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+  });
+
   it('keeps keyed host elements in client props so a reorder is reflected', async () => {
     const Sortable = clientExports(function Sortable({items}) {
       const [rev, setRev] = React.useState(false);
