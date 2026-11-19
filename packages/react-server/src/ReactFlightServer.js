@@ -7557,6 +7557,21 @@ function performWorkWithRequest(request: Request): void {
       const task = pingedTasks[i];
       retryTask(request, task);
     }
+    // A tee's reader renders between these passes. Run the work this pass
+    // made ready, such as the rest of a row that was too large to write at
+    // once, before yielding, so that the reader doesn't render up to a row
+    // that is about to be emitted and suspend on it.
+    while (
+      enableFlightTee &&
+      request.tee !== null &&
+      request.pingedTasks.length > 0
+    ) {
+      const readyTasks = request.pingedTasks;
+      request.pingedTasks = [];
+      for (let i = 0; i < readyTasks.length; i++) {
+        retryTask(request, readyTasks[i]);
+      }
+    }
     flushCompletedChunks(request);
   } catch (error) {
     logRecoverableError(request, error, null);
