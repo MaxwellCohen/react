@@ -18,6 +18,8 @@ import type {ServerReferenceId} from '../client/ReactFlightClientConfigBundlerPa
 
 import {
   createResponse,
+  attachStubbedRows,
+  attachMissingHTML,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -114,7 +116,7 @@ function createResponseFromOptions(options: void | Options) {
         }
       : undefined;
 
-  return createResponse(
+  const response = createResponse(
     null, // bundlerConfig
     null, // serverReferenceConfig
     null, // moduleLoading
@@ -138,6 +140,13 @@ function createResponseFromOptions(options: void | Options) {
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
   );
+  if (options && options.htmlFirstRows) {
+    attachStubbedRows(response, options.htmlFirstRows);
+  }
+  if (options && options.onMissingHTML) {
+    attachMissingHTML(response, options.onMissingHTML);
+  }
+  return response;
 }
 
 function startReadingFromUniversalStream(
@@ -208,6 +217,9 @@ function startReadingFromStream(
 }
 
 export type Options = {
+  // Prototype (enableFlightHTMLFirst): rows withheld by the server.
+  htmlFirstRows?: {get(id: number): void | string, ...},
+  onMissingHTML?: () => void,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},
   temporaryReferences?: TemporaryReferenceSet,
   unstable_allowPartialStream?: boolean,
