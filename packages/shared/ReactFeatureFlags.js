@@ -86,8 +86,9 @@ export const enableFlightWeakThenables = __EXPERIMENTAL__;
 
 // Let a Flight Client in the same process read a Flight render directly,
 // through a tee created with `createTee` and passed to the server, instead of
-// parsing the bytes.
-export const enableFlightTee = __EXPERIMENTAL__;
+// parsing the bytes. On in canary too, because HTML-first
+// (enableFlightHTMLFirst) hands the HTML its stubbed elements through a tee.
+export const enableFlightTee = true;
 
 // Support Server References that point to objects (including Promises), not
 // just functions. On the server the reference is the real object; on the
