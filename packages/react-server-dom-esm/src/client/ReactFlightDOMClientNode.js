@@ -19,6 +19,7 @@ import type {Readable} from 'stream';
 
 import {
   createResponse,
+  attachStubbedRows,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -52,6 +53,8 @@ type EncodeFormActionCallback = <A>(
 ) => ReactCustomFormAction;
 
 export type Options = {
+  // Prototype (enableFlightHTMLFirst): rows withheld by the server.
+  htmlFirstRows?: {get(id: number): void | string, ...},
   nonce?: string,
   encodeFormAction?: EncodeFormActionCallback,
   unstable_allowPartialStream?: boolean,
@@ -123,6 +126,9 @@ function createFromNodeStream<T>(
     debugChannel,
     __DEV__ && options ? options.unstable_requestId : undefined,
   );
+  if (options && options.htmlFirstRows) {
+    attachStubbedRows(response, options.htmlFirstRows);
+  }
 
   if (__DEV__ && options && options.debugChannel) {
     let streamEndedCount = 0;
