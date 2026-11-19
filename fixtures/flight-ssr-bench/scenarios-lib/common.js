@@ -6,7 +6,10 @@ const {fork} = require('child_process');
 
 const FIXTURE = path.resolve(__dirname, '..');
 const VARIANTS_DIR = path.join(FIXTURE, '.variants');
-const ALL_VARIANTS = ['off', 'all'];
+// off: no opt-in. registry: `htmlFirst: true` against a registry-era build
+// (stubbed rows claimed by the in-process createFrom*). tee: `htmlFirst: true`
+// plus createTee/createFromTee. `all` is the old name of `registry`.
+const ALL_VARIANTS = ['off', 'all', 'registry', 'tee'];
 const PKGS = ['react', 'react-dom', 'react-server-dom-webpack', 'scheduler'];
 const BROWSERS = ['chromium', 'firefox', 'webkit'];
 
@@ -16,7 +19,8 @@ function parseArgs(argv, defaults) {
       only: [],
       size: 'smoke',
       builds: process.env.SCENARIO_BUILDS || '',
-      variants: ALL_VARIANTS,
+      variants: ['off', 'tee'],
+      buildDirs: {},
       browser: 'chromium',
     },
     defaults
@@ -27,6 +31,11 @@ function parseArgs(argv, defaults) {
     if (a === '--only') o.only = val().split(',').filter(Boolean);
     else if (a === '--size') o.size = val();
     else if (a === '--builds') o.builds = val();
+    else if (a === '--build') {
+      // --build <variant>=<dir>: that variant's build, instead of <builds>/<variant>
+      const [v, d] = val().split('=');
+      o.buildDirs[v] = path.resolve(d);
+    }
     else if (a === '--variants') o.variants = val().split(',').filter(Boolean);
     else if (a === '--browser') o.browser = val();
     else if (a === '--n') o.n = +val();
@@ -49,8 +58,8 @@ function parseArgs(argv, defaults) {
 
 // Copies the four React packages of one build into .variants/<v>/node_modules
 // (read-only use of the build dir) and refuses builds from an older commit.
-function prepareVariant(buildsDir, name) {
-  const src = path.join(buildsDir, name);
+function prepareVariant(buildsDir, name, buildDirs) {
+  const src = (buildDirs && buildDirs[name]) || path.join(buildsDir, name);
   const server = path.join(
     src,
     'react-server-dom-webpack/cjs/react-server-dom-webpack-server.node.production.js'

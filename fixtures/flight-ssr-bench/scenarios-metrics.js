@@ -104,14 +104,15 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
       if (Math.abs(r.deltas.gzip) <= 1) r.flags.push('NO-BENEFIT');
       if (
         r.expectedBenefit === 'high' &&
-        r.variant === 'all' &&
+        r.variant !== 'off' &&
         r.deltas.gzip > -1
       )
         r.flags.push('EXPECTED-HIGH-GOT-NONE');
     }
     if (!r.bytesDeterministic) r.flags.push('NONDETERMINISTIC-BYTES');
   }
-  const resultsDir = path.join(__dirname, 'results');
+  const resultsDir =
+    process.env.SCN_RESULTS_DIR || path.join(__dirname, 'results');
   fs.mkdirSync(resultsDir, {recursive: true});
   fs.writeFileSync(
     path.join(resultsDir, 'scenarios.json'),

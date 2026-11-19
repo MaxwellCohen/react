@@ -1,0 +1,8 @@
+server rows | baseline               median 42.73 ms  p10 40.19  html 2013869  inlined flight 1323064
+server rows | tee only               median 36.28 ms  p10 33.04  html 2013308  inlined flight 1322657
+server rows | html-first, no tee     median 20.03 ms  p10 18.13  html 704047  inlined flight 17148
+server rows | html-first + tee       median 19.79 ms  p10 16.16  html 704053  inlined flight 17154
+client rows | baseline               median 17.79 ms  p10 15.56  html 1695819  inlined flight 626830
+client rows | tee only               median 16.91 ms  p10 14.58  html 1695666  inlined flight 626719
+client rows | html-first, no tee     median 16.93 ms  p10 14.99  html 1282185  inlined flight 213294
+client rows | html-first + tee       median 15.36 ms  p10 13.92  html 1282191  inlined flight 213300
