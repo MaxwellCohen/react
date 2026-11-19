@@ -6,7 +6,11 @@ export default function Tabs({labels, panels}) {
   return (
     <div className="tabs">
       {labels.map((l, n) => (
-        <button key={n} className="tab" onClick={() => setI(n)}>
+        <button
+          key={n}
+          className={n === i ? 'tab selected' : 'tab'}
+          aria-selected={n === i}
+          onClick={() => setI(n)}>
           {l}
         </button>
       ))}
