@@ -2776,17 +2776,33 @@ function StaticStub(props: {
   // again later (a framework re-rendering a cached payload, e.g. on back
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
-  const [mode] = React.useState(
-    hydrating
-      ? ADOPT
-      : props.saved.node !== null || props.saved.html !== null
-        ? RESTORE
-        : RECOVER,
-  );
+  const [slot, setSlot] = React.useState(() => ({
+    saved: props.saved,
+    mode: hydrating ? ADOPT : modeWithoutHTML(props.saved),
+    generation: 0,
+  }));
+  // React reuses this fiber for a different stub when unkeyed siblings swap
+  // places (tabs that render one of their children). Start over for that
+  // stub, on a new node (the key), so the old node keeps its own content.
+  let current = slot;
+  if (current.saved !== props.saved) {
+    current = {
+      saved: props.saved,
+      mode: modeWithoutHTML(props.saved),
+      generation: slot.generation + 1,
+    };
+    setSlot(current);
+  }
+  const mode = current.mode;
   // React restores `display` from the style prop when it shows a hidden
   // Activity again. The stub has no props of its own, so it uses the inline
   // display the server rendered, recorded when the node was adopted.
-  const [display, setDisplay] = React.useState(props.saved.display);
+  const [savedDisplay, setDisplay] = React.useState(props.saved.display);
+  let display = savedDisplay;
+  if (current !== slot) {
+    display = props.saved.display;
+    setDisplay(display);
+  }
   React.useLayoutEffect(() => {
     if (display !== props.saved.display) {
       setDisplay(props.saved.display);
@@ -2802,6 +2818,7 @@ function StaticStub(props: {
     React.use(props.recover());
   }
   return React.createElement(props.tag, {
+    key: current.generation,
     suppressHydrationWarning: true,
     dangerouslySetInnerHTML: EMPTY_HTML,
     style: display === null ? undefined : {display},
@@ -2812,6 +2829,10 @@ function StaticStub(props: {
 // Lets the renderer keep a stub (and its DOM) when the full payload has the
 // same content in its place.
 StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
+
+function modeWithoutHTML(saved: StubbedNodeHolder): number {
+  return saved.node !== null || saved.html !== null ? RESTORE : RECOVER;
+}
 
 const ADOPT = 0;
 const RESTORE = 1;
@@ -3167,10 +3188,12 @@ function parseModelString(
             }
           }
           const stubKey = keyColon === -1 ? null : value.slice(keyColon + 1);
-          if (response._chunks.has(id)) {
-            // The server gave us the row (SSR, or a late row that is already
-            // here): render the real element.
-            const entry = response._stubbedEntry;
+          const entry = response._stubbedEntry;
+          if (response._chunks.has(id) && (rows !== null || entry !== null)) {
+            // The consumer that renders HTML has the row: render the real
+            // element. The browser keeps a stub even when the row arrived
+            // late, so one slot never holds a stub and a real element for
+            // different rows (tabs swapping unkeyed children).
             return getOutlinedModel(
               response,
               ref,

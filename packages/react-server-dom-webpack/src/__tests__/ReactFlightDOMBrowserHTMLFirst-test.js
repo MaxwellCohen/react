@@ -1658,6 +1658,48 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(errors).toEqual([]);
     });
 
+    it('swaps unkeyed tab panels without mixing up their content', async () => {
+      const Tabs = clientExports(function Tabs({children}) {
+        const [tab, setTab] = React.useState(0);
+        return (
+          <section>
+            <button onClick={() => setTab(0)}>a</button>
+            <button onClick={() => setTab(1)}>b</button>
+            {children[tab]}
+          </section>
+        );
+      });
+      const App = () => (
+        <Tabs>
+          <article>{'panel-A '.repeat(10)}</article>
+          <article>{'panel-B '.repeat(10)}</article>
+        </Tabs>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).toContain('panel-A');
+      expect(html).not.toContain('panel-B');
+      // Panel A is adopted from the HTML; panel B's row was written late.
+      expect(main).not.toContain('panel-A');
+      expect(main).toContain('panel-B');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML: missing,
+      });
+      const [tabA, tabB] = container.querySelectorAll('button');
+      for (let i = 0; i < 2; i++) {
+        await act(() => tabB.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-B '.repeat(10),
+        );
+        await act(() => tabA.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-A '.repeat(10),
+        );
+      }
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
     it('writes no late row for content that SSR rendered', async () => {
       const Counter = clientExports(function Counter() {
         const [n, setN] = React.useState(0);
