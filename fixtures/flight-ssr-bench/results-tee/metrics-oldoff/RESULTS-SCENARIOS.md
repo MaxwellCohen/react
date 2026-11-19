@@ -1,0 +1,48 @@
+# Scenario corpus results
+
+size=full, N=1 interleaved renders per cell, builds=`/private/tmp/claude-501/-Users-maxcohen-code-react-ecosystem/71e7b1ee-bc2a-4a8f-87a6-13d450c0ca22/scratchpad/builds-tee/oss-experimental`. Bytes are deterministic; times are in-process Flight->Fizz render (median ms [Q1-Q3]) and noisy on a shared machine.
+Percentages are vs the flags-off build. REGRESSION: any bytes +0.5% or time ratio >1.05 with non-overlapping IQRs. NO-BENEFIT: gzip change within +-1%.
+
+| scenario | expected | variant | HTML B | gzip B | brotli B | inlined Flight B | median ms [IQR] | time x off | flags |
+|---|---|---|---|---|---|---|---|---|---|
+| all-client | none | off | 5277 | 952 | 590 | 306 | 1.27 [1.27-1.27] | 1.00 |  |
+| attributes-styles-aria | high | off | 1132108 | 52870 | 30035 | 704034 | 37.84 [37.84-37.84] | 1.00 |  |
+| blog-article | high | off | 1003761 | 26982 | 12309 | 562671 | 25.16 [25.16-25.16] | 1.00 |  |
+| cart-quantity-steppers | low | off | 128114 | 7065 | 4368 | 72801 | 4.44 [4.44-4.44] | 1.00 |  |
+| client-composition-slot | low | off | 20949 | 2957 | 1495 | 14267 | 2.44 [2.44-2.44] | 1.00 |  |
+| client-only-wrapper | low | off | 1006 | 503 | 404 | 788 | 0.75 [0.75-0.75] | 1.00 |  |
+| comments-thread-recursive | high | off | 426780 | 13731 | 10557 | 280162 | 25.07 [25.07-25.07] | 1.00 |  |
+| dangerous-inner-html | high | off | 316550 | 19763 | 9721 | 183668 | 11.26 [11.26-11.26] | 1.00 |  |
+| dashboard-client-widgets | low | off | 41994 | 3910 | 2600 | 15839 | 6.69 [6.69-6.69] | 1.00 |  |
+| data-grid-client-cells | none | off | 536646 | 69596 | 33745 | 331118 | 66.84 [66.84-66.84] | 1.00 |  |
+| data-grid-server-cells | high | off | 2298757 | 227099 | 112126 | 1611116 | 90.12 [90.12-90.12] | 1.00 |  |
+| deep-tree | high | off | 47142 | 3090 | 1568 | 29480 | 1.85 [1.85-1.85] | 1.00 |  |
+| docs-sidebar-toc | high | off | 697883 | 39471 | 17493 | 455949 | 18.77 [18.77-18.77] | 1.00 |  |
+| form-controls-uncontrolled | high | off | 324374 | 26357 | 9244 | 208250 | 10.88 [10.88-10.88] | 1.00 |  |
+| fragments-arrays-keys | low | off | 1992 | 740 | 611 | 1474 | 0.57 [0.57-0.57] | 1.00 |  |
+| full-refresh-focus | low | off | 1207 | 611 | 484 | 812 | 0.33 [0.33-0.33] | 1.00 |  |
+| head-hoistables | low | off | 66530 | 4782 | 2792 | 39955 | 2.53 [2.53-2.53] | 1.00 |  |
+| huge-inline-svg | high | off | 1181317 | 113766 | 49484 | 736764 | 52.52 [52.52-52.52] | 1.00 |  |
+| i18n-text-heavy | high | off | 251241 | 11165 | 5962 | 150804 | 10.24 [10.24-10.24] | 1.00 |  |
+| islands-many-tiny | low | off | 428764 | 14652 | 6869 | 232091 | 8.73 [8.73-8.73] | 1.00 |  |
+| keyed-list-client-reorder | low | off | 1423 | 574 | 463 | 958 | 0.63 [0.63-0.63] | 1.00 |  |
+| marketing-style-jsonld | high | off | 624220 | 70025 | 24102 | 318593 | 5.37 [5.37-5.37] | 1.00 |  |
+| modal-children-toggle | low | off | 963 | 509 | 423 | 731 | 0.54 [0.54-0.54] | 1.00 |  |
+| nested-layouts-context | low | off | 89588 | 5240 | 2616 | 55325 | 3.94 [3.94-3.94] | 1.00 |  |
+| nested-suspense-waterfall | low | off | 3096 | 1183 | 987 | 1459 | 96.06 [96.06-96.06] | 1.00 |  |
+| product-detail-reviews | high | off | 391117 | 16456 | 11484 | 236730 | 8.35 [8.35-8.35] | 1.00 |  |
+| product-listing | high | off | 1133566 | 55763 | 24689 | 747384 | 37.92 [37.92-37.92] | 1.00 |  |
+| realistic-storefront | high | off | 156165 | 12210 | 6404 | 101356 | 4.26 [4.26-4.26] | 1.00 |  |
+| repeated-long-strings | low | off | 1016711 | 11673 | 4440 | 607416 | 8.39 [8.39-8.39] | 1.00 |  |
+| repeated-object-props | low | off | 67427 | 2762 | 1577 | 39857 | 2.29 [2.29-2.29] | 1.00 |  |
+| server-action-form | low | off | 1569 | 821 | 638 | 737 | 0.24 [0.24-0.24] | 1.00 |  |
+| server-element-via-props | low | off | 1776 | 730 | 594 | 1211 | 0.35 [0.35-0.35] | 1.00 |  |
+| server-error-in-suspense | low | off | 1249 | 577 | 481 | 932 | 0.70 [0.70-0.70] | 1.00 |  |
+| server-table-client-rows | high | off | 635554 | 42219 | 22272 | 491314 | 25.66 [25.66-25.66] | 1.00 |  |
+| suspense-fallback-shown-late | low | off | 1227 | 596 | 475 | 892 | 0.39 [0.39-0.39] | 1.00 |  |
+| suspense-many-boundaries | low | off | 57910 | 5542 | 3186 | 33686 | 65.99 [65.99-65.99] | 1.00 | NONDETERMINISTIC-BYTES |
+| suspense-staggered | low | off | 13301 | 2073 | 1473 | 7571 | 63.74 [63.74-63.74] | 1.00 |  |
+| tabs-panels-prop | low | off | 1265 | 563 | 454 | 897 | 0.44 [0.44-0.44] | 1.00 |  |
+| tiny-static | low | off | 1632 | 512 | 391 | 1094 | 0.29 [0.29-0.29] | 1.00 |  |
+| whitespace-entities-text | high | off | 462660 | 22284 | 11784 | 275349 | 14.96 [14.96-14.96] | 1.00 |  |
+| wide-tree | high | off | 983454 | 129367 | 46918 | 724264 | 40.22 [40.22-40.22] | 1.00 |  |

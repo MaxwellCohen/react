@@ -19,7 +19,7 @@ async function boot(opts, {client}) {
   const dirs = {};
   await Promise.all(
     opts.variants.map(async v => {
-      dirs[v] = prepareVariant(opts.builds, v);
+      dirs[v] = prepareVariant(opts.builds, v, opts.buildDirs);
       const w = startWorker(v, dirs[v]);
       workers.push(w);
       w.info = await w.call('init', {

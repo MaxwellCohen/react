@@ -1,0 +1,130 @@
+# Scenario corpus results
+
+size=full, N=3 interleaved renders per cell, builds=`/private/tmp/claude-501/-Users-maxcohen-code-react-ecosystem/71e7b1ee-bc2a-4a8f-87a6-13d450c0ca22/scratchpad/builds-tee/oss-experimental`. Bytes are deterministic; times are in-process Flight->Fizz render (median ms [Q1-Q3]) and noisy on a shared machine.
+Percentages are vs the flags-off build. REGRESSION: any bytes +0.5% or time ratio >1.05 with non-overlapping IQRs. NO-BENEFIT: gzip change within +-1%.
+
+| scenario | expected | variant | HTML B | gzip B | brotli B | inlined Flight B | median ms [IQR] | time x off | flags |
+|---|---|---|---|---|---|---|---|---|---|
+| all-client | none | off | 5277 | 952 | 590 | 306 | 2.06 [2.02-2.58] | 1.00 |  |
+| all-client | none | registry | 5277 (0.0%) | 952 (0.0%) | 590 (0.0%) | 306 (0.0%) | 1.95 [1.88-2.98] | 0.94 | NO-BENEFIT |
+| all-client | none | tee | 5277 (0.0%) | 952 (0.0%) | 590 (0.0%) | 306 (0.0%) | 2.53 [2.30-2.61] | 1.23 | NO-BENEFIT |
+| attributes-styles-aria | high | off | 1132108 | 52870 | 30035 | 704034 | 62.56 [60.51-81.19] | 1.00 |  |
+| attributes-styles-aria | high | registry | 752560 (-33.5%) | 42990 (-18.7%) | 24855 (-17.2%) | 324486 (-53.9%) | 40.05 [35.55-48.69] | 0.64 |  |
+| attributes-styles-aria | high | tee | 752454 (-33.5%) | 42982 (-18.7%) | 24799 (-17.4%) | 324380 (-53.9%) | 47.97 [42.83-80.20] | 0.77 |  |
+| blog-article | high | off | 1003761 | 26982 | 12309 | 562671 | 16.15 [15.42-19.19] | 1.00 |  |
+| blog-article | high | registry | 535511 (-46.6%) | 22252 (-17.5%) | 10613 (-13.8%) | 94421 (-83.2%) | 16.49 [14.54-21.59] | 1.02 |  |
+| blog-article | high | tee | 535456 (-46.7%) | 22248 (-17.5%) | 10605 (-13.8%) | 94366 (-83.2%) | 21.54 [18.24-23.37] | 1.33 |  |
+| cart-quantity-steppers | low | off | 128114 | 7065 | 4368 | 72801 | 7.97 [7.60-8.37] | 1.00 |  |
+| cart-quantity-steppers | low | registry | 94993 (-25.9%) | 5761 (-18.5%) | 3376 (-22.7%) | 39680 (-45.5%) | 6.18 [5.90-7.57] | 0.77 |  |
+| cart-quantity-steppers | low | tee | 94938 (-25.9%) | 5757 (-18.5%) | 3417 (-21.8%) | 39625 (-45.6%) | 5.02 [4.88-7.99] | 0.63 |  |
+| client-composition-slot | low | off | 20949 | 2957 | 1495 | 14267 | 1.77 [1.76-1.78] | 1.00 |  |
+| client-composition-slot | low | registry | 7426 (-64.6%) | 1189 (-59.8%) | 757 (-49.4%) | 744 (-94.8%) | 0.88 [0.86-0.90] | 0.50 |  |
+| client-composition-slot | low | tee | 7371 (-64.8%) | 1182 (-60.0%) | 738 (-50.6%) | 689 (-95.2%) | 0.90 [0.90-0.91] | 0.51 |  |
+| client-only-wrapper | low | off | 1006 | 503 | 404 | 788 | 0.54 [0.45-0.55] | 1.00 |  |
+| client-only-wrapper | low | registry | 899 (-10.6%) | 489 (-2.8%) | 413 (+2.2%) | 681 (-13.6%) | 0.36 [0.35-2.00] | 0.68 | REGRESSION |
+| client-only-wrapper | low | tee | 844 (-16.1%) | 483 (-4.0%) | 400 (-1.0%) | 626 (-20.6%) | 0.36 [0.31-0.47] | 0.67 |  |
+| comments-thread-recursive | high | off | 426780 | 13731 | 10557 | 280162 | 14.72 [14.63-15.07] | 1.00 |  |
+| comments-thread-recursive | high | registry | 195059 (-54.3%) | 9795 (-28.7%) | 6776 (-35.8%) | 48441 (-82.7%) | 11.99 [11.61-14.58] | 0.81 |  |
+| comments-thread-recursive | high | tee | 195004 (-54.3%) | 9790 (-28.7%) | 6773 (-35.8%) | 48386 (-82.7%) | 9.74 [8.94-13.71] | 0.66 |  |
+| dangerous-inner-html | high | off | 316550 | 19763 | 9721 | 183668 | 4.13 [3.95-4.40] | 1.00 |  |
+| dangerous-inner-html | high | registry | 136909 (-56.7%) | 9839 (-50.2%) | 4777 (-50.9%) | 4027 (-97.8%) | 2.51 [2.41-2.82] | 0.61 |  |
+| dangerous-inner-html | high | tee | 136854 (-56.8%) | 9834 (-50.2%) | 4708 (-51.6%) | 3972 (-97.8%) | 2.06 [1.99-2.20] | 0.50 |  |
+| dashboard-client-widgets | low | off | 41994 | 3910 | 2600 | 15839 | 1.83 [1.81-2.00] | 1.00 |  |
+| dashboard-client-widgets | low | registry | 37655 (-10.3%) | 3538 (-9.5%) | 2327 (-10.5%) | 11500 (-27.4%) | 1.93 [1.87-2.57] | 1.06 |  |
+| dashboard-client-widgets | low | tee | 37600 (-10.5%) | 3533 (-9.6%) | 2299 (-11.6%) | 11445 (-27.7%) | 1.94 [1.91-2.00] | 1.06 |  |
+| data-grid-client-cells | none | off | 536646 | 69596 | 33745 | 331118 | 26.51 [23.72-30.13] | 1.00 |  |
+| data-grid-client-cells | none | registry | 535201 (-0.3%) | 69513 (-0.1%) | 33983 (+0.7%) | 329673 (-0.4%) | 48.97 [36.44-50.66] | 1.85 | REGRESSION NO-BENEFIT |
+| data-grid-client-cells | none | tee | 535095 (-0.3%) | 69505 (-0.1%) | 34062 (+0.9%) | 329567 (-0.5%) | 27.73 [24.36-27.78] | 1.05 | REGRESSION NO-BENEFIT |
+| data-grid-server-cells | high | off | 2298757 | 227099 | 112126 | 1611116 | 104.28 [98.47-106.53] | 1.00 |  |
+| data-grid-server-cells | high | registry | 688318 (-70.1%) | 92244 (-59.4%) | 50851 (-54.6%) | 677 (-100.0%) | 34.46 [33.50-41.12] | 0.33 |  |
+| data-grid-server-cells | high | tee | 688263 (-70.1%) | 92235 (-59.4%) | 50903 (-54.6%) | 622 (-100.0%) | 40.79 [37.46-41.48] | 0.39 |  |
+| deep-tree | high | off | 47142 | 3090 | 1568 | 29480 | 2.90 [2.79-3.05] | 1.00 |  |
+| deep-tree | high | registry | 36647 (-22.3%) | 2895 (-6.3%) | 1522 (-2.9%) | 18985 (-35.6%) | 4.05 [4.00-5.99] | 1.40 | REGRESSION |
+| deep-tree | high | tee | 36541 (-22.5%) | 2893 (-6.4%) | 1486 (-5.2%) | 18879 (-36.0%) | 3.17 [2.89-3.41] | 1.09 |  |
+| docs-sidebar-toc | high | off | 697883 | 39471 | 17493 | 455949 | 65.25 [60.70-85.28] | 1.00 |  |
+| docs-sidebar-toc | high | registry | 251170 (-64.0%) | 16350 (-58.6%) | 6834 (-60.9%) | 9236 (-98.0%) | 17.47 [17.08-17.66] | 0.27 |  |
+| docs-sidebar-toc | high | tee | 251115 (-64.0%) | 16343 (-58.6%) | 6848 (-60.9%) | 9181 (-98.0%) | 22.46 [18.83-23.34] | 0.34 |  |
+| form-controls-uncontrolled | high | off | 324374 | 26357 | 9244 | 208250 | 16.43 [15.52-18.31] | 1.00 |  |
+| form-controls-uncontrolled | high | registry | 291981 (-10.0%) | 25172 (-4.5%) | 9587 (+3.7%) | 175857 (-15.6%) | 21.49 [19.99-22.10] | 1.31 | REGRESSION |
+| form-controls-uncontrolled | high | tee | 291926 (-10.0%) | 25180 (-4.5%) | 9655 (+4.4%) | 175802 (-15.6%) | 11.51 [11.38-16.28] | 0.70 | REGRESSION |
+| fragments-arrays-keys | low | off | 1992 | 740 | 611 | 1474 | 0.93 [0.88-1.20] | 1.00 |  |
+| fragments-arrays-keys | low | registry | 1683 (-15.5%) | 731 (-1.2%) | 613 (+0.3%) | 1165 (-21.0%) | 0.67 [0.62-0.69] | 0.71 |  |
+| fragments-arrays-keys | low | tee | 1628 (-18.3%) | 719 (-2.8%) | 596 (-2.5%) | 1110 (-24.7%) | 0.76 [0.73-0.93] | 0.82 |  |
+| full-refresh-focus | low | off | 1207 | 611 | 484 | 812 | 1.50 [1.26-1.71] | 1.00 |  |
+| full-refresh-focus | low | registry | 1215 (+0.7%) | 616 (+0.8%) | 488 (+0.8%) | 820 (+1.0%) | 0.91 [0.84-0.98] | 0.61 | REGRESSION NO-BENEFIT |
+| full-refresh-focus | low | tee | 1160 (-3.9%) | 609 (-0.3%) | 484 (0.0%) | 765 (-5.8%) | 0.88 [0.85-2.19] | 0.59 | NO-BENEFIT |
+| head-hoistables | low | off | 66530 | 4782 | 2792 | 39955 | 3.02 [3.00-4.50] | 1.00 |  |
+| head-hoistables | low | registry | 61210 (-8.0%) | 4768 (-0.3%) | 2805 (+0.5%) | 34635 (-13.3%) | 3.03 [2.92-5.17] | 1.00 | NO-BENEFIT |
+| head-hoistables | low | tee | 61155 (-8.1%) | 4777 (-0.1%) | 2783 (-0.3%) | 34580 (-13.5%) | 2.83 [2.82-2.86] | 0.93 | NO-BENEFIT |
+| huge-inline-svg | high | off | 1181317 | 113766 | 49484 | 736764 | 105.91 [84.01-122.31] | 1.00 |  |
+| huge-inline-svg | high | registry | 570899 (-51.7%) | 57059 (-49.8%) | 20948 (-57.7%) | 126346 (-82.9%) | 37.05 [35.59-38.85] | 0.35 |  |
+| huge-inline-svg | high | tee | 570844 (-51.7%) | 57047 (-49.9%) | 20864 (-57.8%) | 126291 (-82.9%) | 54.60 [47.68-62.59] | 0.52 |  |
+| i18n-text-heavy | high | off | 251241 | 11165 | 5962 | 150804 | 14.10 [12.03-18.03] | 1.00 |  |
+| i18n-text-heavy | high | registry | 108541 (-56.8%) | 6352 (-43.1%) | 3062 (-48.6%) | 8104 (-94.6%) | 6.04 [5.01-6.43] | 0.43 |  |
+| i18n-text-heavy | high | tee | 108486 (-56.8%) | 6347 (-43.2%) | 2990 (-49.8%) | 8049 (-94.7%) | 6.05 [5.19-9.64] | 0.43 |  |
+| islands-many-tiny | low | off | 428764 | 14652 | 6869 | 232091 | 10.85 [9.79-11.77] | 1.00 |  |
+| islands-many-tiny | low | registry | 260745 (-39.2%) | 12509 (-14.6%) | 5214 (-24.1%) | 64072 (-72.4%) | 15.73 [15.64-15.92] | 1.45 | REGRESSION |
+| islands-many-tiny | low | tee | 260690 (-39.2%) | 12503 (-14.7%) | 5027 (-26.8%) | 64017 (-72.4%) | 9.46 [9.31-10.51] | 0.87 |  |
+| keyed-list-client-reorder | low | off | 1423 | 574 | 463 | 958 | 0.86 [0.75-0.96] | 1.00 |  |
+| keyed-list-client-reorder | low | registry | 1174 (-17.5%) | 564 (-1.7%) | 451 (-2.6%) | 709 (-26.0%) | 0.66 [0.64-0.73] | 0.76 |  |
+| keyed-list-client-reorder | low | tee | 1119 (-21.4%) | 558 (-2.8%) | 443 (-4.3%) | 654 (-31.7%) | 0.63 [0.62-1.02] | 0.72 |  |
+| marketing-style-jsonld | high | off | 624220 | 70025 | 24102 | 318593 | 9.03 [7.42-11.81] | 1.00 |  |
+| marketing-style-jsonld | high | registry | 306357 (-50.9%) | 35529 (-49.3%) | 19265 (-20.1%) | 730 (-99.8%) | 7.70 [5.63-8.21] | 0.85 |  |
+| marketing-style-jsonld | high | tee | 306302 (-50.9%) | 35519 (-49.3%) | 19136 (-20.6%) | 675 (-99.8%) | 5.07 [4.62-7.22] | 0.56 |  |
+| modal-children-toggle | low | off | 963 | 509 | 423 | 731 | 0.75 [0.75-0.82] | 1.00 |  |
+| modal-children-toggle | low | registry | 886 (-8.0%) | 487 (-4.3%) | 418 (-1.2%) | 654 (-10.5%) | 0.73 [0.69-1.15] | 0.97 |  |
+| modal-children-toggle | low | tee | 831 (-13.7%) | 481 (-5.5%) | 405 (-4.3%) | 599 (-18.1%) | 0.50 [0.49-0.60] | 0.67 |  |
+| nested-layouts-context | low | off | 89588 | 5240 | 2616 | 55325 | 6.98 [6.57-7.12] | 1.00 |  |
+| nested-layouts-context | low | registry | 39916 (-55.4%) | 3083 (-41.2%) | 1610 (-38.5%) | 5653 (-89.8%) | 4.17 [3.96-5.51] | 0.60 |  |
+| nested-layouts-context | low | tee | 39861 (-55.5%) | 3078 (-41.3%) | 1620 (-38.1%) | 5598 (-89.9%) | 2.34 [2.01-3.77] | 0.34 |  |
+| nested-suspense-waterfall | low | off | 3096 | 1183 | 987 | 1459 | 97.67 [96.18-99.95] | 1.00 |  |
+| nested-suspense-waterfall | low | registry | 2990 (-3.4%) | 1198 (+1.3%) | 969 (-1.8%) | 1353 (-7.3%) | 95.48 [94.85-96.07] | 0.98 | REGRESSION |
+| nested-suspense-waterfall | low | tee | 2935 (-5.2%) | 1192 (+0.8%) | 963 (-2.4%) | 1298 (-11.0%) | 113.21 [104.10-122.58] | 1.16 | REGRESSION NO-BENEFIT |
+| product-detail-reviews | high | off | 391117 | 16456 | 11484 | 236730 | 16.52 [15.56-22.64] | 1.00 |  |
+| product-detail-reviews | high | registry | 161790 (-58.6%) | 8481 (-48.5%) | 5791 (-49.6%) | 7403 (-96.9%) | 7.79 [6.96-8.03] | 0.47 |  |
+| product-detail-reviews | high | tee | 161735 (-58.6%) | 8476 (-48.5%) | 5774 (-49.7%) | 7348 (-96.9%) | 10.41 [8.64-13.06] | 0.63 |  |
+| product-listing | high | off | 1133566 | 55763 | 24689 | 747384 | 83.31 [68.46-92.43] | 1.00 |  |
+| product-listing | high | registry | 689880 (-39.1%) | 54692 (-1.9%) | 22180 (-10.2%) | 303698 (-59.4%) | 72.30 [65.38-121.15] | 0.87 |  |
+| product-listing | high | tee | 689825 (-39.1%) | 54684 (-1.9%) | 22191 (-10.1%) | 303643 (-59.4%) | 55.94 [52.68-63.22] | 0.67 |  |
+| realistic-storefront | high | off | 156165 | 12210 | 6404 | 101356 | 6.75 [6.41-8.09] | 1.00 |  |
+| realistic-storefront | high | registry | 108145 (-30.7%) | 10313 (-15.5%) | 5330 (-16.8%) | 53336 (-47.4%) | 6.74 [6.35-7.44] | 1.00 |  |
+| realistic-storefront | high | tee | 108090 (-30.8%) | 10293 (-15.7%) | 5334 (-16.7%) | 53281 (-47.4%) | 5.62 [5.18-5.64] | 0.83 |  |
+| repeated-long-strings | low | off | 1016711 | 11673 | 4440 | 607416 | 30.02 [23.14-34.60] | 1.00 |  |
+| repeated-long-strings | low | registry | 622203 (-38.8%) | 13142 (+12.6%) | 4799 (+8.1%) | 212908 (-64.9%) | 25.08 [24.65-28.44] | 0.84 | REGRESSION |
+| repeated-long-strings | low | tee | 622148 (-38.8%) | 13132 (+12.5%) | 4803 (+8.2%) | 212853 (-65.0%) | 18.64 [16.21-21.75] | 0.62 | REGRESSION |
+| repeated-object-props | low | off | 67427 | 2762 | 1577 | 39857 | 3.34 [3.19-3.85] | 1.00 |  |
+| repeated-object-props | low | registry | 67414 (-0.0%) | 2762 (0.0%) | 1567 (-0.6%) | 39844 (-0.0%) | 3.78 [3.74-4.02] | 1.13 | NO-BENEFIT |
+| repeated-object-props | low | tee | 67359 (-0.1%) | 2756 (-0.2%) | 1580 (+0.2%) | 39789 (-0.2%) | 3.70 [3.56-4.29] | 1.11 | NO-BENEFIT |
+| server-action-form | low | off | 1569 | 821 | 638 | 737 | 1.14 [1.13-1.18] | 1.00 |  |
+| server-action-form | low | registry | 1480 (-5.7%) | 799 (-2.7%) | 617 (-3.3%) | 648 (-12.1%) | 1.11 [1.07-1.12] | 0.97 |  |
+| server-action-form | low | tee | 1425 (-9.2%) | 794 (-3.3%) | 613 (-3.9%) | 593 (-19.5%) | 1.12 [1.07-1.15] | 0.98 |  |
+| server-element-via-props | low | off | 1776 | 730 | 594 | 1211 | 1.11 [1.05-1.31] | 1.00 |  |
+| server-element-via-props | low | registry | 1781 (+0.3%) | 735 (+0.7%) | 607 (+2.2%) | 1216 (+0.4%) | 1.39 [1.35-3.12] | 1.25 | REGRESSION NO-BENEFIT |
+| server-element-via-props | low | tee | 1726 (-2.8%) | 728 (-0.3%) | 601 (+1.2%) | 1161 (-4.1%) | 2.47 [1.70-3.22] | 2.22 | REGRESSION NO-BENEFIT |
+| server-error-in-suspense | low | off | 1249 | 577 | 481 | 932 | 1.44 [1.39-1.48] | 1.00 |  |
+| server-error-in-suspense | low | registry | 1118 (-10.5%) | 573 (-0.7%) | 460 (-4.4%) | 801 (-14.1%) | 1.33 [1.31-1.59] | 0.92 | NO-BENEFIT |
+| server-error-in-suspense | low | tee | 1063 (-14.9%) | 565 (-2.1%) | 455 (-5.4%) | 746 (-20.0%) | 1.42 [1.38-2.00] | 0.99 |  |
+| server-table-client-rows | high | off | 635554 | 42219 | 22272 | 491314 | 80.45 [61.79-92.89] | 1.00 |  |
+| server-table-client-rows | high | registry | 166917 (-73.7%) | 21212 (-49.8%) | 8830 (-60.4%) | 22677 (-95.4%) | 26.04 [23.92-28.87] | 0.32 |  |
+| server-table-client-rows | high | tee | 166862 (-73.7%) | 21205 (-49.8%) | 8923 (-59.9%) | 22622 (-95.4%) | 16.57 [16.07-16.60] | 0.21 |  |
+| suspense-fallback-shown-late | low | off | 1227 | 596 | 475 | 892 | 0.75 [0.74-1.05] | 1.00 |  |
+| suspense-fallback-shown-late | low | registry | 1156 (-5.8%) | 602 (+1.0%) | 487 (+2.5%) | 821 (-8.0%) | 1.23 [1.20-1.46] | 1.64 | REGRESSION |
+| suspense-fallback-shown-late | low | tee | 1101 (-10.3%) | 594 (-0.3%) | 480 (+1.1%) | 766 (-14.1%) | 0.89 [0.84-1.10] | 1.19 | REGRESSION NO-BENEFIT |
+| suspense-many-boundaries | low | off | 57094 | 5556 | 3307 | 32870 | 66.76 [66.45-74.41] | 1.00 | NONDETERMINISTIC-BYTES |
+| suspense-many-boundaries | low | registry | 41056 (-28.1%) | 5108 (-8.1%) | 3051 (-7.7%) | 16832 (-48.8%) | 67.35 [66.06-71.68] | 1.01 | NONDETERMINISTIC-BYTES |
+| suspense-many-boundaries | low | tee | 40287 (-29.4%) | 5065 (-8.8%) | 2948 (-10.9%) | 16063 (-51.1%) | 66.21 [66.10-67.17] | 0.99 | NONDETERMINISTIC-BYTES |
+| suspense-staggered | low | off | 13301 | 2061 | 1465 | 7571 | 64.52 [63.90-66.40] | 1.00 | NONDETERMINISTIC-BYTES |
+| suspense-staggered | low | registry | 10072 (-24.3%) | 1944 (-5.7%) | 1428 (-2.5%) | 4342 (-42.6%) | 63.41 [63.23-64.92] | 0.98 | NONDETERMINISTIC-BYTES |
+| suspense-staggered | low | tee | 10017 (-24.7%) | 1943 (-5.7%) | 1445 (-1.4%) | 4287 (-43.4%) | 63.79 [63.78-65.50] | 0.99 | NONDETERMINISTIC-BYTES |
+| tabs-panels-prop | low | off | 1265 | 563 | 454 | 897 | 0.97 [0.95-1.15] | 1.00 |  |
+| tabs-panels-prop | low | registry | 1265 (0.0%) | 563 (0.0%) | 454 (0.0%) | 897 (0.0%) | 1.14 [1.04-1.15] | 1.17 | NO-BENEFIT |
+| tabs-panels-prop | low | tee | 1265 (0.0%) | 563 (0.0%) | 454 (0.0%) | 897 (0.0%) | 0.94 [0.88-0.94] | 0.96 | NO-BENEFIT |
+| tiny-static | low | off | 1632 | 512 | 391 | 1094 | 0.68 [0.68-0.75] | 1.00 |  |
+| tiny-static | low | registry | 905 (-44.5%) | 421 (-17.8%) | 312 (-20.2%) | 367 (-66.5%) | 0.75 [0.64-0.82] | 1.10 |  |
+| tiny-static | low | tee | 850 (-47.9%) | 414 (-19.1%) | 307 (-21.5%) | 312 (-71.5%) | 0.81 [0.66-0.92] | 1.20 |  |
+| whitespace-entities-text | high | off | 462660 | 22284 | 11784 | 275349 | 22.45 [18.81-23.98] | 1.00 |  |
+| whitespace-entities-text | high | registry | 193251 (-58.2%) | 11009 (-50.6%) | 5678 (-51.8%) | 5940 (-97.8%) | 6.83 [6.76-9.16] | 0.30 |  |
+| whitespace-entities-text | high | tee | 193196 (-58.2%) | 11004 (-50.6%) | 5645 (-52.1%) | 5885 (-97.9%) | 9.35 [8.25-11.85] | 0.42 |  |
+| wide-tree | high | off | 983454 | 129367 | 46918 | 724264 | 64.51 [61.92-69.53] | 1.00 |  |
+| wide-tree | high | registry | 259872 (-73.6%) | 26627 (-79.4%) | 10358 (-77.9%) | 682 (-99.9%) | 16.50 [14.48-17.66] | 0.26 |  |
+| wide-tree | high | tee | 259817 (-73.6%) | 26619 (-79.4%) | 10353 (-77.9%) | 627 (-99.9%) | 16.56 [15.67-17.77] | 0.26 |  |
