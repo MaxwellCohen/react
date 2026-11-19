@@ -948,7 +948,7 @@ function stubForTee(
     if (current === null) {
       current = entry = {rows: new Map(), rendered: new Set(), settle: null};
       // Hint rows flush before regular rows, so `:Q` precedes the first stub.
-      emitStubbedRowsRequestIdChunk(request, nextStubbedRequestId++);
+      emitStubbedRowsRequestIdChunk(request, randomStubbedRequestId());
       holdForLateStubbedRows(request, current);
       teeDispatcher.h(tee, current);
     }
@@ -5967,8 +5967,23 @@ function emitHintChunk<Code: HintCode>(
 }
 
 // enableFlightHTMLFirst: identifies the payload, so that the stubs of every
-// decode of it in the browser share the node that hydration adopted.
-let nextStubbedRequestId = 1;
+// decode of it in the browser share the node that hydration adopted. It must
+// not repeat across servers or restarts, or a browser would mix up the nodes
+// of two payloads. Non-zero, at most 2^53 - 1.
+function randomStubbedRequestId(): number {
+  // $FlowFixMe[cannot-resolve-name]
+  const crypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+  let high, low;
+  if (crypto != null && typeof crypto.getRandomValues === 'function') {
+    const words = crypto.getRandomValues(new Uint32Array(2));
+    high = words[0] & 0x1fffff;
+    low = words[1];
+  } else {
+    high = Math.floor(Math.random() * 0x200000);
+    low = Math.floor(Math.random() * 0x100000000);
+  }
+  return high * 0x100000000 + low || 1;
+}
 
 function emitStubbedRowsRequestIdChunk(
   request: Request,
