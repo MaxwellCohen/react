@@ -1029,7 +1029,7 @@ function stubForTee(
     let current = entry;
     if (current === null) {
       current = entry = {rows: new Map(), rendered: new Set(), settle: null};
-      // Hint rows flush before regular rows, so `:Q` precedes the first stub.
+      // Hint rows flush before regular rows, so `:P` precedes the first stub.
       emitStubbedRowsRequestIdChunk(request, randomStubbedRequestId());
       holdForLateStubbedRows(request, current);
       teeDispatcher.h(tee, current);
@@ -6238,7 +6238,7 @@ function emitStubbedRowsRequestIdChunk(
   request: Request,
   requestId: number,
 ): void {
-  const row = ':Q' + requestId.toString(16) + '\n';
+  const row = ':P' + requestId.toString(16) + '\n';
   request.completedHintChunks.push(stringToChunk(row));
 }
 
@@ -6321,6 +6321,7 @@ function settleStubbedRows(request: Request): void {
           null,
           null,
           null,
+          request.rootUnit,
         );
         retryTask(request, task);
       }
@@ -6337,6 +6338,7 @@ function settleStubbedRows(request: Request): void {
 
 function emitLedgerChunk(request: Request, row: string): void {
   request.completedLedgerChunks.push(stringToChunk(row));
+  teeWireRow(request, row);
 }
 
 function ensureLedgerDeclared(

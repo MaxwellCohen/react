@@ -392,7 +392,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const ROWS = 50;
     // The tee's reader renders the HTML from the elements the server stubbed.
     const {main, html} = await renderWithTee(sharedAppElement(ROWS));
-    expect(main).toContain(':Q');
+    expect(main).toContain(':P');
     expect(main).toContain('$J');
     expect(main).not.toContain('name-49');
     expect(html).toContain('name-49');
@@ -422,11 +422,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('does not stub unless the request opts in', async () => {
     const main = await renderSharedApp(10, undefined);
     expect(main).not.toContain('$J');
-    expect(main).not.toContain(':Q');
+    expect(main).not.toContain(':P');
     expect(main).toContain('name-9');
     const off = await renderSharedApp(10, {htmlFirst: false});
     expect(off).not.toContain('$J');
-    expect(off).not.toContain(':Q');
+    expect(off).not.toContain(':P');
     expect(off).toContain('name-9');
   });
 
@@ -454,7 +454,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const [main, stock] = outputs;
     const withoutTime = text => text.replace(/^:N.*\n/gm, '');
     expect(withoutTime(main)).toBe(withoutTime(stock));
-    expect(main).not.toContain(':Q');
+    expect(main).not.toContain(':P');
 
     const html = await ssr({main, rows: undefined});
     expect(html).toContain('only-client');
@@ -503,7 +503,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const {main, html} = await renderWithTee(<App />);
     const rows = main.split('\n');
     const root = rows.findIndex(row => row.startsWith('0:'));
-    const id = rows.findIndex(row => row.startsWith(':Q'));
+    const id = rows.findIndex(row => row.startsWith(':P'));
     const stub = rows.findIndex(row => row.includes('$J'));
     // The root row is written before anything is stubbed, so it comes first.
     expect(root).not.toBe(-1);
@@ -540,7 +540,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(withoutTime(on)).toBe(withoutTime(stock));
     expect(withoutTime(off)).toBe(withoutTime(stock));
     expect(on).not.toContain('$J');
-    expect(on).not.toContain(':Q');
+    expect(on).not.toContain(':P');
     expect(on).toContain('name-4');
   });
 
@@ -551,10 +551,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         renderWithTeeInner(sharedAppElement(7)),
       ]),
     );
-    expect(a.main).toMatch(/:Q[0-9a-f]+\n/);
-    expect(b.main).toMatch(/:Q[0-9a-f]+\n/);
-    const idA = a.main.match(/:Q([0-9a-f]+)\n/)[1];
-    const idB = b.main.match(/:Q([0-9a-f]+)\n/)[1];
+    expect(a.main).toMatch(/:P[0-9a-f]+\n/);
+    expect(b.main).toMatch(/:P[0-9a-f]+\n/);
+    const idA = a.main.match(/:P([0-9a-f]+)\n/)[1];
+    const idB = b.main.match(/:P([0-9a-f]+)\n/)[1];
     expect(idA).not.toBe(idB);
     expect(a.html).toContain('name-2');
     expect(a.html).not.toContain('name-6');
@@ -629,7 +629,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // Same module identity, full Flight (what /rsc navigation must emit).
     const nextMain = await renderOnce({htmlFirst: false});
     expect(nextMain).not.toContain('$J');
-    expect(nextMain).not.toContain(':Q');
+    expect(nextMain).not.toContain(':P');
     const nextResponse = consume(nextMain);
     await nextResponse;
     await act(() => {
@@ -1127,9 +1127,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </main>
       );
     }
-    // The payload carries its :Q id, which the decodes share.
+    // The payload carries its :P id, which the decodes share.
     const {main, html} = await renderWithTee(<App />);
-    expect(main).toMatch(/:Q[0-9a-f]+\n/);
+    expect(main).toMatch(/:P[0-9a-f]+\n/);
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
@@ -1517,7 +1517,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
     }
 
-    const withoutRequestId = main => main.replace(/^:Q[0-9a-f]+\n/m, '');
+    const withoutRequestId = main => main.replace(/^:P[0-9a-f]+\n/m, '');
 
     function createPanel() {
       return clientExports(function Panel({children}) {
