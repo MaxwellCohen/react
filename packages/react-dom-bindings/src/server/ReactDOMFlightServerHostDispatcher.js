@@ -45,7 +45,10 @@ function prefetchDNS(href: string) {
       const hints = getHints(request);
       const key = 'D|' + href;
       if (hints.has(key)) {
-        // duplicate hint
+        // Already emitted on this Flight request. Still forward so in-process
+        // SSR/browser consumers applying stream hints while the request is
+        // still observable via resolveRequest() get the DOM resource.
+        previousDispatcher.D(/* prefetchDNS */ href);
         return;
       }
       hints.add(key);
@@ -64,7 +67,7 @@ function preconnect(href: string, crossOrigin?: ?CrossOriginEnum) {
 
       const key = `C|${crossOrigin == null ? 'null' : crossOrigin}|${href}`;
       if (hints.has(key)) {
-        // duplicate hint
+        previousDispatcher.C(/* preconnect */ href, crossOrigin);
         return;
       }
       hints.add(key);
@@ -99,7 +102,7 @@ export function preload(
         key += `[${as}]${href}`;
       }
       if (hints.has(key)) {
-        // duplicate hint
+        previousDispatcher.L(/* preload */ href, as, options);
         return;
       }
       hints.add(key);
@@ -126,7 +129,7 @@ export function preloadModule(
       const hints = getHints(request);
       const key = 'm|' + href;
       if (hints.has(key)) {
-        // duplicate hint
+        previousDispatcher.m(/* preloadModule */ href, options);
         return;
       }
       hints.add(key);
@@ -154,7 +157,7 @@ function preinitStyle(
       const hints = getHints(request);
       const key = 'S|' + href;
       if (hints.has(key)) {
-        // duplicate hint
+        previousDispatcher.S(/* preinitStyle */ href, precedence, options);
         return;
       }
       hints.add(key);
@@ -184,7 +187,7 @@ function preinitScript(src: string, options?: ?PreinitScriptOptions) {
       const hints = getHints(request);
       const key = 'X|' + src;
       if (hints.has(key)) {
-        // duplicate hint
+        previousDispatcher.X(/* preinitScript */ src, options);
         return;
       }
       hints.add(key);
@@ -211,7 +214,7 @@ function preinitModuleScript(
       const hints = getHints(request);
       const key = 'M|' + src;
       if (hints.has(key)) {
-        // duplicate hint
+        previousDispatcher.M(/* preinitModuleScript */ src, options);
         return;
       }
       hints.add(key);

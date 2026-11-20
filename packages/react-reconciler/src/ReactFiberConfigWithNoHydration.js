@@ -60,6 +60,7 @@ export const unhideDehydratedBoundary = shim;
 export const shouldDeleteUnhydratedTailInstances = shim;
 export const diffHydratedPropsForDevWarnings = shim;
 export const diffHydratedTextForDevWarnings = shim;
+export const instanceMatchesStaticElement = shim;
 export const describeHydratableInstanceForDevWarnings = shim;
 export const validateHydratableInstance = shim;
 export const validateHydratableTextInstance = shim;

@@ -47,7 +47,13 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
+import {
+  claimStubbedRowsRegistry,
+  releaseStubbedRowsRegistry,
+} from 'shared/ReactFlightHTMLFirstRegistry';
+import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import {
   resolveClientReference,
@@ -93,6 +99,7 @@ import {
   REACT_ELEMENT_TYPE,
   ASYNC_ITERATOR,
   REACT_FRAGMENT_TYPE,
+  REACT_STATIC_STUB_TYPE,
 } from 'shared/ReactSymbols';
 
 import getComponentNameFromType from 'shared/getComponentNameFromType';
@@ -110,6 +117,8 @@ import {OMITTED_PROP_ERROR} from 'shared/ReactFlightPropertyAccess';
 import ReactVersion from 'shared/ReactVersion';
 
 import isArray from 'shared/isArray';
+
+import reportUncaughtError from 'shared/reportGlobalError';
 
 import * as React from 'react';
 
@@ -391,6 +400,19 @@ type Response = {
   _encodeFormAction: void | EncodeFormActionCallback,
   _nonce: ?string,
   _chunks: Map<number, SomeChunk<any>>,
+  // enableFlightHTMLFirst: rows the server withheld from the stream.
+  _stubbedRows: null | StubbedRows,
+  // enableFlightHTMLFirst: the registry entry this response claimed. It
+  // records which rows get rendered, see StubbedRendered.
+  _stubbedEntry: null | StubbedRowsEntry,
+  // enableFlightHTMLFirst: the `:Q` id of the payload, which names it.
+  _stubbedRequestId: number,
+  // enableFlightHTMLFirst: resolves when the stream ends, for stubs that
+  // wait for a late row.
+  _stubbedEnd: null | {promise: Promise<void>, resolve: () => void},
+  // enableFlightHTMLFirst: see recoverStubbedContent.
+  _onMissingHTML: null | (() => void),
+  _stubbedRecovery: null | Promise<empty>,
   _stringDecoder: StringDecoder,
   _closed: boolean,
   _closedReason: mixed,
@@ -433,6 +455,29 @@ export type {WeakResponse as Response};
 
 function hasGCedResponse(weakResponse: WeakResponse): boolean {
   return __DEV__ && weakResponse.weak.deref() === undefined;
+}
+
+// The side channel for rows the server stubbed from the stream. Rows are
+// complete JSON strings, so they are never interleaved with stream bytes.
+// A row is JSON, or (enableFlightHTMLFirst, in-process) a ready React node.
+export type StubbedRows = {get(id: number): void | string | mixed, ...};
+
+export function attachStubbedRows(
+  weakResponse: WeakResponse,
+  rows: StubbedRows,
+): void {
+  if (enableFlightHTMLFirst) {
+    unwrapWeakResponse(weakResponse)._stubbedRows = rows;
+  }
+}
+
+export function attachMissingHTML(
+  weakResponse: WeakResponse,
+  onMissingHTML: () => void,
+): void {
+  if (enableFlightHTMLFirst) {
+    unwrapWeakResponse(weakResponse)._onMissingHTML = onMissingHTML;
+  }
 }
 
 function unwrapWeakResponse(weakResponse: WeakResponse): Response {
@@ -890,6 +935,11 @@ function createResolvedModelChunk<T>(
 ): ResolvedModelChunk<T> {
   // $FlowFixMe[invalid-constructor] Flow doesn't support functions as constructors
   return new ReactPromise(RESOLVED_MODEL, value, {[RESPONSE_SYMBOL]: response});
+}
+
+function createInitializedValueChunk<T>(value: T): InitializedChunk<T> {
+  // $FlowFixMe[invalid-constructor] Flow doesn't support functions as constructors
+  return new ReactPromise(INITIALIZED, value, null);
 }
 
 function createResolvedModuleChunk<T>(
@@ -1523,6 +1573,9 @@ export function reportGlobalError(
   const response = unwrapWeakResponse(weakResponse);
   response._closed = true;
   response._closedReason = error;
+  if (enableFlightHTMLFirst) {
+    endStubbedRows(response);
+  }
   response._chunks.forEach((chunk, id) => {
     settleChunkOnClose(response, chunk, id, error);
   });
@@ -2993,6 +3046,382 @@ export function decodeModelString(
   );
 }
 
+/**
+ * Stubbed host elements (enableFlightHTMLFirst).
+ *
+ * The server replaced a static host subtree with "$J<rowId>:<tag>" and the row
+ * itself was dropped from the payload inlined in the HTML. We decode that to
+ * <StaticStub tag>, which renders an element of the same tag with
+ * dangerouslySetInnerHTML + suppressHydrationWarning. That is the standard
+ * "static island" idiom: during hydration React matches the existing DOM node
+ * by tag/position, does not descend into or patch its children or attributes,
+ * and does not warn. No props are retained.
+ *
+ * Why a wrapper component type rather than a bare host element: on navigation
+ * the full payload has a real <tag> at this position. Because the component
+ * type differs React unmounts the stub and mounts fresh DOM, unless that DOM
+ * would be the same as what the stub adopted: then the renderer keeps the stub
+ * (it knows the type by its $$typeof, see canKeepStaticStub). A same-type host
+ * element would instead diff against {dangerouslySetInnerHTML: {__html: ''}}
+ * and append the new children after the stale server HTML.
+ *
+ * This is only correct while hydrating server-rendered HTML. A stub that is
+ * client rendered instead (a boundary or root that React client-renders after
+ * a server error or a hydration mismatch) has no DOM to adopt and no content.
+ * It suspends, so React keeps what is on screen (the server HTML or the
+ * boundary's fallback) instead of committing an empty element, and the
+ * framework is asked once to render the full payload (see
+ * recoverStubbedContent). That payload has real elements where the stubs were,
+ * which replace them.
+ */
+function StaticStub(props: {
+  tag: string,
+  late: () => null | React$Node,
+  recover: () => Promise<mixed>,
+  saved: StubbedNodeHolder,
+  remember: (node: null | Element) => void,
+  restore: (node: null | Element) => void,
+}): React$Node {
+  // True while hydrating (React reads the server snapshot), false in a plain
+  // client render.
+  const hydrating = React.useSyncExternalStore(
+    subscribeNever,
+    getFalse,
+    getTrue,
+  );
+  // A stub that adopted server DOM keeps that node. When the same stub mounts
+  // again later (a framework re-rendering a cached payload, e.g. on back
+  // navigation), it takes the content from that node instead of asking for
+  // the full payload. Only a stub that never had DOM has to recover.
+  const [mode] = React.useState(
+    hydrating
+      ? ADOPT
+      : props.saved.node !== null || props.saved.html !== null
+        ? RESTORE
+        : RECOVER,
+  );
+  // React restores `display` from the style prop when it shows a hidden
+  // Activity again. The stub has no props of its own, so it uses the inline
+  // display the server rendered, recorded when the node was adopted.
+  const [display, setDisplay] = React.useState(props.saved.display);
+  React.useLayoutEffect(() => {
+    if (display !== props.saved.display) {
+      setDisplay(props.saved.display);
+    }
+  }, []);
+  if (mode === RECOVER) {
+    // The server sends the rows that its HTML render did not reach after all.
+    const late = props.late();
+    if (late !== null) {
+      return late;
+    }
+    // Suspends until the stream ends, then (rendering again) forever.
+    React.use(props.recover());
+  }
+  return React.createElement(props.tag, {
+    suppressHydrationWarning: true,
+    dangerouslySetInnerHTML: EMPTY_HTML,
+    style: display === null ? undefined : {display},
+    ref: mode === RESTORE ? props.restore : props.remember,
+  });
+}
+
+// Lets the renderer keep a stub (and its DOM) when the full payload has the
+// same content in its place.
+StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
+
+const ADOPT = 0;
+const RESTORE = 1;
+const RECOVER = 2;
+const EMPTY_HTML = {__html: ''};
+
+// The node a stub adopted while it is attached. When it is detached (unmounted,
+// or hidden by an Activity) the holder keeps its attributes and HTML instead,
+// so the detached DOM can be collected.
+type StubbedNodeHolder = {
+  node: null | Element,
+  display: null | string,
+  attributes: null | Array<string>,
+  html: null | string,
+};
+
+function snapshotStubbedNode(saved: StubbedNodeHolder): void {
+  const node = saved.node;
+  if (node === null) {
+    return;
+  }
+  const attributes: Array<string> = [];
+  const list = node.attributes;
+  for (let i = 0; i < list.length; i++) {
+    attributes.push(list[i].name, list[i].value);
+  }
+  saved.attributes = attributes;
+  saved.html = node.innerHTML;
+  saved.node = null;
+}
+
+function rememberStubbedNode(
+  saved: StubbedNodeHolder,
+  node: null | Element,
+): void {
+  if (node === null) {
+    snapshotStubbedNode(saved);
+    return;
+  }
+  saved.node = node;
+  if (saved.display === null) {
+    // Adopted while hydrating, so this is the server's inline display.
+    const inline = (node as any).style.display;
+    if (typeof inline === 'string' && inline !== '') {
+      saved.display = inline;
+    }
+  }
+}
+
+// Copies the attributes and content of the node this stub had before onto
+// the element React just created for it. The content is moved, or copied if
+// the old node is still in the document.
+function restoreStubbedNode(
+  saved: StubbedNodeHolder,
+  node: null | Element,
+): void {
+  if (node === null) {
+    snapshotStubbedNode(saved);
+    return;
+  }
+  const from = saved.node;
+  saved.node = node;
+  if (from === node) {
+    return;
+  }
+  if (from === null) {
+    // Rebuild from the snapshot taken when the old node was detached.
+    const attributes = saved.attributes;
+    if (attributes !== null) {
+      for (let i = 0; i < attributes.length; i += 2) {
+        node.setAttribute(attributes[i], attributes[i + 1]);
+      }
+    }
+    if (saved.html !== null) {
+      node.innerHTML = saved.html;
+    }
+    restoreStubbedDisplay(saved, node);
+    return;
+  }
+  const attributes = from.attributes;
+  for (let i = 0; i < attributes.length; i++) {
+    node.setAttribute(attributes[i].name, attributes[i].value);
+  }
+  restoreStubbedDisplay(saved, node);
+  if (from.isConnected) {
+    let child = from.firstChild;
+    while (child != null) {
+      node.appendChild(child.cloneNode(true));
+      child = child.nextSibling;
+    }
+  } else {
+    let child = from.firstChild;
+    while (child != null) {
+      node.appendChild(child);
+      child = from.firstChild;
+    }
+  }
+}
+
+// The old node may have been detached while a hidden Activity had set
+// display: none on it. Put back the display the server rendered.
+function restoreStubbedDisplay(saved: StubbedNodeHolder, node: Element): void {
+  const style = (node as any).style;
+  if (saved.display !== null) {
+    style.setProperty('display', saved.display);
+  } else {
+    style.removeProperty('display');
+  }
+}
+
+function subscribeNever(): () => void {
+  return noopUnsubscribe;
+}
+function noopUnsubscribe(): void {}
+function getFalse(): boolean {
+  return false;
+}
+function getTrue(): boolean {
+  return true;
+}
+
+// Called when a stub has to render without server HTML. The first call asks
+// the framework (the onMissingHTML option) to render the full,
+// non-stubbed payload. Without that option the page can't get the content
+// back, so it reports an error instead. Either way the stubs stay suspended.
+function recoverStubbedContent(
+  response: Response,
+  tag: string,
+): Promise<mixed> {
+  if (!response._closed) {
+    // A late row for this stub can still arrive. They are the last rows of
+    // the stream, so look again when it ends.
+    let end = response._stubbedEnd;
+    if (end === null) {
+      let resolve: () => void = noop;
+      const promise = new Promise<void>(r => {
+        resolve = r;
+      });
+      end = response._stubbedEnd = {promise, resolve};
+    }
+    return end.promise;
+  }
+  let pending = response._stubbedRecovery;
+  if (pending === null) {
+    pending = response._stubbedRecovery = new Promise(noop);
+    const onMissingHTML = response._onMissingHTML;
+    // Not during render: the framework will update the root.
+    Promise.resolve().then(
+      onMissingHTML !== null
+        ? onMissingHTML
+        : () =>
+            reportUncaughtError(
+              // eslint-disable-next-line react-internal/prod-error-codes
+              new Error(
+                'Static content that the server left out of this payload ' +
+                  'is needed on the client (for example a <' +
+                  tag +
+                  '>), but there is no server HTML to adopt it from. This ' +
+                  'happens when content passed as children mounts after ' +
+                  'hydration (a modal or a client-only wrapper), or when a ' +
+                  'boundary is client rendered after a server error or a ' +
+                  'hydration mismatch. Pass onMissingHTML to ' +
+                  'createFromReadableStream or createFromFetch and use it ' +
+                  'to render the full payload.',
+              ),
+            ),
+    );
+  }
+  return pending;
+}
+
+function noop(): void {}
+
+function endStubbedRows(response: Response): void {
+  const end = response._stubbedEnd;
+  if (end !== null) {
+    end.resolve();
+  }
+  // The consumer that claimed the rows is not going to render more of them.
+  const entry = response._stubbedEntry;
+  if (entry !== null) {
+    settleStubbedRows(entry);
+  }
+}
+
+// The row of an stubbed element, if the server sent it after all. This never
+// creates a chunk: nothing else refers to the id, so one only exists once its
+// row arrived.
+function getLateStubbedRow(response: Response, id: number): null | React$Node {
+  const chunk = response._chunks.get(id);
+  if (chunk === undefined) {
+    return null;
+  }
+  return createLazyChunkWrapper(chunk, 0) as any;
+}
+
+// Rendered in place of the stub by the consumer that claimed the rows (the one
+// that renders HTML), in the slot StaticStub takes in the browser. It is a lazy
+// node: Fizz resolves it only when it renders that position, which records
+// that the HTML contains this row. The server sends the rows that were never
+// rendered to the browser once this consumer settles. A lazy node costs far
+// less than a component render per row.
+type StubbedRenderedPayload = {
+  entry: StubbedRowsEntry,
+  id: number,
+  model: any,
+};
+
+function initStubbedRendered(payload: StubbedRenderedPayload): any {
+  payload.entry.rendered.add(payload.id);
+  return payload.model;
+}
+
+function createStubbedRenderedElement(
+  entry: StubbedRowsEntry,
+  id: number,
+  key: null | string,
+  response: Response,
+  model: any,
+): any {
+  const payload: StubbedRenderedPayload = {entry, id, model};
+  return {
+    $$typeof: REACT_LAZY_TYPE,
+    _payload: payload,
+    _init: initStubbedRendered,
+  };
+}
+
+function settleStubbedRows(entry: StubbedRowsEntry): void {
+  const settle = entry.settle;
+  if (settle !== null) {
+    settle();
+  }
+}
+
+// The server wrote everything but the late rows. Give the renderer that reads
+// this response the chance to render what just resolved before telling the
+// server which rows it rendered: its work is scheduled in a task, and what
+// that task unblocks in another.
+function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
+  setTimeout(() => {
+    setTimeout(settleStubbedRows.bind(null, entry), 0);
+  }, 0);
+}
+
+// A framework can decode the same payload more than once (Next.js decodes part
+// of the initial payload again for its client cache). The stubs of every
+// decode share the node that hydration adopted, keyed by the payload's `:Q` id
+// and the row id. The map holds them weakly, so a node lives only as long as
+// some decoded payload still references its stub.
+const stubbedNodeHolders: Map<string, any> = new Map();
+
+function getStubbedNodeHolder(
+  requestId: number,
+  id: number,
+): StubbedNodeHolder {
+  if (requestId === 0 || typeof WeakRef !== 'function') {
+    return {node: null, display: null, attributes: null, html: null};
+  }
+  const key = requestId + ':' + id;
+  const ref = stubbedNodeHolders.get(key);
+  let holder = ref !== undefined ? ref.deref() : undefined;
+  if (holder === undefined) {
+    holder = {node: null, display: null, attributes: null, html: null};
+    // $FlowFixMe[cannot-resolve-name]
+    stubbedNodeHolders.set(key, new WeakRef(holder));
+  }
+  return holder;
+}
+
+function createStaticStubElement(
+  response: Response,
+  id: number,
+  tag: string,
+  key: null | string,
+): React$Element<any> {
+  const late = getLateStubbedRow.bind(null, response, id);
+  const recover = recoverStubbedContent.bind(null, response, tag);
+  const saved = getStubbedNodeHolder(response._stubbedRequestId, id);
+  const remember = rememberStubbedNode.bind(null, saved);
+  const restore = restoreStubbedNode.bind(null, saved);
+  const props: any = {tag, late, recover, saved, remember, restore};
+  if (key !== null) {
+    props.key = key;
+  }
+  const element: any = React.createElement(StaticStub, props);
+  if (__DEV__) {
+    // Stubbed elements keep their key if they had one, don't warn about it in lists.
+    element._store.validated = 1;
+  }
+  return element;
+}
+
 function parseModelString(
   response: Response,
   parentObject: Object,
@@ -3013,6 +3442,67 @@ function parseModelString(
       case '$': {
         // This was an escaped string value.
         return value.slice(1);
+      }
+      case 'J': {
+        if (enableFlightHTMLFirst) {
+          // Stubbed host element: "$J<rowId>:<tag>[:<key>]". See StaticStub below.
+          const colon = value.indexOf(':');
+          const keyColon = value.indexOf(':', colon + 1);
+          const ref = value.slice(2, colon);
+          const id = parseInt(ref, 16);
+          const rows = response._stubbedRows;
+          if (!response._chunks.has(id) && rows !== null) {
+            const json = rows.get(id);
+            if (json !== undefined) {
+              response._chunks.set(
+                id,
+                typeof json === 'string'
+                  ? createResolvedModelChunk(response, json)
+                  : createInitializedValueChunk(json),
+              );
+            } else {
+              // This consumer renders HTML, so there is no DOM to adopt: a
+              // stub would silently turn into an empty element and the
+              // browser would then adopt that. Rows are looked up
+              // synchronously, so a missing one can't arrive later either.
+              // eslint-disable-next-line react-internal/prod-error-codes
+              throw new Error(
+                'Missing stubbed row ' +
+                  ref +
+                  '. The htmlFirstRows option must contain every row that ' +
+                  'the server handed to htmlFirst for this payload.',
+              );
+            }
+          }
+          const stubKey = keyColon === -1 ? null : value.slice(keyColon + 1);
+          if (response._chunks.has(id)) {
+            // The server gave us the row (SSR, or a late row that is already
+            // here): render the real element.
+            const entry = response._stubbedEntry;
+            return getOutlinedModel(
+              response,
+              ref,
+              parentObject,
+              key,
+              entry !== null
+                ? createStubbedRenderedElement.bind(null, entry, id, stubKey)
+                : createModel,
+            );
+          }
+          return createStaticStubElement(
+            response,
+            id,
+            value.slice(colon + 1, keyColon === -1 ? value.length : keyColon),
+            stubKey,
+          );
+        }
+        // The server stubbed an element but this client was built without
+        // support. Never parse the id as a lazy reference to an unrelated row.
+        // eslint-disable-next-line react-internal/prod-error-codes
+        throw new Error(
+          'Received an stubbed host element but enableFlightHTMLFirst is ' +
+            'off in this client. The server and client builds must match.',
+        );
       }
       case 'L': {
         // Lazy node
@@ -3363,6 +3853,12 @@ function ResponseInstance(
   this._encodeFormAction = encodeFormAction;
   this._nonce = nonce;
   this._chunks = chunks;
+  this._stubbedRows = null;
+  this._stubbedEntry = null;
+  this._stubbedRequestId = 0;
+  this._stubbedEnd = null;
+  this._onMissingHTML = null;
+  this._stubbedRecovery = null;
   // Preserve a leading U+FEFF instead of consuming it as an encoding signature.
   this._stringDecoder = createStringDecoder(true);
   this._closed = false;
@@ -3680,6 +4176,15 @@ function resolveModel(
     }
     chunks.set(id, newChunk);
   } else {
+    if (
+      enableFlightHTMLFirst &&
+      response._stubbedRows !== null &&
+      response._stubbedRows.get(id) !== undefined
+    ) {
+      // A late row for content this consumer already got from the registry
+      // (it rendered the real element). Nothing to do.
+      return;
+    }
     if (__DEV__) {
       resolveChunkDebugInfo(response, streamState, chunk);
     }
@@ -5619,6 +6124,34 @@ function processFullStringRow(
       resolveHint(response, code, row.slice(1));
       return;
     }
+    case 81 /* "Q" */: {
+      // enableFlightHTMLFirst: in-process registry id for stubbed rows.
+      if (enableFlightHTMLFirst) {
+        const requestId = parseInt(row, 16);
+        response._stubbedRequestId = requestId;
+        if (response._stubbedRows !== null) {
+          // Framework already supplied htmlFirstRows; drop the unused registry.
+          releaseStubbedRowsRegistry(requestId);
+        } else {
+          const entry = claimStubbedRowsRegistry(requestId);
+          if (entry !== undefined) {
+            response._stubbedRows = entry.rows as any;
+            response._stubbedEntry = entry;
+          }
+        }
+      }
+      return;
+    }
+    case 113 /* "q" */: {
+      // enableFlightHTMLFirst: everything but the late rows was written.
+      if (enableFlightHTMLFirst) {
+        const entry = response._stubbedEntry;
+        if (entry !== null) {
+          scheduleStubbedSettle(entry);
+        }
+      }
+      return;
+    }
     case 69 /* "E" */: {
       resolveErrorModel(response, id, row, streamState);
       return;
@@ -5849,6 +6382,7 @@ export function processBinaryChunk(
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
           resolvedRowTag === 35 /* "#" */ ||
+          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {
@@ -6020,6 +6554,7 @@ export function processStringChunk(
           i++;
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
+          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {
@@ -6177,6 +6712,9 @@ export function close(weakResponse: WeakResponse): void {
   if (response._allowPartialStream) {
     // For partial streams, we halt pending chunks instead of erroring them.
     response._closed = true;
+    if (enableFlightHTMLFirst) {
+      endStubbedRows(response);
+    }
     response._chunks.forEach((chunk, id) => {
       if (
         chunk.status === PENDING ||

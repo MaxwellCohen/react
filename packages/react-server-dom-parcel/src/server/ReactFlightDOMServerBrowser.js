@@ -62,6 +62,14 @@ export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTem
 export type {TemporaryReferenceSet};
 
 type Options = {
+  // enableFlightHTMLFirst: `true` stubs static hosts for in-process SSR
+  // (internal registry); {onRow, onValue} receive the rows instead.
+  htmlFirst?:
+    | boolean
+    | {
+        onRow?: (id: number, json: string) => void,
+        onValue?: (id: number, value: mixed) => void,
+      },
   debugChannel?: {readable?: ReadableStream, writable?: WritableStream, ...},
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -135,6 +143,7 @@ export function renderToReadableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.htmlFirst : undefined,
   );
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);
