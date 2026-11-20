@@ -56,6 +56,7 @@ export type Options = {
   unstable_allowPartialStream?: boolean,
   replayConsoleLogs?: boolean,
   environmentName?: string,
+  unstable_requestId?: string,
   startTime?: number,
   endTime?: number,
   // For the Node.js client we only support a single-direction debug channel.
@@ -114,6 +115,7 @@ export function createFromNodeStream<T>(
       : undefined,
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
+    __DEV__ && options ? options.unstable_requestId : undefined,
   );
   if (options && options.htmlFirstRows) {
     attachStubbedRows(response, options.htmlFirstRows);
