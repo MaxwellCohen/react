@@ -843,7 +843,7 @@ function RequestInstance(
   // that goes straight to the browser (navigation, refetch, action result) is
   // never stubbed by accident. The framework opts in on the response that feeds
   // SSR: `htmlFirst: true` collects rows in an internal registry keyed
-  // by a request id emitted in the stream (`:Q…`), which the first in-process
+  // by a request id emitted in the stream (`:P…`), which the first in-process
   // createFrom* claims. `{onRow, onValue}` (JSON row / live value) is the
   // override for out-of-process or custom consumers.
   this.stubbedRequestId = 0;
@@ -856,7 +856,7 @@ function RequestInstance(
     if (htmlFirst === true) {
       // Allocated on the first stubbed element, so a response with nothing to
       // stub is byte-identical to one without the option. Hint rows flush
-      // before regular rows, so `:Q` still precedes the first stub.
+      // before regular rows, so `:P` still precedes the first stub.
       const request: Request = this;
       let entry: null | StubbedRowsEntry = null;
       this.onStubbedValue = (id: number, value: mixed) => {
@@ -5726,7 +5726,7 @@ function emitStubbedRowsRequestIdChunk(
   requestId: number,
 ): void {
   // enableFlightHTMLFirst: identify the internal row registry across tee().
-  const row = ':Q' + requestId.toString(16) + '\n';
+  const row = ':P' + requestId.toString(16) + '\n';
   request.completedHintChunks.push(stringToChunk(row));
 }
 
@@ -5859,6 +5859,7 @@ function settleStubbedRows(request: Request): void {
           null,
           null,
           null,
+          request.rootUnit,
         );
         retryTask(request, task);
       }

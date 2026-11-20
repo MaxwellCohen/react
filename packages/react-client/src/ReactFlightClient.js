@@ -405,7 +405,7 @@ type Response = {
   // enableFlightHTMLFirst: the registry entry this response claimed. It
   // records which rows get rendered, see StubbedRendered.
   _stubbedEntry: null | StubbedRowsEntry,
-  // enableFlightHTMLFirst: the `:Q` id of the payload, which names it.
+  // enableFlightHTMLFirst: the `:P` id of the payload, which names it.
   _stubbedRequestId: number,
   // enableFlightHTMLFirst: resolves when the stream ends, for stubs that
   // wait for a late row.
@@ -3121,7 +3121,7 @@ function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
 
 // A framework can decode the same payload more than once (Next.js decodes part
 // of the initial payload again for its client cache). The stubs of every
-// decode share the node that hydration adopted, keyed by the payload's `:Q` id
+// decode share the node that hydration adopted, keyed by the payload's `:P` id
 // and the row id. The map holds them weakly, so a node lives only as long as
 // some decoded payload still references its stub. The key is dropped once its
 // holder is collected, so the map does not grow with every payload.
@@ -5879,7 +5879,7 @@ function processFullStringRow(
       resolveHint(response, code, row.slice(1));
       return;
     }
-    case 81 /* "Q" */: {
+    case 80 /* "P" */: {
       // enableFlightHTMLFirst: in-process registry id for stubbed rows.
       if (enableFlightHTMLFirst) {
         const requestId = parseInt(row, 16);
