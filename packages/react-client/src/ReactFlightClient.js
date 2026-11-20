@@ -6262,6 +6262,10 @@ function processFullStringRow(
     case 113 /* "q" */: {
       // enableFlightHTMLFirst: everything but the late rows was written.
       if (enableFlightHTMLFirst) {
+        // Late rows are static, so no Ledger row follows. An HTML render that
+        // waits on a total would otherwise wait for the late rows, which wait
+        // for it to render.
+        resolveLedgerTotalsAtClose(response);
         const entry = response._stubbedEntry;
         if (entry !== null) {
           scheduleStubbedSettle(entry);
