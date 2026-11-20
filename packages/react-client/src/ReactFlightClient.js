@@ -457,7 +457,9 @@ function hasGCedResponse(weakResponse: WeakResponse): boolean {
 // The side channel for rows the server stubbed from the stream. Rows are
 // complete JSON strings, so they are never interleaved with stream bytes.
 // A row is JSON, or (enableFlightHTMLFirst, in-process) a ready React node.
-export type StubbedRows = {get(id: number): void | string | mixed, ...};
+export interface StubbedRows {
+  get(id: number): void | string | mixed;
+}
 
 export function attachStubbedRows(
   weakResponse: WeakResponse,
