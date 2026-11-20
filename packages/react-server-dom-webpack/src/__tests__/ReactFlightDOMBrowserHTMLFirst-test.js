@@ -340,7 +340,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('SSRs and hydrates with no htmlFirst or htmlFirstRows (internal registry)', async () => {
     const ROWS = 50;
     const main = await renderSharedApp(ROWS);
-    expect(main).toContain(':Q');
+    expect(main).toContain(':P');
     expect(main).toContain('$J');
     expect(main).not.toContain('name-49');
 
@@ -373,11 +373,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('does not stub unless the request opts in', async () => {
     const main = await renderSharedApp(10, undefined);
     expect(main).not.toContain('$J');
-    expect(main).not.toContain(':Q');
+    expect(main).not.toContain(':P');
     expect(main).toContain('name-9');
     const off = await renderSharedApp(10, {htmlFirst: false});
     expect(off).not.toContain('$J');
-    expect(off).not.toContain(':Q');
+    expect(off).not.toContain(':P');
     expect(off).toContain('name-9');
   });
 
@@ -408,7 +408,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const [main, stock] = outputs;
     const withoutTime = text => text.replace(/^:N.*\n/gm, '');
     expect(withoutTime(main)).toBe(withoutTime(stock));
-    expect(main).not.toContain(':Q');
+    expect(main).not.toContain(':P');
     const storeAfter =
       globalThis[Symbol.for('react.flight_html_first_registry')];
     expect(storeAfter === undefined ? 0 : storeAfter.pending.size).toBe(
@@ -450,7 +450,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     );
     const rows = main.split('\n');
     const root = rows.findIndex(row => row.startsWith('0:'));
-    const id = rows.findIndex(row => row.startsWith(':Q'));
+    const id = rows.findIndex(row => row.startsWith(':P'));
     const stub = rows.findIndex(row => row.includes('$J'));
     // The root row is written before anything is stubbed, so it comes first.
     expect(root).not.toBe(-1);
@@ -525,10 +525,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('isolates concurrent zero-opt-in requests', async () => {
     const a = await renderSharedApp(3);
     const b = await renderSharedApp(7);
-    expect(a).toMatch(/:Q[0-9a-f]+\n/);
-    expect(b).toMatch(/:Q[0-9a-f]+\n/);
-    const idA = a.match(/:Q([0-9a-f]+)\n/)[1];
-    const idB = b.match(/:Q([0-9a-f]+)\n/)[1];
+    expect(a).toMatch(/:P[0-9a-f]+\n/);
+    expect(b).toMatch(/:P[0-9a-f]+\n/);
+    const idA = a.match(/:P([0-9a-f]+)\n/)[1];
+    const idB = b.match(/:P([0-9a-f]+)\n/)[1];
     expect(idA).not.toBe(idB);
 
     const htmlA = await ssr({main: a, rows: undefined});
@@ -604,7 +604,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // Same module identity, full Flight (what /rsc navigation must emit).
     const nextMain = await renderOnce({htmlFirst: false});
     expect(nextMain).not.toContain('$J');
-    expect(nextMain).not.toContain(':Q');
+    expect(nextMain).not.toContain(':P');
     const nextResponse = consume(nextMain);
     await nextResponse;
     await act(() => {
@@ -1131,7 +1131,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </main>
       );
     }
-    // Uses the internal registry, so the payload carries its :Q id.
+    // Uses the internal registry, so the payload carries its :P id.
     const main = await serverAct(() =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
@@ -1139,7 +1139,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         }),
       ),
     );
-    expect(main).toMatch(/:Q[0-9a-f]+\n/);
+    expect(main).toMatch(/:P[0-9a-f]+\n/);
     const html = await ssr({main, rows: undefined});
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -1531,7 +1531,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
     }
 
-    const withoutRequestId = main => main.replace(/:Q[0-9a-f]+\n/, ':Q\n');
+    const withoutRequestId = main => main.replace(/:P[0-9a-f]+\n/, ':P\n');
 
     function createPanel() {
       return clientExports(function Panel({children}) {

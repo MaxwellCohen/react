@@ -9,7 +9,7 @@
 
 // enableFlightHTMLFirst: in-process Flight → SSR without framework callbacks.
 // The server registers stubbed rows under a request id emitted in the stream
-// (`:Q…`). The first createFrom* in this isolate claims the map; later
+// (`:P…`). The first createFrom* in this isolate claims the map; later
 // consumers (browser / second tee branch) see stubs and adopt SSR HTML.
 //
 // Stored on globalThis so Flight server and client share one map even when
