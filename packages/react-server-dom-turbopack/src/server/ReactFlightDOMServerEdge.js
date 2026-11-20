@@ -12,6 +12,7 @@ import type {
   ReactClientValue,
 } from 'react-server/src/ReactFlightServer';
 import type {Thenable} from 'shared/ReactTypes';
+import type {FlightTee} from 'shared/ReactFlightTee';
 import type {ClientManifest} from './ReactFlightServerConfigTurbopackBundler';
 import type {ServerManifest} from 'react-client/src/ReactFlightClientConfig';
 
@@ -27,6 +28,7 @@ import {
   stopFlowing,
   abort,
   attachAbortSignal,
+  attachTee,
   resolveDebugMessage,
   closeDebugChannel,
 } from 'react-server/src/ReactFlightServer';
@@ -81,6 +83,7 @@ type Options = {
   temporaryReferences?: TemporaryReferenceSet,
   onError?: (error: mixed) => void,
   startTime?: number,
+  tee?: FlightTee,
 };
 
 function startReadingFromDebugChannelReadableStream(
@@ -149,6 +152,9 @@ function renderToReadableStream(
     debugChannelReadable !== undefined,
     options ? options.htmlFirst : undefined,
   );
+  if (options && options.tee) {
+    attachTee(request, options.tee);
+  }
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);
   }
@@ -232,6 +238,9 @@ function prerender(
       __DEV__ && options ? options.filterStackFrame : undefined,
       false,
     );
+    if (options && options.tee) {
+      attachTee(request, options.tee);
+    }
     if (options && options.signal) {
       attachAbortSignal(request, options.signal);
     }

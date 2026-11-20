@@ -13,6 +13,7 @@
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
   enableFlightHTMLFirst: true,
+  enableFlightTee: true,
 }));
 
 // Polyfills for test environment
@@ -39,6 +40,8 @@ let ReactDOMClient;
 let ReactDOMFizzServer;
 let ReactServerDOMServer;
 let ReactServerDOMClient;
+let ReactServerDOMEdgeClient;
+let webpackModuleLoading;
 let use;
 let reportedErrors;
 
@@ -61,6 +64,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const WebpackMock = require('./utils/WebpackMock');
     clientExports = WebpackMock.clientExports;
     webpackMap = WebpackMock.webpackMap;
+    webpackModuleLoading = WebpackMock.moduleLoading;
     ReactServerDOMServer = require('react-server-dom-webpack/server');
 
     __unmockReact();
@@ -77,6 +81,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     );
     ReactServerDOMClient = require('react-server-dom-webpack/client');
     use = React.use;
+    ReactServerDOMEdgeClient = jest.requireActual(
+      'react-server-dom-webpack/client.edge',
+    );
   });
 
   afterEach(() => {
@@ -137,6 +144,48 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
     });
     return html;
+  }
+
+  // What a framework does with a tee: the Flight render writes its bytes for
+  // the browser and hands every row to the tee, which Fizz reads in this
+  // process. Returns the browser's payload and the HTML. `Root` renders the
+  // response (default: the whole model is the page).
+  // The tee's reader maps each client module id to the module SSR loads.
+  function createTeeManifest() {
+    const moduleMap = {};
+    for (const key in webpackMap) {
+      const metadata = webpackMap[key];
+      moduleMap[metadata.id] = {'*': metadata};
+    }
+    return {moduleMap, moduleLoading: webpackModuleLoading};
+  }
+
+  async function renderWithTeeInner(model, options, Root = Shell) {
+    const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+    const stream = ReactServerDOMServer.renderToReadableStream(
+      model,
+      webpackMap,
+      {htmlFirst: true, tee, ...options},
+    );
+    const browser = readAll(stream);
+    let response = null;
+    function TeeRoot() {
+      if (response === null) {
+        response = ReactServerDOMEdgeClient.createFromTee(tee);
+      }
+      return <Root response={response} />;
+    }
+    const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
+      <TeeRoot />,
+    );
+    // Suspense boundaries complete in place, without inline scripts.
+    await htmlStream.allReady;
+    const html = await readAll(htmlStream);
+    return {main: await browser, html};
+  }
+
+  function renderWithTee(model, options, Root) {
+    return serverAct(() => renderWithTeeInner(model, options, Root));
   }
 
   // Returns {main, rows}: the stream (what is inlined for the browser) and
@@ -287,11 +336,8 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toBe('Reportonly');
   });
 
-  // Zero framework opt-in: flag on, no htmlFirst / htmlFirstRows. The server
-  // registers rows internally; the first createFrom* claims them for SSR.
-  // `flightOpts` is undefined (auto registry) or {htmlFirst: false} (SPA nav).
-  async function renderSharedApp(count, ...rest) {
-    const flightOpts = rest.length ? rest[0] : {htmlFirst: true};
+  // A page with a client component and a static table.
+  function sharedAppElement(count) {
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -325,27 +371,30 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
     }
 
-    const main = await serverAct(async () =>
+    return <App size={count} />;
+  }
+
+  // `flightOpts` is undefined (no option) or {htmlFirst: false} (SPA nav).
+  async function renderSharedApp(count, ...rest) {
+    const flightOpts = rest.length ? rest[0] : {htmlFirst: true};
+    return serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
-          <App size={count} />,
+          sharedAppElement(count),
           webpackMap,
           flightOpts,
         ),
       ),
     );
-    return main;
   }
 
-  it('SSRs and hydrates with no htmlFirst or htmlFirstRows (internal registry)', async () => {
+  it('SSRs and hydrates with a tee and no htmlFirst or htmlFirstRows', async () => {
     const ROWS = 50;
-    const main = await renderSharedApp(ROWS);
+    // The tee's reader renders the HTML from the elements the server stubbed.
+    const {main, html} = await renderWithTee(sharedAppElement(ROWS));
     expect(main).toContain(':Q');
     expect(main).toContain('$J');
     expect(main).not.toContain('name-49');
-
-    // First consumer claims the registry (SSR).
-    const html = await ssr({main, rows: undefined});
     expect(html).toContain('name-49');
     expect(html).toContain('clicks');
 
@@ -355,7 +404,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const table = container.querySelector('table');
     const button = container.querySelector('button');
 
-    // Second consumer finds an empty registry → stubs → adopt HTML.
+    // The browser reads the bytes only → stubs → adopt HTML.
     const response = consume(main, undefined);
     await response;
     await act(() => {
@@ -395,9 +444,6 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           ),
         ),
       );
-    const store = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
-    const pendingBefore = store === undefined ? 0 : store.pending.size;
-
     // Rendered from one call site with the DEV timestamp row dropped, so
     // debug info cannot differ between the two.
     const options = [{htmlFirst: true}, undefined];
@@ -409,16 +455,30 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const withoutTime = text => text.replace(/^:N.*\n/gm, '');
     expect(withoutTime(main)).toBe(withoutTime(stock));
     expect(main).not.toContain(':Q');
-    const storeAfter = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
-    expect(storeAfter === undefined ? 0 : storeAfter.pending.size).toBe(
-      pendingBefore,
-    );
 
     const html = await ssr({main, rows: undefined});
     expect(html).toContain('only-client');
   });
 
-  it('writes the registry id before the first stub that needs it', async () => {
+  it('reads a tee in a runtime without AsyncLocalStorage', async () => {
+    const had = 'AsyncLocalStorage' in globalThis;
+    const saved = globalThis.AsyncLocalStorage;
+    // The Edge client captures the reader's context only where it exists.
+    delete globalThis.AsyncLocalStorage;
+    try {
+      const {main, html} = await renderWithTee(sharedAppElement(5));
+      expect(main).toContain('$J');
+      expect(main).not.toContain('name-4');
+      expect(html).toContain('name-4');
+      expect(html).toContain('clicks');
+    } finally {
+      if (had) {
+        globalThis.AsyncLocalStorage = saved;
+      }
+    }
+  });
+
+  it('writes the request id before the first stub that needs it', async () => {
     const Counter = clientExports(function Counter({label}) {
       return <button>{label}</button>;
     });
@@ -440,13 +500,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </div>
       );
     }
-    const main = await serverAct(async () =>
-      readAll(
-        ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          htmlFirst: true,
-        }),
-      ),
-    );
+    const {main, html} = await renderWithTee(<App />);
     const rows = main.split('\n');
     const root = rows.findIndex(row => row.startsWith('0:'));
     const id = rows.findIndex(row => row.startsWith(':Q'));
@@ -457,85 +511,57 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(stub).toBeGreaterThan(id);
     expect(main).not.toContain('late-static');
 
-    const html = await ssr({main, rows: undefined});
     expect(html).toContain('late-static');
     expect(html).toContain('first');
   });
 
-  describe('registry lifetime', () => {
-    // A real GC is needed to observe the FinalizationRegistry release.
-    let gc;
-    try {
-      require('v8').setFlagsFromString('--expose-gc');
-      gc = require('vm').runInNewContext('gc');
-    } catch (e) {}
-    const maybeIt = typeof gc === 'function' ? it : it.skip;
-
-    // The store is created on first use.
-    const pending = () => {
-      const store = globalThis.__REACT_FLIGHT_HTML_FIRST_REGISTRY__;
-      return store === undefined ? new Map() : store.pending;
-    };
-
-    // Node's own timers: the test environment's setImmediate may be faked.
-    async function collect() {
-      for (let i = 0; i < 20; i++) {
-        gc();
-        await new Promise(resolve => require('timers').setImmediate(resolve));
-      }
+  it('stubs nothing without a tee', async () => {
+    const element = sharedAppElement(5);
+    // Rendered from one call site, so debug info can't differ in the stack.
+    const options = [undefined, {htmlFirst: true}, {htmlFirst: false}];
+    const outputs = [];
+    for (let i = 0; i < options.length; i++) {
+      outputs.push(
+        await serverAct(async () =>
+          readAll(
+            ReactServerDOMServer.renderToReadableStream(
+              element,
+              webpackMap,
+              options[i],
+            ),
+          ),
+        ),
+      );
     }
-
-    function render() {
-      const App = () => <article>{'important '.repeat(10)}</article>;
-      return ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-        htmlFirst: true,
-      });
-    }
-
-    maybeIt(
-      'releases rows that nothing claimed once the stream is gone',
-      async () => {
-        const before = pending().size;
-        await serverAct(async () => {
-          // Drained by a consumer that never runs createFrom* (a browser).
-          await readAll(render());
-        });
-        await collect();
-        expect(pending().size).toBe(before);
-      },
-    );
-
-    maybeIt('keeps rows for a stream that has not been read yet', async () => {
-      const before = pending().size;
-      let stream;
-      await serverAct(async () => {
-        stream = render();
-      });
-      await collect();
-      // The consumer still holds the stream, so it can still claim the rows.
-      expect(pending().size).toBe(before + 1);
-      const main = await serverAct(() => readAll(stream));
-      const html = await ssr({main, rows: undefined});
-      expect(html).toContain('important');
-      expect(pending().size).toBe(before);
-    });
+    // No tee: nothing renders the stubbed elements, so the option is a no-op.
+    const withoutTime = text =>
+      text.replace(/^[0-9a-f]*:(N|D\{"time").*\n/gm, '');
+    const [stock, on, off] = outputs;
+    expect(withoutTime(on)).toBe(withoutTime(stock));
+    expect(withoutTime(off)).toBe(withoutTime(stock));
+    expect(on).not.toContain('$J');
+    expect(on).not.toContain(':Q');
+    expect(on).toContain('name-4');
   });
 
-  it('isolates concurrent zero-opt-in requests', async () => {
-    const a = await renderSharedApp(3);
-    const b = await renderSharedApp(7);
-    expect(a).toMatch(/:Q[0-9a-f]+\n/);
-    expect(b).toMatch(/:Q[0-9a-f]+\n/);
-    const idA = a.match(/:Q([0-9a-f]+)\n/)[1];
-    const idB = b.match(/:Q([0-9a-f]+)\n/)[1];
+  it('gives each concurrent tee its own rows', async () => {
+    const [a, b] = await serverAct(() =>
+      Promise.all([
+        renderWithTeeInner(sharedAppElement(3)),
+        renderWithTeeInner(sharedAppElement(7)),
+      ]),
+    );
+    expect(a.main).toMatch(/:Q[0-9a-f]+\n/);
+    expect(b.main).toMatch(/:Q[0-9a-f]+\n/);
+    const idA = a.main.match(/:Q([0-9a-f]+)\n/)[1];
+    const idB = b.main.match(/:Q([0-9a-f]+)\n/)[1];
     expect(idA).not.toBe(idB);
-
-    const htmlA = await ssr({main: a, rows: undefined});
-    const htmlB = await ssr({main: b, rows: undefined});
-    expect(htmlA).toContain('name-2');
-    expect(htmlA).not.toContain('name-6');
-    expect(htmlB).toContain('name-6');
-    expect(htmlB.match(/name-\d+/g).length).toBe(7);
+    expect(a.html).toContain('name-2');
+    expect(a.html).not.toContain('name-6');
+    expect(b.html).toContain('name-6');
+    expect(b.html.match(/name-\d+/g).length).toBe(7);
+    expect(a.main).not.toContain('name-2');
+    expect(b.main).not.toContain('name-6');
   });
 
   it('SPA navigation uses htmlFirst: false for a full payload', async () => {
@@ -907,29 +933,26 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
     }
     const model = {page: <Page />, later: Promise.resolve(<Page />)};
-    const render = (opts = {htmlFirst: true}) =>
-      serverAct(async () =>
-        readAll(
-          ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
-        ),
+    const full = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(model, webpackMap, {
+          htmlFirst: false,
+        }),
+      ),
+    );
+    // SSR renders both entries, so the server writes no late row for them.
+    function MapShell({response}) {
+      const map = use(response);
+      return (
+        <>
+          {map.page}
+          {use(map.later)}
+        </>
       );
-    const full = await render({htmlFirst: false});
-    const main = await render();
+    }
+    const {main, html} = await renderWithTee(model, undefined, MapShell);
     expect(main.length).toBeLessThan(full.length / 10);
     expect(main).not.toContain('name-99');
-    function MapShell({response}) {
-      return use(response).page;
-    }
-    const sResponse = consume(main, undefined);
-    await sResponse;
-    let html;
-    await act(async () => {
-      html = await readAll(
-        await ReactDOMFizzServer.renderToReadableStream(
-          <MapShell response={sResponse} />,
-        ),
-      );
-    });
     expect(html).toContain('name-99');
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -941,7 +964,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       ReactDOMClient.hydrateRoot(container, <MapShell response={bResponse} />);
     });
     expect(container.querySelector('table')).toBe(table);
-    expect(container.querySelectorAll('tr').length).toBe(100);
+    expect(container.querySelectorAll('tr').length).toBe(200);
   });
 
   it('stubs static output nested in plain data around elements', async () => {
@@ -965,17 +988,13 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         slots: new Map([['children', {data: {rsc: <Page />}}]]),
       },
     };
-    const render = (opts = {htmlFirst: true}) =>
-      serverAct(async () =>
-        readAll(
-          ReactServerDOMServer.renderToReadableStream(model, webpackMap, opts),
-        ),
-      );
-    const full = await render({htmlFirst: false});
-    const main = await render();
-    expect(main.length).toBeLessThan(full.length / 10);
-    expect(main).not.toContain('name-99');
-    expect(main).not.toContain('layout-heading');
+    const full = await serverAct(async () =>
+      readAll(
+        ReactServerDOMServer.renderToReadableStream(model, webpackMap, {
+          htmlFirst: false,
+        }),
+      ),
+    );
     function TreeShell({response}) {
       const tree = use(response).tree;
       return (
@@ -985,16 +1004,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </>
       );
     }
-    const sResponse = consume(main, undefined);
-    await sResponse;
-    let html;
-    await act(async () => {
-      html = await readAll(
-        await ReactDOMFizzServer.renderToReadableStream(
-          <TreeShell response={sResponse} />,
-        ),
-      );
-    });
+    const {main, html} = await renderWithTee(model, undefined, TreeShell);
+    expect(main.length).toBeLessThan(full.length / 10);
+    expect(main).not.toContain('name-99');
+    expect(main).not.toContain('layout-heading');
     expect(html).toContain('layout-heading');
     expect(html).toContain('name-99');
     const container = document.createElement('div');
@@ -1025,28 +1038,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </React.Fragment>
       ),
     };
-    const main = await serverAct(async () =>
-      readAll(
-        ReactServerDOMServer.renderToReadableStream(model, webpackMap, {
-          htmlFirst: true,
-        }),
-      ),
-    );
-    expect(main).toContain('$J');
-    expect(main).not.toContain('fragment-heading');
     function PageShell({response}) {
       return use(response).page;
     }
-    const sResponse = consume(main, undefined);
-    await sResponse;
-    let html;
-    await act(async () => {
-      html = await readAll(
-        await ReactDOMFizzServer.renderToReadableStream(
-          <PageShell response={sResponse} />,
-        ),
-      );
-    });
+    const {main, html} = await renderWithTee(model, undefined, PageShell);
+    expect(main).toContain('$J');
+    expect(main).not.toContain('fragment-heading');
     expect(html).toContain('fragment-heading');
     expect(html).toContain('count');
   });
@@ -1130,16 +1127,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </main>
       );
     }
-    // Uses the internal registry, so the payload carries its :Q id.
-    const main = await serverAct(() =>
-      readAll(
-        ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          htmlFirst: true,
-        }),
-      ),
-    );
+    // The payload carries its :Q id, which the decodes share.
+    const {main, html} = await renderWithTee(<App />);
     expect(main).toMatch(/:Q[0-9a-f]+\n/);
-    const html = await ssr({main, rows: undefined});
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
@@ -1366,6 +1356,48 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('panel-B');
   });
 
+  it('restores a server panel that client Tabs unmounted, without a request', async () => {
+    const Tabs = clientExports(function Tabs({children}) {
+      const [tab, setTab] = React.useState('server');
+      return (
+        <section>
+          <button onClick={() => setTab('server')}>server</button>
+          <button onClick={() => setTab('client')}>client</button>
+          {tab === 'server' ? children : <p>client-panel</p>}
+        </section>
+      );
+    });
+    const App = () => (
+      <Tabs>
+        <article className="panel">
+          <h2>server-panel</h2>
+        </article>
+      </Tabs>
+    );
+    const f = await flight(<App />);
+    expect(f.main).toContain('$J');
+    const html = await ssr(f);
+    const missing = jest.fn();
+    const {container, errors} = await hydrate(f.main, html, {
+      onMissingHTML: missing,
+    });
+    const [serverTab, clientTab] = container.querySelectorAll('button');
+    const adopted = container.querySelector('article');
+    for (let i = 0; i < 3; i++) {
+      await act(() => clientTab.click());
+      expect(container.querySelector('article')).toBe(null);
+      expect(container.textContent).toContain('client-panel');
+      await act(() => serverTab.click());
+      const article = container.querySelector('article');
+      expect(article).not.toBe(adopted);
+      expect(article.outerHTML).toBe(
+        '<article class="panel"><h2>server-panel</h2></article>',
+      );
+    }
+    expect(missing).not.toHaveBeenCalled();
+    expect(errors).toEqual([]);
+  });
+
   it('keeps keyed host elements in client props so a reorder is reflected', async () => {
     const Sortable = clientExports(function Sortable({items}) {
       const [rev, setRev] = React.useState(false);
@@ -1455,40 +1487,37 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // What a framework does: the Flight stream is rendered to HTML in this
     // process while it is also sent to the browser. Returns the browser's
     // payload and the HTML.
-    async function flightAndSsr(element, options) {
-      let main;
-      let html;
-      await serverAct(async () => {
-        const [forSsr, forBrowser] =
-          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
-            htmlFirst: true,
-            ...options,
-          }).tee();
-        const browser = readAll(forBrowser);
-        const response = ReactServerDOMClient.createFromReadableStream(forSsr);
-        const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
-          <Shell response={response} />,
-        );
-        // Suspense boundaries complete in place, without inline scripts.
-        await htmlStream.allReady;
-        html = await readAll(htmlStream);
-        main = await browser;
-      });
-      return {main, html};
+    function flightAndSsr(element, options) {
+      return renderWithTee(element, options);
     }
 
-    // The same payload when nothing renders it to HTML while it streams.
+    // The same payload with the stubbed rows withheld and no late rows: what
+    // the server writes when SSR rendered all of them.
     async function flightOnly(element) {
       return serverAct(() =>
         readAll(
           ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
-            htmlFirst: true,
+            htmlFirst: {onRow() {}},
           }),
         ),
       );
     }
 
-    const withoutRequestId = main => main.replace(/:Q[0-9a-f]+\n/, ':Q\n');
+    // The tee is never read, so nothing renders the rows. The server closes
+    // the stream after its settle timeout and writes every row.
+    async function unreadTee(element) {
+      return serverAct(() => {
+        const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+        return readAll(
+          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+            htmlFirst: true,
+            tee,
+          }),
+        );
+      });
+    }
+
+    const withoutRequestId = main => main.replace(/^:Q[0-9a-f]+\n/m, '');
 
     function createPanel() {
       return clientExports(function Panel({children}) {
@@ -1574,6 +1603,90 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(errors).toEqual([]);
     });
 
+    it('sends the row of a tab panel SSR did not render, so every tab opens without a round trip', async () => {
+      const Tabs = clientExports(function Tabs({children}) {
+        const [tab, setTab] = React.useState(0);
+        return (
+          <section>
+            <button onClick={() => setTab(0)}>a</button>
+            <button onClick={() => setTab(1)}>b</button>
+            {children[tab]}
+          </section>
+        );
+      });
+      const App = () => (
+        <Tabs>
+          <article key="a">{'panel-A '.repeat(10)}</article>
+          <article key="b">{'panel-B '.repeat(10)}</article>
+        </Tabs>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).toContain('panel-A');
+      expect(html).not.toContain('panel-B');
+      // Panel A is adopted from the HTML; panel B's row was written late.
+      expect(main).not.toContain('panel-A');
+      expect(main).toContain('panel-B');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML: missing,
+      });
+      const [tabA, tabB] = container.querySelectorAll('button');
+      for (let i = 0; i < 2; i++) {
+        await act(() => tabB.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-B '.repeat(10),
+        );
+        await act(() => tabA.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-A '.repeat(10),
+        );
+      }
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
+    it('swaps unkeyed tab panels without mixing up their content', async () => {
+      const Tabs = clientExports(function Tabs({children}) {
+        const [tab, setTab] = React.useState(0);
+        return (
+          <section>
+            <button onClick={() => setTab(0)}>a</button>
+            <button onClick={() => setTab(1)}>b</button>
+            {children[tab]}
+          </section>
+        );
+      });
+      const App = () => (
+        <Tabs>
+          <article>{'panel-A '.repeat(10)}</article>
+          <article>{'panel-B '.repeat(10)}</article>
+        </Tabs>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).toContain('panel-A');
+      expect(html).not.toContain('panel-B');
+      // Panel A is adopted from the HTML; panel B's row was written late.
+      expect(main).not.toContain('panel-A');
+      expect(main).toContain('panel-B');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML: missing,
+      });
+      const [tabA, tabB] = container.querySelectorAll('button');
+      for (let i = 0; i < 2; i++) {
+        await act(() => tabB.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-B '.repeat(10),
+        );
+        await act(() => tabA.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-A '.repeat(10),
+        );
+      }
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
     it('writes no late row for content that SSR rendered', async () => {
       const Counter = clientExports(function Counter() {
         const [n, setN] = React.useState(0);
@@ -1600,10 +1713,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(main).not.toContain('streamed-content');
       // What the server writes when it sends no late rows.
       const unrendered = await flightOnly(<App />);
-      expect(main.split('\n').length).toBe(unrendered.split('\n').length);
+      expect(withoutRequestId(main).split('\n').length).toBe(
+        unrendered.split('\n').length,
+      );
       if (!__DEV__) {
         // Timing rows differ between two renders in DEV.
-        expect(withoutRequestId(main)).toBe(withoutRequestId(unrendered));
+        expect(withoutRequestId(main)).toBe(unrendered);
       }
       const {container, errors} = await hydrate(main, html);
       expect(container.textContent).toContain('streamed-content');
@@ -1612,14 +1727,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
     it('closes the stream when nothing in this process renders it', async () => {
       const Panel = createPanel();
-      const main = await flightOnly(
+      const main = await unreadTee(
         <Panel>
           <p>modal-body</p>
         </Panel>,
       );
+      // Nothing rendered the row, so the browser gets it after all.
       expect(main).toContain('$J');
-      expect(main).toContain(':q\n');
-      expect(main).not.toContain('modal-body');
+      expect(main).toContain('modal-body');
+      expect(main).not.toContain(':q\n');
     });
 
     it('closes the stream without late rows when the render is aborted', async () => {
@@ -1631,28 +1747,29 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const errors = [];
       let main;
       await serverAct(async () => {
-        const [forSsr, forBrowser] =
-          ReactServerDOMServer.renderToReadableStream(
-            <main>
-              <Panel>
-                <p>modal-body</p>
-              </Panel>
-              <React.Suspense fallback="loading">
-                <Never />
-              </React.Suspense>
-            </main>,
-            webpackMap,
-            {
-              htmlFirst: true,
-              signal: controller.signal,
-              onError(error) {
-                errors.push(error.message);
-              },
+        const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+        const stream = ReactServerDOMServer.renderToReadableStream(
+          <main>
+            <Panel>
+              <p>modal-body</p>
+            </Panel>
+            <React.Suspense fallback="loading">
+              <Never />
+            </React.Suspense>
+          </main>,
+          webpackMap,
+          {
+            htmlFirst: true,
+            tee,
+            signal: controller.signal,
+            onError(error) {
+              errors.push(error.message);
             },
-          ).tee();
-        const browser = readAll(forBrowser);
-        // Claims the rows, and never gets to say which ones it rendered.
-        await ReactServerDOMClient.createFromReadableStream(forSsr);
+          },
+        );
+        const browser = readAll(stream);
+        // Reads the tee, and never gets to say which rows it rendered.
+        await ReactServerDOMEdgeClient.createFromTee(tee);
         controller.abort(new Error('aborted'));
         main = await browser;
       });

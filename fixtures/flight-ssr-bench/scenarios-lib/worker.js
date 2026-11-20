@@ -144,6 +144,7 @@ async function render({id, size, recoverErrors}) {
         // The SSR render opts in with htmlFirst: true; React's internal
         // registry feeds SSR. No framework side channel.
         stub: optIn,
+        tee: VARIANT === 'tee',
         recoverErrors: !!recoverErrors,
       }
     )

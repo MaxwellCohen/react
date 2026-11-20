@@ -7,11 +7,12 @@ const fs = require('fs');
 const playwright = require('playwright');
 
 // Launches the browser named by --browser (chromium by default). CHROME_PATH
-// stays an override for a local Chromium build; it does not apply to firefox/webkit.
+// stays an override for a local Chromium build; FIREFOX_PATH / WEBKIT_PATH do
+// the same for the other two (e.g. an already cached browser of another revision).
 function launchBrowser(name) {
+  const env = name === 'chromium' ? 'CHROME_PATH' : name.toUpperCase() + '_PATH';
   return playwright[name].launch({
-    executablePath:
-      name === 'chromium' ? process.env.CHROME_PATH || undefined : undefined,
+    executablePath: process.env[env] || undefined,
   });
 }
 

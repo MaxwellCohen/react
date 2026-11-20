@@ -2,16 +2,19 @@
 
 import {useState} from 'react';
 
-// Only toggles state on its own rendered button (attribute + label).
-export default function Collapse() {
+// Collapses the server-rendered sidebar passed as children. Collapsed, the
+// sidebar is unmounted; opening it again mounts the same server output.
+export default function Collapse({children}) {
   const [collapsed, setCollapsed] = useState(false);
   return (
-    <button
-      className="collapse-toggle"
-      data-collapsed={collapsed ? 'true' : 'false'}
-      aria-expanded={!collapsed}
-      onClick={() => setCollapsed(!collapsed)}>
-      {collapsed ? 'Sidebar: collapsed' : 'Sidebar: open'}
-    </button>
+    <div className="sidebar-wrap">
+      <button
+        className="collapse-toggle"
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed(!collapsed)}>
+        {collapsed ? 'Show sidebar' : 'Hide sidebar'}
+      </button>
+      {collapsed ? null : children}
+    </div>
   );
 }

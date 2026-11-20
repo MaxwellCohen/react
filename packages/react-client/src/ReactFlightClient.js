@@ -49,11 +49,8 @@ import {
   enableFlightObjectReferences,
   enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
-import {
-  claimStubbedRowsRegistry,
-  releaseStubbedRowsRegistry,
-} from 'shared/ReactFlightHTMLFirstRegistry';
-import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
+import type {StubbedRowsEntry} from 'shared/ReactFlightTee';
+import {canUseDOM} from 'shared/ExecutionEnvironment';
 
 import {
   resolveClientReference,
@@ -402,8 +399,8 @@ type Response = {
   _chunks: Map<number, SomeChunk<any>>,
   // enableFlightHTMLFirst: rows the server withheld from the stream.
   _stubbedRows: null | StubbedRows,
-  // enableFlightHTMLFirst: the registry entry this response claimed. It
-  // records which rows get rendered, see StubbedRendered.
+  // enableFlightHTMLFirst: the rows a tee handed to this response. It records
+  // which rows get rendered, see StubbedRendered.
   _stubbedEntry: null | StubbedRowsEntry,
   // enableFlightHTMLFirst: the `:Q` id of the payload, which names it.
   _stubbedRequestId: number,
@@ -460,7 +457,9 @@ function hasGCedResponse(weakResponse: WeakResponse): boolean {
 // The side channel for rows the server stubbed from the stream. Rows are
 // complete JSON strings, so they are never interleaved with stream bytes.
 // A row is JSON, or (enableFlightHTMLFirst, in-process) a ready React node.
-export type StubbedRows = {get(id: number): void | string | mixed, ...};
+export interface StubbedRows {
+  get(id: number): void | string | mixed;
+}
 
 export function attachStubbedRows(
   weakResponse: WeakResponse,
@@ -468,6 +467,18 @@ export function attachStubbedRows(
 ): void {
   if (enableFlightHTMLFirst) {
     unwrapWeakResponse(weakResponse)._stubbedRows = rows;
+  }
+}
+
+// enableFlightHTMLFirst: the stubbed elements of the render a tee reads.
+export function setStubbedRowsEntry(
+  weakResponse: WeakResponse,
+  entry: StubbedRowsEntry,
+): void {
+  if (enableFlightHTMLFirst) {
+    const response = unwrapWeakResponse(weakResponse);
+    response._stubbedRows = entry.rows;
+    response._stubbedEntry = entry;
   }
 }
 
@@ -3093,17 +3104,33 @@ function StaticStub(props: {
   // again later (a framework re-rendering a cached payload, e.g. on back
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
-  const [mode] = React.useState(
-    hydrating
-      ? ADOPT
-      : props.saved.node !== null || props.saved.html !== null
-        ? RESTORE
-        : RECOVER,
-  );
+  const [slot, setSlot] = React.useState(() => ({
+    saved: props.saved,
+    mode: hydrating ? ADOPT : modeWithoutHTML(props.saved),
+    generation: 0,
+  }));
+  // React reuses this fiber for a different stub when unkeyed siblings swap
+  // places (tabs that render one of their children). Start over for that
+  // stub, on a new node (the key), so the old node keeps its own content.
+  let current = slot;
+  if (current.saved !== props.saved) {
+    current = {
+      saved: props.saved,
+      mode: modeWithoutHTML(props.saved),
+      generation: slot.generation + 1,
+    };
+    setSlot(current);
+  }
+  const mode = current.mode;
   // React restores `display` from the style prop when it shows a hidden
   // Activity again. The stub has no props of its own, so it uses the inline
   // display the server rendered, recorded when the node was adopted.
-  const [display, setDisplay] = React.useState(props.saved.display);
+  const [savedDisplay, setDisplay] = React.useState(props.saved.display);
+  let display = savedDisplay;
+  if (current !== slot) {
+    display = props.saved.display;
+    setDisplay(display);
+  }
   React.useLayoutEffect(() => {
     if (display !== props.saved.display) {
       setDisplay(props.saved.display);
@@ -3119,6 +3146,7 @@ function StaticStub(props: {
     React.use(props.recover());
   }
   return React.createElement(props.tag, {
+    key: current.generation,
     suppressHydrationWarning: true,
     dangerouslySetInnerHTML: EMPTY_HTML,
     style: display === null ? undefined : {display},
@@ -3129,6 +3157,10 @@ function StaticStub(props: {
 // Lets the renderer keep a stub (and its DOM) when the full payload has the
 // same content in its place.
 StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
+
+function modeWithoutHTML(saved: StubbedNodeHolder): number {
+  return saved.node !== null || saved.html !== null ? RESTORE : RECOVER;
+}
 
 const ADOPT = 0;
 const RESTORE = 1;
@@ -3178,6 +3210,19 @@ function rememberStubbedNode(
   }
 }
 
+// React never renders inline event handlers, so one on the old node was added
+// by something else after hydration and must not be carried over.
+function setStubbedAttribute(node: Element, name: string, value: string) {
+  if (
+    name.length > 2 &&
+    (name[0] === 'o' || name[0] === 'O') &&
+    (name[1] === 'n' || name[1] === 'N')
+  ) {
+    return;
+  }
+  node.setAttribute(name, value);
+}
+
 // Copies the attributes and content of the node this stub had before onto
 // the element React just created for it. The content is moved, or copied if
 // the old node is still in the document.
@@ -3199,7 +3244,7 @@ function restoreStubbedNode(
     const attributes = saved.attributes;
     if (attributes !== null) {
       for (let i = 0; i < attributes.length; i += 2) {
-        node.setAttribute(attributes[i], attributes[i + 1]);
+        setStubbedAttribute(node, attributes[i], attributes[i + 1]);
       }
     }
     if (saved.html !== null) {
@@ -3210,7 +3255,7 @@ function restoreStubbedNode(
   }
   const attributes = from.attributes;
   for (let i = 0; i < attributes.length; i++) {
-    node.setAttribute(attributes[i].name, attributes[i].value);
+    setStubbedAttribute(node, attributes[i].name, attributes[i].value);
   }
   restoreStubbedDisplay(saved, node);
   if (from.isConnected) {
@@ -3307,10 +3352,11 @@ function endStubbedRows(response: Response): void {
   if (end !== null) {
     end.resolve();
   }
-  // The consumer that claimed the rows is not going to render more of them.
+  // Everything but the late rows was emitted. Once the renderer has rendered
+  // what that resolved, the reader is not going to render more of the rows.
   const entry = response._stubbedEntry;
   if (entry !== null) {
-    settleStubbedRows(entry);
+    scheduleStubbedSettle(entry);
   }
 }
 
@@ -3378,14 +3424,35 @@ function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
 // of the initial payload again for its client cache). The stubs of every
 // decode share the node that hydration adopted, keyed by the payload's `:Q` id
 // and the row id. The map holds them weakly, so a node lives only as long as
-// some decoded payload still references its stub.
+// some decoded payload still references its stub. The key is dropped once its
+// holder is collected, so the map does not grow with every payload.
 const stubbedNodeHolders: Map<string, any> = new Map();
+
+function dropStubbedNodeHolder(key: string): void {
+  const ref = stubbedNodeHolders.get(key);
+  if (ref !== undefined && ref.deref() === undefined) {
+    stubbedNodeHolders.delete(key);
+  }
+}
+
+const stubbedNodeHolderCleanup: null | FinalizationRegistry<string> =
+  // $FlowFixMe[cannot-resolve-name]
+  typeof FinalizationRegistry === 'function'
+    ? // $FlowFixMe[cannot-resolve-name]
+      new FinalizationRegistry(dropStubbedNodeHolder)
+    : null;
 
 function getStubbedNodeHolder(
   requestId: number,
   id: number,
 ): StubbedNodeHolder {
-  if (requestId === 0 || typeof WeakRef !== 'function') {
+  // Only a document adopts nodes; a server would only accumulate keys.
+  if (
+    requestId === 0 ||
+    !canUseDOM ||
+    typeof WeakRef !== 'function' ||
+    stubbedNodeHolderCleanup === null
+  ) {
     return {node: null, display: null, attributes: null, html: null};
   }
   const key = requestId + ':' + id;
@@ -3395,6 +3462,7 @@ function getStubbedNodeHolder(
     holder = {node: null, display: null, attributes: null, html: null};
     // $FlowFixMe[cannot-resolve-name]
     stubbedNodeHolders.set(key, new WeakRef(holder));
+    stubbedNodeHolderCleanup.register(holder, key);
   }
   return holder;
 }
@@ -3475,10 +3543,12 @@ function parseModelString(
             }
           }
           const stubKey = keyColon === -1 ? null : value.slice(keyColon + 1);
-          if (response._chunks.has(id)) {
-            // The server gave us the row (SSR, or a late row that is already
-            // here): render the real element.
-            const entry = response._stubbedEntry;
+          const entry = response._stubbedEntry;
+          if (response._chunks.has(id) && (rows !== null || entry !== null)) {
+            // The consumer that renders HTML has the row: render the real
+            // element. The browser keeps a stub even when the row arrived
+            // late, so one slot never holds a stub and a real element for
+            // different rows (tabs swapping unkeyed children).
             return getOutlinedModel(
               response,
               ref,
@@ -6125,30 +6195,10 @@ function processFullStringRow(
       return;
     }
     case 81 /* "Q" */: {
-      // enableFlightHTMLFirst: in-process registry id for stubbed rows.
+      // enableFlightHTMLFirst: the id of the payload, see
+      // getStubbedNodeHolder.
       if (enableFlightHTMLFirst) {
-        const requestId = parseInt(row, 16);
-        response._stubbedRequestId = requestId;
-        if (response._stubbedRows !== null) {
-          // Framework already supplied htmlFirstRows; drop the unused registry.
-          releaseStubbedRowsRegistry(requestId);
-        } else {
-          const entry = claimStubbedRowsRegistry(requestId);
-          if (entry !== undefined) {
-            response._stubbedRows = entry.rows as any;
-            response._stubbedEntry = entry;
-          }
-        }
-      }
-      return;
-    }
-    case 113 /* "q" */: {
-      // enableFlightHTMLFirst: everything but the late rows was written.
-      if (enableFlightHTMLFirst) {
-        const entry = response._stubbedEntry;
-        if (entry !== null) {
-          scheduleStubbedSettle(entry);
-        }
+        response._stubbedRequestId = parseInt(row, 16);
       }
       return;
     }
@@ -6382,7 +6432,6 @@ export function processBinaryChunk(
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
           resolvedRowTag === 35 /* "#" */ ||
-          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {
@@ -6554,7 +6603,6 @@ export function processStringChunk(
           i++;
         } else if (
           (resolvedRowTag > 64 && resolvedRowTag < 91) /* "A"-"Z" */ ||
-          resolvedRowTag === 113 /* "q" */ ||
           resolvedRowTag === 114 /* "r" */ ||
           resolvedRowTag === 120 /* "x" */
         ) {

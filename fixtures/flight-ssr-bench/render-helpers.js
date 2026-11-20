@@ -106,7 +106,15 @@ function renderFlightFizzNode(
   const inject = !opts || opts.inject !== false;
   const React = require('react');
   const {renderToPipeableStream} = require('react-dom/server');
-  const {createFromNodeStream} = require('react-server-dom-webpack/client');
+  const {
+    createFromNodeStream,
+    createTee,
+    createFromTee,
+  } = require('react-server-dom-webpack/client');
+
+  // opts.tee: SSR reads the render through a tee instead of parsing its bytes.
+  // With opts.stub, `htmlFirst: true` hands the stubbed elements to the tee.
+  const tee = opts && opts.tee ? createTee(ssrManifest) : null;
 
   // opts.stub: enableFlightHTMLFirst. The SSR render opts in with
   // `htmlFirst: true` (React's internal registry, no side channel). Pass
@@ -129,13 +137,23 @@ function renderFlightFizzNode(
           })()
         : {htmlFirst: {onRow: (id, json) => stubbedRows.set(id, json)}}
       : opts && opts.stub
-        ? {htmlFirst: true}
-        : {htmlFirst: false}
+        ? {htmlFirst: true, tee: tee || undefined}
+        : {htmlFirst: false, tee: tee || undefined}
   );
 
   let flightStream;
   let flightScripts = '';
-  if (inject) {
+  if (tee !== null) {
+    // SSR reads the tee, so the bytes only go to the inlined scripts.
+    const forInline = new PassThrough();
+    forInline.on('data', function (chunk) {
+      flightScripts +=
+        '<script>(self.__FLIGHT_DATA||=[]).push(' +
+        JSON.stringify(chunk.toString()) +
+        ')</script>';
+    });
+    rscPipe(forInline);
+  } else if (inject) {
     // Tee the Flight stream into SSR + script injection
     const trunk = new PassThrough();
     const forSsr = new PassThrough();
@@ -159,6 +177,9 @@ function renderFlightFizzNode(
 
   let cachedResult;
   function Root() {
+    if (!cachedResult && tee !== null) {
+      cachedResult = createFromTee(tee);
+    }
     if (!cachedResult) {
       cachedResult = createFromNodeStream(
         flightStream,
