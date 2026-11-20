@@ -1356,6 +1356,48 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('panel-B');
   });
 
+  it('restores a server panel that client Tabs unmounted, without a request', async () => {
+    const Tabs = clientExports(function Tabs({children}) {
+      const [tab, setTab] = React.useState('server');
+      return (
+        <section>
+          <button onClick={() => setTab('server')}>server</button>
+          <button onClick={() => setTab('client')}>client</button>
+          {tab === 'server' ? children : <p>client-panel</p>}
+        </section>
+      );
+    });
+    const App = () => (
+      <Tabs>
+        <article className="panel">
+          <h2>server-panel</h2>
+        </article>
+      </Tabs>
+    );
+    const f = await flight(<App />);
+    expect(f.main).toContain('$J');
+    const html = await ssr(f);
+    const missing = jest.fn();
+    const {container, errors} = await hydrate(f.main, html, {
+      onMissingHTML: missing,
+    });
+    const [serverTab, clientTab] = container.querySelectorAll('button');
+    const adopted = container.querySelector('article');
+    for (let i = 0; i < 3; i++) {
+      await act(() => clientTab.click());
+      expect(container.querySelector('article')).toBe(null);
+      expect(container.textContent).toContain('client-panel');
+      await act(() => serverTab.click());
+      const article = container.querySelector('article');
+      expect(article).not.toBe(adopted);
+      expect(article.outerHTML).toBe(
+        '<article class="panel"><h2>server-panel</h2></article>',
+      );
+    }
+    expect(missing).not.toHaveBeenCalled();
+    expect(errors).toEqual([]);
+  });
+
   it('keeps keyed host elements in client props so a reorder is reflected', async () => {
     const Sortable = clientExports(function Sortable({items}) {
       const [rev, setRev] = React.useState(false);
@@ -1557,6 +1599,90 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         onMissingHTML: missing,
       });
       expect(container.innerHTML).toBe('<div><p>client-only-content</p></div>');
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
+    it('sends the row of a tab panel SSR did not render, so every tab opens without a round trip', async () => {
+      const Tabs = clientExports(function Tabs({children}) {
+        const [tab, setTab] = React.useState(0);
+        return (
+          <section>
+            <button onClick={() => setTab(0)}>a</button>
+            <button onClick={() => setTab(1)}>b</button>
+            {children[tab]}
+          </section>
+        );
+      });
+      const App = () => (
+        <Tabs>
+          <article key="a">{'panel-A '.repeat(10)}</article>
+          <article key="b">{'panel-B '.repeat(10)}</article>
+        </Tabs>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).toContain('panel-A');
+      expect(html).not.toContain('panel-B');
+      // Panel A is adopted from the HTML; panel B's row was written late.
+      expect(main).not.toContain('panel-A');
+      expect(main).toContain('panel-B');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML: missing,
+      });
+      const [tabA, tabB] = container.querySelectorAll('button');
+      for (let i = 0; i < 2; i++) {
+        await act(() => tabB.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-B '.repeat(10),
+        );
+        await act(() => tabA.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-A '.repeat(10),
+        );
+      }
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
+    it('swaps unkeyed tab panels without mixing up their content', async () => {
+      const Tabs = clientExports(function Tabs({children}) {
+        const [tab, setTab] = React.useState(0);
+        return (
+          <section>
+            <button onClick={() => setTab(0)}>a</button>
+            <button onClick={() => setTab(1)}>b</button>
+            {children[tab]}
+          </section>
+        );
+      });
+      const App = () => (
+        <Tabs>
+          <article>{'panel-A '.repeat(10)}</article>
+          <article>{'panel-B '.repeat(10)}</article>
+        </Tabs>
+      );
+      const {main, html} = await flightAndSsr(<App />);
+      expect(html).toContain('panel-A');
+      expect(html).not.toContain('panel-B');
+      // Panel A is adopted from the HTML; panel B's row was written late.
+      expect(main).not.toContain('panel-A');
+      expect(main).toContain('panel-B');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML: missing,
+      });
+      const [tabA, tabB] = container.querySelectorAll('button');
+      for (let i = 0; i < 2; i++) {
+        await act(() => tabB.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-B '.repeat(10),
+        );
+        await act(() => tabA.click());
+        expect(container.querySelector('article').textContent).toBe(
+          'panel-A '.repeat(10),
+        );
+      }
       expect(missing).not.toHaveBeenCalled();
       expect(errors).toEqual([]);
     });

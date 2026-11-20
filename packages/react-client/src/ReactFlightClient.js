@@ -50,6 +50,7 @@ import {
   enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
 import type {StubbedRowsEntry} from 'shared/ReactFlightTee';
+import {canUseDOM} from 'shared/ExecutionEnvironment';
 
 import {
   resolveClientReference,
@@ -3101,17 +3102,33 @@ function StaticStub(props: {
   // again later (a framework re-rendering a cached payload, e.g. on back
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
-  const [mode] = React.useState(
-    hydrating
-      ? ADOPT
-      : props.saved.node !== null || props.saved.html !== null
-        ? RESTORE
-        : RECOVER,
-  );
+  const [slot, setSlot] = React.useState(() => ({
+    saved: props.saved,
+    mode: hydrating ? ADOPT : modeWithoutHTML(props.saved),
+    generation: 0,
+  }));
+  // React reuses this fiber for a different stub when unkeyed siblings swap
+  // places (tabs that render one of their children). Start over for that
+  // stub, on a new node (the key), so the old node keeps its own content.
+  let current = slot;
+  if (current.saved !== props.saved) {
+    current = {
+      saved: props.saved,
+      mode: modeWithoutHTML(props.saved),
+      generation: slot.generation + 1,
+    };
+    setSlot(current);
+  }
+  const mode = current.mode;
   // React restores `display` from the style prop when it shows a hidden
   // Activity again. The stub has no props of its own, so it uses the inline
   // display the server rendered, recorded when the node was adopted.
-  const [display, setDisplay] = React.useState(props.saved.display);
+  const [savedDisplay, setDisplay] = React.useState(props.saved.display);
+  let display = savedDisplay;
+  if (current !== slot) {
+    display = props.saved.display;
+    setDisplay(display);
+  }
   React.useLayoutEffect(() => {
     if (display !== props.saved.display) {
       setDisplay(props.saved.display);
@@ -3127,6 +3144,7 @@ function StaticStub(props: {
     React.use(props.recover());
   }
   return React.createElement(props.tag, {
+    key: current.generation,
     suppressHydrationWarning: true,
     dangerouslySetInnerHTML: EMPTY_HTML,
     style: display === null ? undefined : {display},
@@ -3137,6 +3155,10 @@ function StaticStub(props: {
 // Lets the renderer keep a stub (and its DOM) when the full payload has the
 // same content in its place.
 StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
+
+function modeWithoutHTML(saved: StubbedNodeHolder): number {
+  return saved.node !== null || saved.html !== null ? RESTORE : RECOVER;
+}
 
 const ADOPT = 0;
 const RESTORE = 1;
@@ -3186,6 +3208,19 @@ function rememberStubbedNode(
   }
 }
 
+// React never renders inline event handlers, so one on the old node was added
+// by something else after hydration and must not be carried over.
+function setStubbedAttribute(node: Element, name: string, value: string) {
+  if (
+    name.length > 2 &&
+    (name[0] === 'o' || name[0] === 'O') &&
+    (name[1] === 'n' || name[1] === 'N')
+  ) {
+    return;
+  }
+  node.setAttribute(name, value);
+}
+
 // Copies the attributes and content of the node this stub had before onto
 // the element React just created for it. The content is moved, or copied if
 // the old node is still in the document.
@@ -3207,7 +3242,7 @@ function restoreStubbedNode(
     const attributes = saved.attributes;
     if (attributes !== null) {
       for (let i = 0; i < attributes.length; i += 2) {
-        node.setAttribute(attributes[i], attributes[i + 1]);
+        setStubbedAttribute(node, attributes[i], attributes[i + 1]);
       }
     }
     if (saved.html !== null) {
@@ -3218,7 +3253,7 @@ function restoreStubbedNode(
   }
   const attributes = from.attributes;
   for (let i = 0; i < attributes.length; i++) {
-    node.setAttribute(attributes[i].name, attributes[i].value);
+    setStubbedAttribute(node, attributes[i].name, attributes[i].value);
   }
   restoreStubbedDisplay(saved, node);
   if (from.isConnected) {
@@ -3387,14 +3422,35 @@ function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
 // of the initial payload again for its client cache). The stubs of every
 // decode share the node that hydration adopted, keyed by the payload's `:Q` id
 // and the row id. The map holds them weakly, so a node lives only as long as
-// some decoded payload still references its stub.
+// some decoded payload still references its stub. The key is dropped once its
+// holder is collected, so the map does not grow with every payload.
 const stubbedNodeHolders: Map<string, any> = new Map();
+
+function dropStubbedNodeHolder(key: string): void {
+  const ref = stubbedNodeHolders.get(key);
+  if (ref !== undefined && ref.deref() === undefined) {
+    stubbedNodeHolders.delete(key);
+  }
+}
+
+const stubbedNodeHolderCleanup: null | FinalizationRegistry<string> =
+  // $FlowFixMe[cannot-resolve-name]
+  typeof FinalizationRegistry === 'function'
+    ? // $FlowFixMe[cannot-resolve-name]
+      new FinalizationRegistry(dropStubbedNodeHolder)
+    : null;
 
 function getStubbedNodeHolder(
   requestId: number,
   id: number,
 ): StubbedNodeHolder {
-  if (requestId === 0 || typeof WeakRef !== 'function') {
+  // Only a document adopts nodes; a server would only accumulate keys.
+  if (
+    requestId === 0 ||
+    !canUseDOM ||
+    typeof WeakRef !== 'function' ||
+    stubbedNodeHolderCleanup === null
+  ) {
     return {node: null, display: null, attributes: null, html: null};
   }
   const key = requestId + ':' + id;
@@ -3404,6 +3460,7 @@ function getStubbedNodeHolder(
     holder = {node: null, display: null, attributes: null, html: null};
     // $FlowFixMe[cannot-resolve-name]
     stubbedNodeHolders.set(key, new WeakRef(holder));
+    stubbedNodeHolderCleanup.register(holder, key);
   }
   return holder;
 }
@@ -3484,10 +3541,12 @@ function parseModelString(
             }
           }
           const stubKey = keyColon === -1 ? null : value.slice(keyColon + 1);
-          if (response._chunks.has(id)) {
-            // The server gave us the row (SSR, or a late row that is already
-            // here): render the real element.
-            const entry = response._stubbedEntry;
+          const entry = response._stubbedEntry;
+          if (response._chunks.has(id) && (rows !== null || entry !== null)) {
+            // The consumer that renders HTML has the row: render the real
+            // element. The browser keeps a stub even when the row arrived
+            // late, so one slot never holds a stub and a real element for
+            // different rows (tabs swapping unkeyed children).
             return getOutlinedModel(
               response,
               ref,

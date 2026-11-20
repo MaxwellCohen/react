@@ -31,10 +31,14 @@ export function Root() {
 
 export const interact = [
   {expectText: {selector: '.shown p', text: 'panel-A'}},
+  {expectText: {selector: '.tab.selected', text: 'A'}},
   {click: '.tab', nth: 1},
   {expectText: {selector: '.shown p', text: 'panel-B'}},
+  {expectText: {selector: '.tab.selected', text: 'B'}},
   {click: '.tab', nth: 2},
   {expectText: {selector: '.shown p', text: 'panel-C'}},
+  {expectText: {selector: '.tab.selected', text: 'C'}},
   {click: '.tab', nth: 0},
   {expectText: {selector: '.shown p', text: 'panel-A'}},
+  {expectText: {selector: '.tab.selected', text: 'A'}},
 ];

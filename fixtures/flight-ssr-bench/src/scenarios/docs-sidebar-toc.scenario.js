@@ -5,7 +5,7 @@ export const id = 'docs-sidebar-toc';
 export const title = 'Docs page with sidebar tree and table of contents';
 export const category = 'static';
 export const description =
-  'Large server-rendered sidebar navigation tree, an in-page table of contents and content sections, plus one client button that toggles an attribute on itself.';
+  'Large server-rendered sidebar navigation tree, an in-page table of contents and content sections, plus a client button that unmounts the sidebar and mounts it again.';
 export const expectedBenefit = 'high';
 // size = number of docs sections (each has 4 sidebar links and 1 TOC entry).
 export const sizes = {smoke: 12, full: 400};
@@ -98,8 +98,9 @@ export function Root({size}) {
   return (
     <Document title="Docs">
       <div className="layout">
-        <Collapse />
-        <Sidebar size={size} />
+        <Collapse>
+          <Sidebar size={size} />
+        </Collapse>
         <main>
           <h1>Reference documentation</h1>
           <Toc size={size} />
@@ -111,11 +112,18 @@ export function Root({size}) {
 }
 
 export const interact = [
+  {expectCount: {selector: 'nav.sidebar', count: 1}},
   {click: 'button.collapse-toggle'},
+  {expectText: {selector: 'button.collapse-toggle', text: 'Show sidebar'}},
+  {expectCount: {selector: 'nav.sidebar', count: 0}},
+  {click: 'button.collapse-toggle'},
+  {expectText: {selector: 'button.collapse-toggle', text: 'Hide sidebar'}},
+  {expectCount: {selector: 'nav.sidebar > ul > li', count: 5}},
   {
     expectText: {
-      selector: 'button.collapse-toggle',
-      text: 'Sidebar: collapsed',
+      selector: 'nav.sidebar .group > span',
+      nth: 4,
+      text: 'Operations',
     },
   },
   {expectCount: {selector: 'nav.toc a', count: 'size'}},
