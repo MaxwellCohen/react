@@ -19,7 +19,9 @@ const {
   // (variant `tee`, the `all` build, htmlFirst: false) instead of with `off`.
   if (
     opts.variants.includes('all') &&
-    require('./src/scenarios').select(opts.only).some(s => s.teeReference)
+    require('./src/scenarios')
+      .select(opts.only)
+      .some(s => s.teeReference)
   ) {
     opts.variants.splice(1, 0, 'tee');
     opts.buildDirs.tee = opts.buildDirs.tee || path.join(opts.builds, 'all');

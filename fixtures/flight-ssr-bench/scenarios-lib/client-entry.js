@@ -46,29 +46,29 @@ const flightStream = new ReadableStream({
 
 let root;
 function start() {
-window.__hydrateStart = performance.now();
-performance.mark('hydrate-start');
-root = hydrateRoot(
-  document,
-  <Shell
-    response={createFromReadableStream(flightStream, {
-      // A boundary or the root client-rendered where static HTML was stubbed:
-      // re-render from the full payload, like a navigation to the same URL.
-      onMissingHTML() {
-        const [, v, id] = location.pathname.split('/');
-        window.__stubbedRecoveries = (window.__stubbedRecoveries || 0) + 1;
-        root.render(
-          <Shell response={createFromFetch(fetch('/' + v + '/rsc/' + id))} />
-        );
+  window.__hydrateStart = performance.now();
+  performance.mark('hydrate-start');
+  root = hydrateRoot(
+    document,
+    <Shell
+      response={createFromReadableStream(flightStream, {
+        // A boundary or the root client-rendered where static HTML was stubbed:
+        // re-render from the full payload, like a navigation to the same URL.
+        onMissingHTML() {
+          const [, v, id] = location.pathname.split('/');
+          window.__stubbedRecoveries = (window.__stubbedRecoveries || 0) + 1;
+          root.render(
+            <Shell response={createFromFetch(fetch('/' + v + '/rsc/' + id))} />
+          );
+        },
+      })}
+    />,
+    {
+      onRecoverableError(e) {
+        (window.__recoverable ||= []).push(String(e && e.message));
       },
-    })}
-  />,
-  {
-    onRecoverableError(e) {
-      (window.__recoverable ||= []).push(String(e && e.message));
-    },
-  }
-);
+    }
+  );
 }
 // scenarios-hydration.js: hydrate after the first paint, so that paint is not in the measured window.
 if (window.__SCN_AFTER_PAINT)
