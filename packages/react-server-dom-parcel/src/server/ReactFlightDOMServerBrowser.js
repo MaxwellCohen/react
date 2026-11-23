@@ -9,6 +9,7 @@
 
 import type {
   Request,
+  HTMLFirstOption,
   ReactClientValue,
 } from 'react-server/src/ReactFlightServer';
 import type {ReactFormState, Thenable} from 'shared/ReactTypes';
@@ -62,14 +63,10 @@ export {createTemporaryReferenceSet} from 'react-server/src/ReactFlightServerTem
 export type {TemporaryReferenceSet};
 
 type Options = {
-  // enableFlightHTMLFirst: `true` stubs static hosts for the `tee` that reads
-  // this render for SSR; {onRow, onValue} receive the rows instead.
-  htmlFirst?:
-    | boolean
-    | {
-        onRow?: (id: number, json: string) => void,
-        onValue?: (id: number, value: mixed) => void,
-      },
+  // enableFlightHTMLFirst: a thenable that settles when the HTML render that
+  // reads the `tee` is done. Static host elements are stubbed in the bytes for
+  // that reader. {onValue} takes the stubbed elements instead.
+  htmlFirst?: HTMLFirstOption,
   debugChannel?: {readable?: ReadableStream, writable?: WritableStream, ...},
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,

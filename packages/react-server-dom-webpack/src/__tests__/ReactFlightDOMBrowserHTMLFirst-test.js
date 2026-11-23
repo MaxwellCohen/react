@@ -162,10 +162,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
   async function renderWithTeeInner(model, options, Root = Shell) {
     const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+    // Settles when the HTML render is done, as a framework does.
+    let htmlDone;
+    const htmlFirst = new Promise((resolve, reject) => {
+      htmlDone = {resolve, reject};
+    });
     const stream = ReactServerDOMServer.renderToReadableStream(
       model,
       webpackMap,
-      {htmlFirst: true, tee, ...options},
+      {htmlFirst, tee, ...options},
     );
     const browser = readAll(stream);
     let response = null;
@@ -180,6 +185,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     );
     // Suspense boundaries complete in place, without inline scripts.
     await htmlStream.allReady;
+    htmlDone.resolve();
     const html = await readAll(htmlStream);
     return {main: await browser, html};
   }

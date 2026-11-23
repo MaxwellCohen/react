@@ -20,7 +20,6 @@ import type {ReactServerValue} from 'react-client/src/ReactFlightReplyClient';
 
 import {
   createResponse,
-  attachStubbedRows,
   attachMissingHTML,
   createStreamState,
   getRoot,
@@ -47,8 +46,6 @@ export type {TemporaryReferenceSet};
 type CallServerCallback = <A, T>(string, args: A) => Promise<T>;
 
 export type Options = {
-  // enableFlightHTMLFirst: rows withheld by the server.
-  htmlFirstRows?: {get(id: number): void | string, ...},
   onMissingHTML?: () => void,
   moduleBaseURL?: string,
   callServer?: CallServerCallback,
@@ -122,9 +119,6 @@ function createResponseFromOptions(options: void | Options) {
     debugChannel,
     __DEV__ && options ? options.unstable_requestId : undefined,
   );
-  if (options && options.htmlFirstRows) {
-    attachStubbedRows(response, options.htmlFirstRows);
-  }
   if (options && options.onMissingHTML) {
     attachMissingHTML(response, options.onMissingHTML);
   }
