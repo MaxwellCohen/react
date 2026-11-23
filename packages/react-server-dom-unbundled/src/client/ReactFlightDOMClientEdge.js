@@ -83,6 +83,7 @@ export type Options = {
   findSourceMapURL?: FindSourceMapURLCallback,
   replayConsoleLogs?: boolean,
   environmentName?: string,
+  unstable_requestId?: string,
   startTime?: number,
   endTime?: number,
   // For the Edge client we only support a single-direction debug channel.
@@ -123,6 +124,7 @@ function createResponseFromOptions(options: Options) {
       : undefined,
     __DEV__ && options && options.endTime != null ? options.endTime : undefined,
     debugChannel,
+    __DEV__ && options ? options.unstable_requestId : undefined,
   );
   if (options && options.htmlFirstRows) {
     attachStubbedRows(response, options.htmlFirstRows);
