@@ -6,10 +6,9 @@ const {fork} = require('child_process');
 
 const FIXTURE = path.resolve(__dirname, '..');
 const VARIANTS_DIR = path.join(FIXTURE, '.variants');
-// off: no opt-in. registry: `htmlFirst: true` against a registry-era build
-// (stubbed rows claimed by the in-process createFrom*). tee: `htmlFirst: true`
-// plus createTee/createFromTee. `all` is the old name of `registry`.
-const ALL_VARIANTS = ['off', 'all', 'registry', 'tee'];
+// off: no opt-in. all: SSR reads a createTee/createFromTee tee and the render
+// gets `htmlFirst: <thenable>` that settles when the HTML render is done.
+const ALL_VARIANTS = ['off', 'all'];
 const PKGS = ['react', 'react-dom', 'react-server-dom-webpack', 'scheduler'];
 const BROWSERS = ['chromium', 'firefox', 'webkit'];
 
@@ -19,7 +18,7 @@ function parseArgs(argv, defaults) {
       only: [],
       size: 'smoke',
       builds: process.env.SCENARIO_BUILDS || '',
-      variants: ['off', 'tee'],
+      variants: ['off', 'all'],
       buildDirs: {},
       browser: 'chromium',
     },

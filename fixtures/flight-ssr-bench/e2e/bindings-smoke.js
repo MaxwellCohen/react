@@ -1,8 +1,8 @@
 'use strict';
 
 // Smoke test for every server binding x entry (webpack, turbopack, parcel,
-// unbundled, esm; node, browser, edge): stubbed rows as JSON and as live values,
-// zero-opt-in (no callbacks → internal registry), and explicit off
+// unbundled, esm; node, browser, edge): stubbed rows handed to
+// `htmlFirst: {onValue}`, `htmlFirst: true` (does nothing now) and explicit off
 // (htmlFirst: false). Needs a build with the flags on (see the fixture
 // README) that also contains react and react-dom in build/node_modules.
 //   node e2e/bindings-smoke.js            (runs every combination)
@@ -105,24 +105,13 @@ let failed = false;
         return done;
       };
       try {
-        const rowsJ = new Map(),
-          rowsL = new Map();
-        const mJ = await render({
-          htmlFirst: {onRow: (id, j) => rowsJ.set(id, j)},
-        });
+        const rowsL = new Map();
         const mL = await render({
           htmlFirst: {onValue: (id, v) => rowsL.set(id, v)},
         });
-        const mAuto = await render({});
+        const mAuto = await render({htmlFirst: true});
         const mOff = await render({htmlFirst: false});
         const ok = [
-          [
-            'json rows',
-            rowsJ.size >= 1 &&
-              mJ.includes('$J') &&
-              !mJ.includes(BIG) &&
-              [...rowsJ.values()].join().includes(BIG),
-          ],
           [
             'live rows',
             rowsL.size >= 1 &&
@@ -131,10 +120,8 @@ let failed = false;
               [...rowsL.values()].every(v => typeof v === 'object'),
           ],
           [
-            'zero opt-in',
-            mAuto.includes('$J') &&
-              mAuto.includes(':P') &&
-              !mAuto.includes(BIG),
+            'htmlFirst: true is a no-op',
+            !mAuto.includes('$J') && mAuto.includes(BIG),
           ],
           ['explicit off', !mOff.includes('$J') && mOff.includes(BIG)],
         ];

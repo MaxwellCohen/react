@@ -141,10 +141,8 @@ async function render({id, size, recoverErrors}) {
       clientManifest,
       ssrManifest,
       {
-        // The SSR render opts in with htmlFirst: true; React's internal
-        // registry feeds SSR. No framework side channel.
+        // Tee + htmlFirst thenable (settled by Fizz, see render-helpers).
         stub: optIn,
-        tee: VARIANT === 'tee',
         recoverErrors: !!recoverErrors,
       }
     )

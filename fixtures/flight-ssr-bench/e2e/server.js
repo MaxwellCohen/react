@@ -31,13 +31,12 @@ async function start(port) {
   const pages = {
     // Client-component rows, nothing stubbed (flag-off behavior).
     baseline: b.PageAppBaseline,
-    // Client-component rows, CSS/JSON-LD stubbed, live hand-off.
+    // Client-component rows, CSS/JSON-LD stubbed.
     'client-rows': b.PageAppBaseline,
     // Server-component rows, nothing stubbed.
     'server-rows-baseline': b.PageAppHtmlFirst,
-    // Server-component rows, stubbed (JSON rows / live rows).
+    // Server-component rows, stubbed.
     'html-first': b.PageAppHtmlFirst,
-    'html-first-json': b.PageAppHtmlFirst,
   };
   const clientJs = fs.readFileSync(path.join(__dirname, 'build/client.js'));
   const server = http.createServer(async (req, res) => {
@@ -50,7 +49,6 @@ async function start(port) {
         return res.end(clientJs);
       }
       if (kind === 'rsc' && pages[name]) {
-        // (html-first-json shares the page; only the SSR hand-off differs.)
         // Navigation response: full Flight. It does not opt in to stubbing
         // (htmlFirst: false states that explicitly).
         res.writeHead(200, {'Content-Type': 'text/x-component'});
@@ -70,9 +68,6 @@ async function start(port) {
             ssrManifest,
             {
               stub: kind !== 'baseline' && kind !== 'server-rows-baseline',
-              // html-first / client-rows: zero opt-in (internal registry).
-              // html-first-json: explicit JSON side channel (legacy API demo).
-              sideChannel: kind === 'html-first-json',
             }
           )
         );

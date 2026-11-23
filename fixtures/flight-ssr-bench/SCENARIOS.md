@@ -72,7 +72,7 @@ Client component: `'use client'; import {useState} from 'react'; export default 
 (a) hydrated and post-interaction DOM equal the flags-off DOM; (b) no console error/warning (browser and server render), no recoverable
 hydration error, no page error; (c) `interact` passes on the adopted DOM and again after navigation; (d) a client navigation that swaps in the full,
 non-stubbed Flight payload (no opt-in) yields the same DOM as the hydrated page.
-Flag-on SSR opts in with `htmlFirst: true` (React's internal registry; no `htmlFirstRows` side channel).
+Flag-on SSR creates a tee and passes `{htmlFirst: <thenable>, tee}`; the thenable resolves after Fizz `allReady` and rejects on a Fizz error or abort (see `render-helpers.js`).
 
 ## knownFailure (only for real React bugs)
 
