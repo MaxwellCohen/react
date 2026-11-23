@@ -3064,7 +3064,7 @@ function endStubbedRows(response: Response): void {
   }
 }
 
-// The row of an stubbed element, if the server sent it after all. This never
+// The row of a stubbed element, if the server sent it after all. This never
 // creates a chunk: nothing else refers to the id, so one only exists once its
 // row arrived.
 function getLateStubbedRow(response: Response, id: number): null | React$Node {
@@ -3283,7 +3283,7 @@ function parseModelString(
         // support. Never parse the id as a lazy reference to an unrelated row.
         // eslint-disable-next-line react-internal/prod-error-codes
         throw new Error(
-          'Received an stubbed host element but enableFlightHTMLFirst is ' +
+          'Received a stubbed host element but enableFlightHTMLFirst is ' +
             'off in this client. The server and client builds must match.',
         );
       }

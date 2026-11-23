@@ -2633,7 +2633,7 @@ function renderAsyncFragment(
   return serializeAsyncIterable(request, task, children, asyncIterator);
 }
 
-// Host stubbing (see tryStubHostElement): > 0 while serializing an stubbed row.
+// Host stubbing (see tryStubHostElement): > 0 while serializing a stubbed row.
 let stubbingDepth = 0;
 
 // Host stubbing is only safe for a static host element that React renders in
@@ -2642,7 +2642,7 @@ let stubbingDepth = 0;
 // (composition slots / layout providers). True while resolving such a
 // position. Cleared for every non-`children` prop (e.g. Suspense `fallback`,
 // a Tabs `panels` prop) and for non-composition wrappers (Activity, ...).
-// When a client later mounts an stubbed child without server DOM (modal,
+// When a client later mounts a stubbed child without server DOM (modal,
 // ClientOnly), StaticStub recovers via onMissingHTML.
 let hostPosition = true;
 // The props object of the element tuple that is being resolved, and whether its
@@ -4252,7 +4252,7 @@ let modelRoot: null | ReactClientValue = false;
 // content, while the main stream, which it can inline for the browser as is,
 // does not. A client without the row renders StaticStub and adopts the DOM
 // (see ReactFlightClient's "$J" handling).
-// While > 0 we are serializing an stubbed subtree, so nested hosts are inlined
+// While > 0 we are serializing a stubbed subtree, so nested hosts are inlined
 // in that same row instead of being stubbed again.
 
 // Tags that are not rendered in place by Fizz (hoistables / document-level),
@@ -4289,7 +4289,7 @@ const nonStubbableTags = new Set([
 ]);
 
 // Void elements can't take the stub's dangerouslySetInnerHTML, and a stub
-// would be no smaller than they are. They are still static inside an stubbed
+// would be no smaller than they are. They are still static inside a stubbed
 // parent; they are just never stubbed on their own.
 const voidTags = new Set([
   'area',
@@ -5180,7 +5180,7 @@ function renderModelDestructive(
       value.length >= 1024 &&
       // $FlowFixMe[invalid-compare]
       byteLengthOfChunk !== null &&
-      // An stubbed row is one self-contained JSON string
+      // A stubbed row is one self-contained JSON string
       // for the side channel. Its big strings stay inline in that string so
       // nothing it contains reaches the main stream.
       !(stubbingDepth > 0)
