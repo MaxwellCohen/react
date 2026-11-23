@@ -1,8 +1,7 @@
 'use strict';
 
-// Interleaved in-process timing (median ms/render) of baseline, tee only,
-// HTML-first without a tee (live side channel, like the old registry) and
-// HTML-first over the tee.
+// Interleaved in-process timing (median ms/render) of baseline, tee only and
+// HTML-first over the tee (tee + `htmlFirst` thenable).
 // Usage: NODE_ENV=production node bench-tee.js [--rows=1000] [--n=60]
 
 require('@babel/register')({
@@ -24,7 +23,6 @@ const N = +arg('n', 60);
 const modes = {
   baseline: {},
   'tee only': {tee: true},
-  'html-first, no tee': {stub: true, sideChannel: true, live: true},
   'html-first + tee': {stub: true, tee: true},
 };
 

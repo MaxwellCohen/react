@@ -27,7 +27,7 @@ webpack(require('./webpack.config'), async err => {
   if (err) throw err;
   const b = require('./build/rsc-bundle.js');
   const FizzSame = require('./src/FizzSame.js').default;
-  const flight = (C, stub, live) => () =>
+  const flight = (C, stub) => () =>
     nodeStreamToString(
       renderFlightFizzNode(
         b.renderRSCNode,
@@ -35,7 +35,7 @@ webpack(require('./webpack.config'), async err => {
         ROWS,
         clientManifest,
         ssrManifest,
-        {stub, live}
+        {stub}
       )
     );
   const PageFizz = require('./src/PageApp.js').makePage(true);
@@ -43,18 +43,14 @@ webpack(require('./webpack.config'), async err => {
     'PageApp fizz (no RSC) floor': () =>
       nodeStreamToString(renderFizzNode(PageFizz, ROWS)),
     'PageApp client rows, flight': flight(b.PageAppBaseline, false),
-    'PageApp client rows, stub LIVE': flight(b.PageAppBaseline, true, true),
     'PageApp server rows, flight': flight(b.PageAppHtmlFirst, false),
     'PageApp server rows, stub': flight(b.PageAppHtmlFirst, true),
-    'PageApp server rows, stub LIVE': flight(b.PageAppHtmlFirst, true, true),
     'fizz same markup (no RSC)': () =>
       nodeStreamToString(renderFizzNode(FizzSame, ROWS)),
     'lean rows': flight(b.TableServerLean, false),
     'lean rows, stub': flight(b.TableServerLean, true),
     'server rows, stub': flight(b.TableServerStatic, true),
     'server tbody, stub': flight(b.TableServerStaticBody, true),
-    'server rows LIVE': flight(b.TableServerStatic, true, true),
-    'server tbody LIVE': flight(b.TableServerStaticBody, true, true),
   };
   const names = Object.keys(variants);
   const times = Object.fromEntries(names.map(n => [n, []]));

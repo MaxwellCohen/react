@@ -51,6 +51,10 @@ const fmtPct = p => (p > 0 ? '+' : '') + p.toFixed(1) + '%';
               (n, x) => n + Buffer.byteLength(x),
               0
             ),
+            // stub strings ("$J<id>:<tag>") in the inlined Flight
+            stubs: (r.html.match(FLIGHT_RE) || [])
+              .join('')
+              .split(/\$J[0-9a-f]+:/).length - 1,
           };
         }
       };

@@ -13,8 +13,19 @@ window.__webpack_chunk_load__ = () => Promise.resolve();
 function Shell({response}) {
   const tree = use(response);
   useEffect(() => {
-    if (window.__hydratedAt === undefined)
+    if (window.__hydratedAt === undefined) {
       window.__hydratedAt = performance.now();
+      // End of the hydration cost window (scenarios-hydration.js): this passive
+      // effect runs after all child effects, and the post-hydration re-render of
+      // stubs (useSyncExternalStore snapshot switch) is flushed with it; two
+      // macrotask turns later nothing React scheduled by then is pending.
+      setTimeout(() => {
+        setTimeout(() => {
+          window.__hydrateEnd = performance.now();
+          performance.mark('hydrate-end');
+        }, 0);
+      }, 0);
+    }
   }, []);
   return tree;
 }
@@ -33,7 +44,11 @@ const flightStream = new ReadableStream({
   },
 });
 
-const root = hydrateRoot(
+let root;
+function start() {
+window.__hydrateStart = performance.now();
+performance.mark('hydrate-start');
+root = hydrateRoot(
   document,
   <Shell
     response={createFromReadableStream(flightStream, {
@@ -54,6 +69,11 @@ const root = hydrateRoot(
     },
   }
 );
+}
+// scenarios-hydration.js: hydrate after the first paint, so that paint is not in the measured window.
+if (window.__SCN_AFTER_PAINT)
+  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(start)));
+else start();
 window.__navigate = url =>
   new Promise(resolve => {
     startTransition(() => {

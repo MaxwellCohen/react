@@ -31,7 +31,6 @@ type ServerConsumerManifest = {
 
 import {
   createResponse,
-  attachStubbedRows,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -73,8 +72,6 @@ type EncodeFormActionCallback = <A>(
 ) => ReactCustomFormAction;
 
 export type Options = {
-  // enableFlightHTMLFirst: rows withheld by the server.
-  htmlFirstRows?: {get(id: number): void | string, ...},
   serverConsumerManifest: ServerConsumerManifest,
   nonce?: string,
   encodeFormAction?: EncodeFormActionCallback,
@@ -99,7 +96,7 @@ function createResponseFromOptions(options: Options) {
         }
       : undefined;
 
-  const response = createResponse(
+  return createResponse(
     options.serverConsumerManifest.moduleMap,
     options.serverConsumerManifest.serverModuleMap,
     options.serverConsumerManifest.moduleLoading,
@@ -126,10 +123,6 @@ function createResponseFromOptions(options: Options) {
     debugChannel,
     __DEV__ && options ? options.unstable_requestId : undefined,
   );
-  if (options && options.htmlFirstRows) {
-    attachStubbedRows(response, options.htmlFirstRows);
-  }
-  return response;
 }
 
 function startReadingFromStream(

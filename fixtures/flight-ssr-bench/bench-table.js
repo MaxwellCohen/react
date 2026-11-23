@@ -105,8 +105,7 @@ async function main() {
         ssrManifest,
         {stub: true}
       ).pipe(res),
-    // enableFlightHTMLFirst variants: plain flight vs stubbed (zero opt-in /
-    // optional sideChannel).
+    // enableFlightHTMLFirst variants: plain flight vs stubbed (tee + thenable).
     ...Object.fromEntries(
       Object.entries({
         'f-style': PageStyle,
@@ -146,10 +145,9 @@ async function main() {
     ...Object.fromEntries(
       [
         ['n-page-client-rows', PageAppBaseline, undefined],
-        ['n-page-client-rows-live', PageAppBaseline, {stub: true, live: true}],
+        ['n-page-client-rows-stubbed', PageAppBaseline, {stub: true}],
         ['o-page-server-rows', PageAppHtmlFirst, undefined],
-        ['o-page-server-rows-json', PageAppHtmlFirst, {stub: true}],
-        ['o-page-server-rows-live', PageAppHtmlFirst, {stub: true, live: true}],
+        ['o-page-server-rows-stubbed', PageAppHtmlFirst, {stub: true}],
       ].map(([k, C, opts]) => [
         k,
         res =>

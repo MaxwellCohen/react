@@ -156,14 +156,6 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // enableFlightHTMLFirst: `true` stubs static hosts for the `tee` that reads
-  // this render for SSR; {onRow, onValue} receive the rows instead.
-  htmlFirst?:
-    | boolean
-    | {
-        onRow?: (id: number, json: string) => void,
-        onValue?: (id: number, value: mixed) => void,
-      },
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -211,7 +203,6 @@ export function renderToPipeableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
-    options ? options.htmlFirst : undefined,
   );
   let hasStartedFlowing = false;
   startWork(request);
