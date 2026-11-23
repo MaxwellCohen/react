@@ -3360,7 +3360,7 @@ function endStubbedRows(response: Response): void {
   }
 }
 
-// The row of an stubbed element, if the server sent it after all. This never
+// The row of a stubbed element, if the server sent it after all. This never
 // creates a chunk: nothing else refers to the id, so one only exists once its
 // row arrived.
 function getLateStubbedRow(response: Response, id: number): null | React$Node {
@@ -3371,8 +3371,8 @@ function getLateStubbedRow(response: Response, id: number): null | React$Node {
   return createLazyChunkWrapper(chunk, 0) as any;
 }
 
-// Rendered in place of the stub by the consumer that claimed the rows (the one
-// that renders HTML), in the slot StaticStub takes in the browser. It is a lazy
+// Rendered in place of the stub by the tee's reader (the one that renders
+// HTML), in the slot StaticStub takes in the browser. It is a lazy
 // node: Fizz resolves it only when it renders that position, which records
 // that the HTML contains this row. The server sends the rows that were never
 // rendered to the browser once this consumer settles. A lazy node costs far
@@ -3391,7 +3391,6 @@ function initStubbedRendered(payload: StubbedRenderedPayload): any {
 function createStubbedRenderedElement(
   entry: StubbedRowsEntry,
   id: number,
-  key: null | string,
   response: Response,
   model: any,
 ): any {
@@ -3555,7 +3554,7 @@ function parseModelString(
               parentObject,
               key,
               entry !== null
-                ? createStubbedRenderedElement.bind(null, entry, id, stubKey)
+                ? createStubbedRenderedElement.bind(null, entry, id)
                 : createModel,
             );
           }
@@ -3570,7 +3569,7 @@ function parseModelString(
         // support. Never parse the id as a lazy reference to an unrelated row.
         // eslint-disable-next-line react-internal/prod-error-codes
         throw new Error(
-          'Received an stubbed host element but enableFlightHTMLFirst is ' +
+          'Received a stubbed host element but enableFlightHTMLFirst is ' +
             'off in this client. The server and client builds must match.',
         );
       }
@@ -4251,8 +4250,8 @@ function resolveModel(
       response._stubbedRows !== null &&
       response._stubbedRows.get(id) !== undefined
     ) {
-      // A late row for content this consumer already got from the registry
-      // (it rendered the real element). Nothing to do.
+      // A late row for content this consumer already has from its side
+      // channel (it rendered the real element). Nothing to do.
       return;
     }
     if (__DEV__) {

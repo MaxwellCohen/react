@@ -123,12 +123,11 @@ export const enableDefaultTransitionIndicator = __EXPERIMENTAL__;
 
 export const enableOptimisticKey = __EXPERIMENTAL__;
 
-// Prototype: HTML-first Flight. When on, static host markup that a Server
-// Component renders in host position (including inside Suspense children) is
-// left out of the inlined browser payload and adopted from the SSR HTML on
-// hydration. In-process Flight→SSR claims stubbed rows from an internal
-// registry when the request passes `htmlFirst: true`; out-of-process sinks
-// pass a function instead.
+// HTML-first Flight. When on, static host markup that a Server Component
+// renders in host position (including inside Suspense children) is left out of
+// the payload inlined for the browser and adopted from the SSR HTML on
+// hydration. A render opts in with `htmlFirst: true` and hands the stubbed
+// elements to the tee that reads it for SSR (enableFlightTee).
 export const enableFlightHTMLFirst: boolean = false;
 
 /**
