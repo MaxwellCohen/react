@@ -4936,7 +4936,8 @@ function staticWeight(node: any, budget: number): number {
     } else if (typeof value === 'object' && value !== null) {
       budget -= k.length + 5;
       for (const j in value) {
-        budget -= j.length + 6 + ('' + value[j]).length;
+        const v = value[j];
+        budget -= j.length + 6 + (typeof v === 'string' ? v.length : 4);
       }
     } else {
       budget -= k.length + 8;
