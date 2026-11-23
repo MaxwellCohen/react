@@ -35,8 +35,8 @@ function parseArgs(argv, defaults) {
       // --build <variant>=<dir>: that variant's build, instead of <builds>/<variant>
       const [v, d] = val().split('=');
       o.buildDirs[v] = path.resolve(d);
-    }
-    else if (a === '--variants') o.variants = val().split(',').filter(Boolean);
+    } else if (a === '--variants')
+      o.variants = val().split(',').filter(Boolean);
     else if (a === '--browser') o.browser = val();
     else if (a === '--n') o.n = +val();
     else throw new Error('Unknown argument ' + a);
