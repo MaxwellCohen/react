@@ -44,9 +44,11 @@ const flightStream = new ReadableStream({
   },
 });
 
+let root;
+function start() {
 window.__hydrateStart = performance.now();
 performance.mark('hydrate-start');
-const root = hydrateRoot(
+root = hydrateRoot(
   document,
   <Shell
     response={createFromReadableStream(flightStream, {
@@ -67,6 +69,11 @@ const root = hydrateRoot(
     },
   }
 );
+}
+// scenarios-hydration.js: hydrate after the first paint, so that paint is not in the measured window.
+if (window.__SCN_AFTER_PAINT)
+  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(start)));
+else start();
 window.__navigate = url =>
   new Promise(resolve => {
     startTransition(() => {

@@ -3,6 +3,7 @@
 // Hydration cost: scenario x build variant, real Chromium with CPU throttling.
 // Usage: SCENARIO_BUILDS=<dir> node scenarios-hydration.js [--only a,b] [--size smoke|full] [--builds dir] [--n 15] [--throttle 4]
 // Per load (fresh context, interleaved across variants):
+//   (hydrateRoot is called after the first paint, two rAFs + a task after load, so the paint is outside the window.)
 //   hydrateMs  window.__hydrateStart (just before hydrateRoot) -> window.__hydrateEnd (two macrotask turns
 //              after the Shell passive effect, which flushes the post-hydration re-render of stubs).
 //              The page is already fully parsed, so the window is main-thread bound.
@@ -42,6 +43,9 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
     try {
       const page = await c.newPage();
       const cdp = await c.newCDPSession(page);
+      await page.addInitScript(() => {
+        window.__SCN_AFTER_PAINT = true;
+      });
       await cdp.send('Performance.enable');
       await cdp.send('Emulation.setCPUThrottlingRate', {rate: throttle});
       const events = [];
