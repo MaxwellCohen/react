@@ -1082,6 +1082,55 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('line-two');
   });
 
+  it('never stubs an element whose tag contains a colon', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          {React.createElement('x:y', null, 'namespaced')}
+          <p>plain</p>
+        </main>
+      );
+    }
+    const {main, rows} = await flight(<App />);
+    // The stub is "$J<id>:<tag>[:<key>]", which can't carry this tag.
+    expect(main).not.toMatch(/\$J[0-9a-f]+:x/);
+    expect(main).toContain('x:y');
+    expect(main).toMatch(/\$J[0-9a-f]+:p/);
+    const html = await ssr({main, rows});
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('namespaced');
+  });
+
+  it('adopts a stubbed element that has no inline style', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <math>
+            <mi>x</mi>
+            <mo>+</mo>
+          </math>
+        </main>
+      );
+    }
+    const {main, rows} = await flight(<App />);
+    // <math> is never stubbed, but its children are.
+    expect(main).toMatch(/\$J[0-9a-f]+:mi/);
+    const html = await ssr({main, rows});
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelector('mi').textContent).toBe('x');
+    expect(container.querySelector('mo').textContent).toBe('+');
+  });
+
   it('restores stubbed content from the adopted DOM when it mounts again', async () => {
     function App() {
       return (

@@ -2945,7 +2945,9 @@ function rememberStubbedNode(
   saved.node = node;
   if (saved.display === null) {
     // Adopted while hydrating, so this is the server's inline display.
-    const inline = (node as any).style.display;
+    // Not every element has an inline style (MathML in some environments).
+    const style = (node as any).style;
+    const inline = style == null ? '' : style.display;
     if (typeof inline === 'string' && inline !== '') {
       saved.display = inline;
     }
@@ -3019,6 +3021,9 @@ function restoreStubbedNode(
 // display: none on it. Put back the display the server rendered.
 function restoreStubbedDisplay(saved: StubbedNodeHolder, node: Element): void {
   const style = (node as any).style;
+  if (style == null) {
+    return;
+  }
   if (saved.display !== null) {
     style.setProperty('display', saved.display);
   } else {
@@ -3101,7 +3106,7 @@ function endStubbedRows(response: Response): void {
   }
 }
 
-// The row of an stubbed element, if the server sent it after all. This never
+// The row of a stubbed element, if the server sent it after all. This never
 // creates a chunk: nothing else refers to the id, so one only exists once its
 // row arrived.
 function getLateStubbedRow(response: Response, id: number): null | React$Node {
@@ -3320,7 +3325,7 @@ function parseModelString(
         // support. Never parse the id as a lazy reference to an unrelated row.
         // eslint-disable-next-line react-internal/prod-error-codes
         throw new Error(
-          'Received an stubbed host element but enableFlightHTMLFirst is ' +
+          'Received a stubbed host element but enableFlightHTMLFirst is ' +
             'off in this client. The server and client builds must match.',
         );
       }
