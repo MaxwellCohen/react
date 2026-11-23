@@ -61,9 +61,13 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
         },
       });
       await page.goto(`${base}/${v}/${s.id}/`, {waitUntil: 'load'});
-      await page.waitForFunction(() => window.__hydrateEnd !== undefined, null, {
-        timeout: 60000,
-      });
+      await page.waitForFunction(
+        () => window.__hydrateEnd !== undefined,
+        null,
+        {
+          timeout: 60000,
+        }
+      );
       const t = await page.evaluate(() => ({
         hydrateMs: window.__hydrateEnd - window.__hydrateStart,
         toEffectMs: window.__hydratedAt - window.__hydrateStart,
@@ -72,14 +76,23 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
       await cdp.send('Tracing.end');
       await done;
       const main = events.find(
-        e => e.name === 'thread_name' && e.args && e.args.name === 'CrRendererMain'
+        e =>
+          e.name === 'thread_name' && e.args && e.args.name === 'CrRendererMain'
       );
-      const at = n => events.find(e => e.name === n && e.pid === main.pid && e.tid === main.tid);
+      const at = n =>
+        events.find(
+          e => e.name === n && e.pid === main.pid && e.tid === main.tid
+        );
       const a = at('hydrate-start').ts;
       const b = at('hydrate-end').ts;
       let busy = 0;
       for (const e of events)
-        if (e.name === 'RunTask' && e.ph === 'X' && e.pid === main.pid && e.tid === main.tid) {
+        if (
+          e.name === 'RunTask' &&
+          e.ph === 'X' &&
+          e.pid === main.pid &&
+          e.tid === main.tid
+        ) {
           const lo = Math.max(e.ts, a);
           const hi = Math.min(e.ts + e.dur, b);
           if (hi > lo) busy += hi - lo;
@@ -109,7 +122,10 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
         };
       }
       const acc = Object.fromEntries(
-        ctx.workers.map(w => [w.name, {hydrateMs: [], toEffectMs: [], busyMs: [], scriptMs: [], taskMs: []}])
+        ctx.workers.map(w => [
+          w.name,
+          {hydrateMs: [], toEffectMs: [], busyMs: [], scriptMs: [], taskMs: []},
+        ])
       );
       for (const w of ctx.workers) await load(w.name, s); // warm up
       for (let k = 0; k < N; k++)
@@ -118,7 +134,14 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
           for (const key in t) acc[w.name][key].push(t[key]);
         }
       for (const w of ctx.workers) {
-        const row = {scenario: s.id, size: s.size, variant: w.name, n: N, throttle, ...info[w.name]};
+        const row = {
+          scenario: s.id,
+          size: s.size,
+          variant: w.name,
+          n: N,
+          throttle,
+          ...info[w.name],
+        };
         for (const key in acc[w.name]) {
           const a = acc[w.name][key].slice().sort((x, y) => x - y);
           row[key] = {
@@ -139,7 +162,13 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
     ctx.kill();
   }
   console.log('');
-  const f = x => x.median.toFixed(1) + ' [' + x.p25.toFixed(1) + '-' + x.p75.toFixed(1) + ']';
+  const f = x =>
+    x.median.toFixed(1) +
+    ' [' +
+    x.p25.toFixed(1) +
+    '-' +
+    x.p75.toFixed(1) +
+    ']';
   const md = [
     `size=${opts.size}, N=${N} interleaved loads per cell, CPU throttle ${throttle}x, builds=\`${opts.builds}\`.`,
     'hydrate ms = __hydrateStart -> __hydrateEnd (median [p25-p75]); script ms = CDP ScriptDuration of the whole load.',
@@ -155,9 +184,16 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
   fs.mkdirSync(dir, {recursive: true});
   fs.writeFileSync(
     path.join(dir, 'hydration.json'),
-    JSON.stringify({size: opts.size, n: N, throttle, builds: opts.builds, rows}, null, 2) + '\n'
+    JSON.stringify(
+      {size: opts.size, n: N, throttle, builds: opts.builds, rows},
+      null,
+      2
+    ) + '\n'
   );
-  fs.writeFileSync(path.join(dir, 'RESULTS-HYDRATION.md'), md.join('\n') + '\n');
+  fs.writeFileSync(
+    path.join(dir, 'RESULTS-HYDRATION.md'),
+    md.join('\n') + '\n'
+  );
   console.log(md.join('\n'));
 })().catch(e => {
   console.error(process.env.DEBUG ? e : e.message);
