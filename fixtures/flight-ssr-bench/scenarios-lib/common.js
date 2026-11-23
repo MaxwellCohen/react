@@ -8,7 +8,9 @@ const FIXTURE = path.resolve(__dirname, '..');
 const VARIANTS_DIR = path.join(FIXTURE, '.variants');
 // off: no opt-in. all: SSR reads a createTee/createFromTee tee and the render
 // gets `htmlFirst: <thenable>` that settles when the HTML render is done.
-const ALL_VARIANTS = ['off', 'all'];
+// tee: diagnostic only (not in the default matrix): a createTee/createFromTee read with
+// htmlFirst: false, i.e. a tee without stubbing; pass --build tee=<dir of the all build>.
+const ALL_VARIANTS = ['off', 'all', 'tee'];
 const PKGS = ['react', 'react-dom', 'react-server-dom-webpack', 'scheduler'];
 const BROWSERS = ['chromium', 'firefox', 'webkit'];
 

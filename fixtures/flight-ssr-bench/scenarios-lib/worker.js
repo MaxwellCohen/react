@@ -131,7 +131,7 @@ async function init({files, clientMode}) {
 
 async function render({id, size, recoverErrors}) {
   problems = [];
-  const optIn = VARIANT !== 'off';
+  const optIn = VARIANT === 'all';
   const t = process.hrtime.bigint();
   let html = await nodeStreamToString(
     renderFlightFizzNode(
@@ -143,6 +143,7 @@ async function render({id, size, recoverErrors}) {
       {
         // Tee + htmlFirst thenable (settled by Fizz, see render-helpers).
         stub: optIn,
+        tee: VARIANT === 'tee',
         recoverErrors: !!recoverErrors,
       }
     )

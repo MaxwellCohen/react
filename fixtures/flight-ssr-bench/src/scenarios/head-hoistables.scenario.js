@@ -9,6 +9,13 @@ export const description =
 export const expectedBenefit = 'low';
 // size = number of content sections, each contributing one meta and one style.
 export const sizes = {smoke: 3, full: 50};
+// Fizz receives Flight's `preload as=image` hint rows (one per <link>) only when
+// they are parsed inside the Fizz render (a tee always; the bytes read only when
+// the stream callback happens to carry Fizz's AsyncLocalStorage context, which
+// depends on the payload size: dropped at 3 sections, delivered at 8+). The hints put
+// extra <link rel=preload> at the top of <head>. That is tee vs bytes, not stubbing,
+// so `all` is compared with a tee read without stubbing.
+export const teeReference = true;
 
 export function Root({size}) {
   const sections = Array.from({length: size}, (_, i) => i);

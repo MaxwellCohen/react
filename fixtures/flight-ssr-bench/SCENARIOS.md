@@ -74,6 +74,11 @@ hydration error, no page error; (c) `interact` passes on the adopted DOM and aga
 non-stubbed Flight payload (no opt-in) yields the same DOM as the hydrated page.
 Flag-on SSR creates a tee and passes `{htmlFirst: <thenable>, tee}`; the thenable resolves after Fizz `allReady` and rejects on a Fizz error or abort (see `render-helpers.js`).
 
+## teeReference (only when `all` legitimately differs from `off` for a reason independent of stubbing)
+
+`export const teeReference = true;` makes the check also render variant `tee` (the `all` build, tee read, `htmlFirst: false`, no stubbing)
+and compare `all` with it instead of with `off`. Used by `head-hoistables`: Flight hint rows reach Fizz through a tee always, through the bytes read only sometimes.
+
 ## knownFailure (only for real React bugs)
 
 ```js
