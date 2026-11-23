@@ -80,7 +80,7 @@ type EncodeFormActionCallback = <A>(
 ) => ReactCustomFormAction;
 
 export type Options = {
-  // Prototype (enableFlightHTMLFirst): rows withheld by the server.
+  // enableFlightHTMLFirst: rows withheld by the server.
   htmlFirstRows?: {get(id: number): void | string, ...},
   serverConsumerManifest: ServerConsumerManifest,
   nonce?: string,

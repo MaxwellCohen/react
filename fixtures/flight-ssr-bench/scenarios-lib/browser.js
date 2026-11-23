@@ -10,7 +10,8 @@ const playwright = require('playwright');
 // stays an override for a local Chromium build; FIREFOX_PATH / WEBKIT_PATH do
 // the same for the other two (e.g. an already cached browser of another revision).
 function launchBrowser(name) {
-  const env = name === 'chromium' ? 'CHROME_PATH' : name.toUpperCase() + '_PATH';
+  const env =
+    name === 'chromium' ? 'CHROME_PATH' : name.toUpperCase() + '_PATH';
   return playwright[name].launch({
     executablePath: process.env[env] || undefined,
   });

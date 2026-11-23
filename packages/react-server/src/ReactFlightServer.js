@@ -666,8 +666,8 @@ const PRERENDER = 21;
 // emitTypedArrayChunk for why, and flushCompletedChunks for how it's read.
 const NEXT_TWO_CHUNKS_ARE_ATOMIC: symbol = Symbol();
 
-// enableFlightHTMLFirst: `true` uses the internal registry, an object
-// receives the stubbed rows (JSON) and/or live values instead.
+// enableFlightHTMLFirst: `true` stubs for the tee that reads the render, an
+// object receives the stubbed rows (JSON) and/or live values instead.
 export type HTMLFirstOption =
   | boolean
   | {
@@ -2811,7 +2811,7 @@ function renderAsyncFragment(
   return serializeAsyncIterable(request, task, children, asyncIterator);
 }
 
-// Host stubbing (see tryStubHostElement): > 0 while serializing an stubbed row.
+// Host stubbing (see tryStubHostElement): > 0 while serializing a stubbed row.
 let stubbingDepth = 0;
 
 // Host stubbing is only safe for a static host element that React renders in
@@ -2820,7 +2820,7 @@ let stubbingDepth = 0;
 // (composition slots / layout providers). True while resolving such a
 // position. Cleared for every non-`children` prop (e.g. Suspense `fallback`,
 // a Tabs `panels` prop) and for non-composition wrappers (Activity, ...).
-// When a client later mounts an stubbed child without server DOM (modal,
+// When a client later mounts a stubbed child without server DOM (modal,
 // ClientOnly), StaticStub recovers via onMissingHTML.
 let hostPosition = true;
 // The nesting depth of resolveModel, the depth at which it resolves the props
@@ -4721,19 +4721,21 @@ function serializeImportString(request: Request, value: string): string {
 
 let modelRoot: null | ReactClientValue = false;
 
-// --- Host stubbing (prototype, enableFlightHTMLFirst) ---------------------
+// --- Host stubbing (enableFlightHTMLFirst) --------------------------------
 // Host elements produced by Server Components whose whole subtree is static
 // (host elements, text, and primitive-only props; no client references,
 // Suspense, lazy, Promises or Server Components still to render) are not
-// serialized into the primary payload. We serialize the full element to JSON,
-// hand (id, json) to the request's onRow callback, and replace it with
-// the placeholder "$J<id>:<tag>". The framework gives the rows to the Flight
-// client that feeds SSR (the `htmlFirstRows` client option), so HTML contains the
-// content, while the main stream, which it can inline for the browser as is,
-// does not. A client without the row renders StaticStub and adopts the DOM
-// (see ReactFlightClient's "$J" handling).
-// While > 0 we are serializing an stubbed subtree, so nested hosts are inlined
-// in that same row instead of being stubbed again.
+// serialized into the primary payload. The element goes to the tee's reader,
+// which renders the HTML, and the bytes get the placeholder
+// "$J<id>:<tag>[:<key>]" in its place. So the HTML contains the content, while
+// the main stream, which the framework can inline for the browser as is, does
+// not. A client without the row renders StaticStub and adopts the DOM (see
+// ReactFlightClient's "$J" handling).
+//
+// With `{onRow}` the element is serialized to JSON for a reader in another
+// process instead (the `htmlFirstRows` client option). stubbingDepth is > 0
+// while that row is serialized, so nested hosts are inlined in the same row
+// instead of being stubbed again.
 
 // Tags that are not rendered in place by Fizz (hoistables / document-level),
 // have special hydration or form handling, or switch the format context.
@@ -4769,7 +4771,7 @@ const nonStubbableTags = new Set([
 ]);
 
 // Void elements can't take the stub's dangerouslySetInnerHTML, and a stub
-// would be no smaller than they are. They are still static inside an stubbed
+// would be no smaller than they are. They are still static inside a stubbed
 // parent; they are just never stubbed on their own.
 const voidTags = new Set([
   'area',
@@ -4867,7 +4869,6 @@ function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
   const props = node.props;
   if (nonStubbableTags.has(type)) {
     if (
-      !enableFlightHTMLFirst ||
       (type !== 'style' && type !== 'script') ||
       !isStubbableStyleOrScript(type, props)
     ) {
@@ -4898,6 +4899,8 @@ function tryStubHostElement(
     stubbingDepth > 0 ||
     typeof element.type !== 'string' ||
     voidTags.has(element.type) ||
+    // The stub is "$J<id>:<tag>[:<key>]", so the tag can't contain a colon.
+    element.type.indexOf(':') !== -1 ||
     !isStaticHostNode(cache, element)
   ) {
     return null;
@@ -5655,7 +5658,7 @@ function renderModelDestructive(
       value.length >= 1024 &&
       // $FlowFixMe[invalid-compare]
       byteLengthOfChunk !== null &&
-      // An stubbed row is one self-contained JSON string
+      // A stubbed row is one self-contained JSON string
       // for the side channel. Its big strings stay inline in that string so
       // nothing it contains reaches the main stream.
       !(stubbingDepth > 0)
@@ -6292,17 +6295,16 @@ function emitStubbedRowsRequestIdChunk(
 // enableFlightHTMLFirst, late rows. The consumer that renders HTML only
 // renders part of what was stubbed: the children of a closed modal or of a
 // client-only wrapper never reach the HTML, so a browser that mounts them later
-// has nothing to adopt. Once the claimer has rendered, the rows it did not
+// has nothing to adopt. Once the reader has rendered, the rows it did not
 // render are written to the stream as ordinary rows under the id their stub
 // refers to, and the browser resolves the stub from those.
 //
 // The stream is kept open for that with one pending chunk. When everything
 // else is emitted the tee closes, which tells the reader that it has seen it
 // all, and the reader calls entry.settle() once its renderer had a chance to
-// run. A wrong
-// guess is safe either way: a late row for content that is in the HTML only
-// costs bytes, and a stub without HTML or a late row asks the framework for
-// the full payload as before (onMissingHTML).
+// run. A wrong guess is safe either way: a late row for content that is in
+// the HTML only costs bytes, and a stub without HTML or a late row asks the
+// framework for the full payload as before (onMissingHTML).
 function holdForLateStubbedRows(
   request: Request,
   entry: StubbedRowsEntry,
@@ -6312,8 +6314,8 @@ function holdForLateStubbedRows(
   entry.settle = settleStubbedRows.bind(null, request);
 }
 
-// How long a claimer that never settles (it stopped reading the stream) can
-// keep the stream open after everything else was written.
+// How long a reader that never settles (it stopped rendering) can keep the
+// stream open after everything else was emitted.
 const STUBBED_SETTLE_TIMEOUT = 1000;
 
 function releaseStubbedHold(request: Request): void {
