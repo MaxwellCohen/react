@@ -4838,6 +4838,8 @@ function tryStubHostElement(
     stubbingDepth > 0 ||
     typeof element.type !== 'string' ||
     voidTags.has(element.type) ||
+    // The stub is "$J<id>:<tag>[:<key>]", so the tag can't contain a colon.
+    element.type.indexOf(':') !== -1 ||
     !isStaticHostNode(cache, element)
   ) {
     return null;
