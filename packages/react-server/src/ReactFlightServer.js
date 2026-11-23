@@ -864,13 +864,14 @@ function RequestInstance(
   this.onStubbedValue = null;
   if (
     enableFlightHTMLFirst &&
-    typeof htmlFirst === 'object' &&
-    htmlFirst !== null
+    htmlFirst != null &&
+    typeof htmlFirst === 'object'
   ) {
-    if (typeof htmlFirst.then === 'function') {
-      this.htmlFirstDone = htmlFirst as any;
-    } else if (typeof htmlFirst.onValue === 'function') {
-      this.onStubbedValue = htmlFirst.onValue;
+    const option: any = htmlFirst;
+    if (typeof option.then === 'function') {
+      this.htmlFirstDone = option;
+    } else if (typeof option.onValue === 'function') {
+      this.onStubbedValue = option.onValue;
     }
   }
   this.staticHostCache = enableFlightHTMLFirst ? new WeakMap() : null;
@@ -4928,15 +4929,16 @@ function staticWeight(node: any, budget: number): number {
     if (budget <= 0) {
       break;
     }
-    const value = props[k];
+    const value: mixed = props[k];
     if (k === 'children') {
       budget = staticWeight(value, budget);
     } else if (typeof value === 'string') {
       budget -= k.length + 6 + value.length;
-    } else if (typeof value === 'object' && value !== null) {
+    } else if (value != null && typeof value === 'object') {
+      const object: {[key: string]: mixed} = value as any;
       budget -= k.length + 5;
-      for (const j in value) {
-        const v = value[j];
+      for (const j in object) {
+        const v = object[j];
         budget -= j.length + 6 + (typeof v === 'string' ? v.length : 4);
       }
     } else {
