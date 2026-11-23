@@ -119,7 +119,7 @@ The method was `next start` with Turbopack, autocannon with 16 connections for 1
 | main thread on `router.refresh()` (first, second) | 17.5 ms, 12 ms | 19 ms, 10 ms | 19 ms, 10 ms |
 | DOM nodes after leaving the page | 256 | 75 | 75 |
 
-- **Against the previous build.** This build is 0.85× (run A) and 0.95× (run B) of the previous build on the table page and 0.97× on Client Component rows. I have not found the cause. In process the same React is not slower, and Waku ties.
+- **Against the previous build.** This build is 0.85× (run A) and 0.95× (run B) of the previous build on the table page and 0.97× on Client Component rows. The copies that SSR now gets are the cause. With one line changed to hand SSR the server's own elements, the table page is 0.97× of the previous build, and GC time per request falls from 0.64 ms to 0.34 ms. Waku and the in-process run do not show the cost.
 - **Browser.** The DOM matches stock on every page checked, with no console messages.
 - **End-to-end tests.** With the option on, 871 tests pass, 0 fail and 251 are skipped, across Next's 52 suites in production mode with Turbopack. With it off, 172 pass and 4 are skipped, in `rsc-basic`, `app-action` and `navigation`.
 - **Bailing out of SSR.** A Client Component that throws on the server, inside a boundary with static siblings, shows them after hydration with no second request.
