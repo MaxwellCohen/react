@@ -7,7 +7,7 @@
  * @flow
  */
 
-import {AsyncLocalStorage} from 'async_hooks';
+import {AsyncLocalStorage, AsyncResource} from 'async_hooks';
 
 import type {Request, RequestContext} from 'react-server/src/ReactFizzServer';
 
@@ -22,7 +22,13 @@ export const requestStorage: AsyncLocalStorage<Request | void> =
 
 // Captures the caller's async context with the request's own store set, so
 // work Fizz schedules later (such as a retry after a ping) runs there instead
-// of in the context of whatever resolved the thenable.
+// of in the context of whatever resolved the thenable. Where snapshot() isn't
+// available, a bound resource captures the same context.
 export function captureRequestContext(request: Request): RequestContext {
-  return requestStorage.run(request, () => AsyncLocalStorage.snapshot());
+  if (typeof AsyncLocalStorage.snapshot === 'function') {
+    return requestStorage.run(request, () => AsyncLocalStorage.snapshot());
+  }
+  return requestStorage.run(request, () =>
+    AsyncResource.bind((callback, ...args) => callback(...args)),
+  );
 }

@@ -3806,10 +3806,13 @@ function resolveRenderedForTee(
     return rendered;
   }
   if (isArray(rendered)) {
-    if (rendered[0] === REACT_ELEMENT_TYPE) {
+    // Read the first item once, as the walk without a tee does, since it can
+    // be a getter on the user's array.
+    const first = rendered[0];
+    if (first === REACT_ELEMENT_TYPE) {
       return resolveElementForTee(request, task, rendered, tee, teeDispatcher);
     }
-    return copyArrayForTee(request, task, rendered, tee, teeDispatcher);
+    return copyArrayForTee(request, task, rendered, first, tee, teeDispatcher);
   }
   return copyObjectForTee(request, task, rendered, tee, teeDispatcher);
 }
@@ -3888,6 +3891,7 @@ function copyArrayForTee(
   request: Request,
   task: Task,
   rendered: $ReadOnlyArray<ReactClientValue>,
+  first: ReactClientValue,
   tee: FlightTee,
   teeDispatcher: FlightTeeDispatcher,
 ): ReactJSONValue {
@@ -3902,7 +3906,7 @@ function copyArrayForTee(
       task,
       rendered,
       '' + i,
-      rendered[i],
+      i === 0 ? first : rendered[i],
     );
     let teeChild = teeValue;
     if (teeChild === NEEDS_DECODE) {
@@ -4022,6 +4026,7 @@ function emitModelRowForTee(
   }
   const prevRowTee = rowTee;
   const prevRowTeeDispatcher = rowTeeDispatcher;
+  const prevTeeValue = teeValue;
   rowTee = tee;
   rowTeeDispatcher = teeDispatcher;
   let json: string;
@@ -4041,6 +4046,8 @@ function emitModelRowForTee(
   } finally {
     rowTee = prevRowTee;
     rowTeeDispatcher = prevRowTeeDispatcher;
+    // Don't hold on to the last value the walk set.
+    teeValue = prevTeeValue;
   }
   teeDispatcher.f(tee, row, teeRowValue);
   pushModelChunk(request, task.id, json);
@@ -6862,11 +6869,14 @@ function emitTypedArrayChunk(
     typedArray.byteOffset,
     typedArray.byteLength,
   );
+  let copied = false;
   if (enableFlightTee && request.tee !== null) {
-    // Fix the length, which `view` tracks if `byteLength` didn't answer with
-    // a number and the buffer is resizable, so the tee gets the length the
-    // bytes get.
-    view = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    // The tee reads the bytes now, but the destination reads them when they're
+    // flushed, so write a copy to both. The render can't change the bytes in
+    // between. The copy also fixes the length, which `view` tracks if
+    // `byteLength` didn't answer with a number and the buffer is resizable.
+    view = view.slice();
+    copied = true;
   }
   if (enableTaint) {
     if (TaintRegistryByteLengths.has(view.byteLength)) {
@@ -6874,7 +6884,9 @@ function emitTypedArrayChunk(
       // to see if these bytes matches any entries in the registry. Check a
       // copy, and write the copy, so that nothing that runs after the check,
       // like an accessor on the buffer, can change the bytes.
-      view = view.slice();
+      if (!copied) {
+        view = view.slice();
+      }
       const tainted = TaintRegistryValues.get(binaryToComparableString(view));
       if (tainted !== undefined) {
         throwTaintViolation(tainted.message);
@@ -8423,7 +8435,8 @@ function flushCompletedChunks(request: Request): void {
         // its corresponding ledger entries. If backpressure interrupts this
         // queue, stop before writing model rows. A tee gets model rows as
         // tasks complete and this phase's ledger rows once it ends, which is
-        // still before it closes: it only closes from a flush.
+        // still before it closes: it only closes from a flush or a request
+        // for one, and work is completed before either.
         const ledgerChunks = request.completedLedgerChunks;
         i = 0;
         for (; i < ledgerChunks.length; i++) {
@@ -8639,6 +8652,9 @@ export function startWork(request: Request): void {
 }
 
 function enqueueFlush(request: Request): void {
+  // The tee doesn't wait on a destination, so it can close even when there's
+  // nothing to flush to.
+  closeTeeIfComplete(request);
   if (
     request.flushScheduled === false &&
     // If there are pinged tasks we are going to flush anyway after work completes

@@ -6206,8 +6206,8 @@ export function processWireBinary(
   }
   const response = unwrapWeakResponse(weakResponse);
   incrementChunkDebugInfo(streamState, bytes.byteLength);
-  // The bytes are a view of the server's value, so copy them, as reading them
-  // from a stream would. The copy also owns its whole buffer.
+  // The server's destination still has to write these bytes, so copy them, as
+  // reading them from a stream would. The copy also owns its whole buffer.
   const copy = bytes.slice();
   if (tag === 98 /* "b" */) {
     resolveBuffer(response, id, copy, streamState);
