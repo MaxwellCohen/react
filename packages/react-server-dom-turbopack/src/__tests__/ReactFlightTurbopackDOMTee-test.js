@@ -440,6 +440,47 @@ describe('ReactFlightTurbopackDOMTee', () => {
     );
   });
 
+  // Two readers of one render can agree with each other and still differ from
+  // a render without a tee, so this compares the bytes with and without one.
+  // @gate enableFlightTee
+  it('reads the first item of an array once, as a render without a tee does', async () => {
+    function createModel() {
+      let reads = 0;
+      const list = [];
+      Object.defineProperty(list, '0', {
+        get() {
+          return ++reads;
+        },
+        enumerable: true,
+      });
+      return {list};
+    }
+    async function renderWire(useTee) {
+      const tee = useTee
+        ? ReactServerDOMClient.createTee(manifest())
+        : undefined;
+      const readable = new Stream.PassThrough();
+      const result = readResult(readable);
+      await serverAct(() => {
+        ReactServerDOMServer.renderToPipeableStream(
+          createModel(),
+          turbopackMap,
+          {tee},
+        ).pipe(readable);
+        if (useTee) {
+          ReactServerDOMClient.createFromTee(tee);
+        }
+      });
+      // Leave out the time origin, which DEV writes and differs per render.
+      return (await result).replace(/^:N[\d.]+\n/m, '');
+    }
+    const withoutTee = await renderWire(false);
+    const withTee = await renderWire(true);
+    expect(withTee).toBe(withoutTee);
+    const {fromTee, fromBytes} = await readTeeAndBytes(createModel());
+    expect(fromTee).toEqual(fromBytes);
+  });
+
   // @gate enableFlightTee
   it('leaves out symbol keys and non-enumerable properties', async () => {
     const withSymbol = {a: 1, [Symbol('hidden')]: 2};
@@ -742,6 +783,42 @@ describe('ReactFlightTurbopackDOMTee', () => {
       );
     } else {
       expect(fromTee).toBe(fromBytes);
+    }
+  });
+
+  // @gate enableFlightTee
+  it('dispatches hints that arrive after the reader in its context without AsyncLocalStorage.snapshot', async () => {
+    let resolveLate;
+    const late = new Promise(resolve => {
+      resolveLate = resolve;
+    });
+    async function Late() {
+      await late;
+      FlightReactDOM.preinit('late.js', {as: 'script'});
+      return ReactServer.createElement('b', null, 'late');
+    }
+    const model = ReactServer.createElement(
+      ReactServer.Suspense,
+      {fallback: 'loading'},
+      ReactServer.createElement(Late),
+    );
+    const snapshot = AsyncLocalStorage.snapshot;
+    AsyncLocalStorage.snapshot = undefined;
+    try {
+      let ssrStream;
+      await serverAct(() => {
+        const flight = startFlight(model, true);
+        ssrStream = ReactDOMServer.renderToPipeableStream(
+          React.createElement(createClientRoot(flight)),
+        );
+      });
+      const result = readResult(ssrStream);
+      await serverAct(() => resolveLate());
+      const html = await result;
+      expect(html).toContain('src="late.js"');
+      expect(html).toContain('<b>late</b>');
+    } finally {
+      AsyncLocalStorage.snapshot = snapshot;
     }
   });
 
@@ -1845,6 +1922,52 @@ describe('ReactFlightTurbopackDOMTee', () => {
       const {tee, log} = createRecordingTee();
       const written = await renderRecorded({bytes}, tee);
       expect(removeRows(written, log)).toBe('');
+    });
+
+    // @gate enableFlightTee
+    it('hands the tee the bytes the destination gets when the render changes them later', async () => {
+      const bytes = new Uint8Array([1, 2]);
+      const model = {
+        bytes,
+        // Rendered after the bytes are emitted, but before they're flushed.
+        get later() {
+          bytes[0] = 3;
+          return 0;
+        },
+      };
+      const {tee, log} = createRecordingTee();
+      const written = await renderRecorded(model, tee);
+      expect(removeRows(written, log)).toBe('');
+      expect(written).toContain(':o2,\x01\x02');
+    });
+
+    // @gate enableFlightTee
+    it('closes the tee once a render without a destination completes', async () => {
+      let controller;
+      const stream = new ReadableStream({
+        start(c) {
+          controller = c;
+        },
+      });
+      const {tee, log} = createRecordingTee();
+      let result;
+      await serverAct(() => {
+        result = ReactServerDOMServer.renderToPipeableStream(
+          {stream},
+          turbopackMap,
+          {tee},
+        );
+      });
+      expect(log).not.toContain('close');
+      await serverAct(() => {
+        controller.enqueue('a');
+        controller.close();
+      });
+      expect(log.filter(row => row === 'close')).toEqual(['close']);
+      expect(log[log.length - 1]).toBe('close');
+      const written = await readBytes(result.pipe(new Stream.PassThrough()));
+      expect(removeRows(written, log)).toBe('');
+      expect(log.filter(row => row === 'close')).toEqual(['close']);
     });
 
     // @gate enableFlightTee

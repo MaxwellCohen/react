@@ -262,6 +262,7 @@ declare module 'async_hooks' {
   }
   declare class AsyncResource {
     asyncId(): number;
+    static bind<F: (...args: any[]) => mixed>(fn: F): F;
   }
   declare function executionAsyncId(): number;
   declare function executionAsyncResource(): AsyncResource;
