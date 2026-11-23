@@ -25,7 +25,7 @@ import {enableFlightTee} from 'shared/ReactFeatureFlags';
 import {
   createStreamState,
   getRoot,
-  processWireRow,
+  processStringChunk,
   processWireText,
   processWireBinary,
   setReaderContext,
@@ -193,23 +193,19 @@ function teeDecode(
   }
 }
 
-function teeProcessWireRow(flightTee: FlightTee, row: string): void {
+function teeRow(flightTee: FlightTee, row: string): void {
   const tee: TeeInstance = flightTee as any;
   if (tee._failed) {
     return;
   }
   try {
-    processWireRow(tee._response, tee._streamState, row);
+    processStringChunk(tee._response, tee._streamState, row);
   } catch (x) {
     failTee(tee, x);
   }
 }
 
-function teeProcessWireText(
-  flightTee: FlightTee,
-  id: number,
-  text: string,
-): void {
+function teeText(flightTee: FlightTee, id: number, text: string): void {
   const tee: TeeInstance = flightTee as any;
   if (tee._failed) {
     return;
@@ -221,7 +217,7 @@ function teeProcessWireText(
   }
 }
 
-function teeProcessWireBinary(
+function teeBinary(
   flightTee: FlightTee,
   id: number,
   tag: number,
@@ -265,9 +261,9 @@ export const teeDispatcher: FlightTeeDispatcher = Object.freeze({
   e /* beginElement */: teeBeginElement,
   m /* completeElement */: teeCompleteElement,
   d /* decode */: teeDecode,
-  w /* processWireRow */: teeProcessWireRow,
-  t /* processWireText */: teeProcessWireText,
-  y /* processWireBinary */: teeProcessWireBinary,
+  w /* row */: teeRow,
+  t /* text */: teeText,
+  y /* binary */: teeBinary,
   C /* close */: teeClose,
   X /* error */: teeError,
 });
