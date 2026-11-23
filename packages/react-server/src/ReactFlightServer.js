@@ -4899,6 +4899,52 @@ function copyStaticHostElement(request: Request, node: any): mixed {
   );
 }
 
+// A stub saves the bytes of its element, and costs the browser a component
+// that adopts the DOM. For a tiny element, such as a <span> around a label,
+// that is a bad trade: a page with thousands of them hydrates slower than it
+// does with the elements, and can even get larger. So an element stays in the
+// payload unless it would take about this many bytes there. staticWeight
+// estimates that, and stops counting at the limit, so it costs nothing for a
+// large tree. It returns what is left of the budget.
+const MIN_STUB_WEIGHT = 48;
+
+function staticWeight(node: any, budget: number): number {
+  if (typeof node === 'string') {
+    return budget - node.length;
+  }
+  if (node === null || typeof node !== 'object') {
+    return budget - 1;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length && budget > 0; i++) {
+      budget = staticWeight(node[i], budget);
+    }
+    return budget;
+  }
+  // ["$","tag",null,{...}]
+  budget -= 16 + node.type.length;
+  const props = node.props;
+  for (const k in props) {
+    if (budget <= 0) {
+      break;
+    }
+    const value = props[k];
+    if (k === 'children') {
+      budget = staticWeight(value, budget);
+    } else if (typeof value === 'string') {
+      budget -= k.length + 6 + value.length;
+    } else if (typeof value === 'object' && value !== null) {
+      budget -= k.length + 5;
+      for (const j in value) {
+        budget -= j.length + 6 + ('' + value[j]).length;
+      }
+    } else {
+      budget -= k.length + 8;
+    }
+  }
+  return budget;
+}
+
 function tryStubHostElement(
   request: Request,
   task: Task,
@@ -4924,7 +4970,7 @@ function tryStubHostElement(
     return null;
   }
   const value = copyStaticHostNode(request, element);
-  if (value === NOT_STATIC) {
+  if (value === NOT_STATIC || staticWeight(value, MIN_STUB_WEIGHT) > 0) {
     return null;
   }
   if (key === null) {
