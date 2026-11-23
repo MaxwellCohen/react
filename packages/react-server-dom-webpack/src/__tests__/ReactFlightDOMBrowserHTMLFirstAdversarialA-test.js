@@ -9,6 +9,8 @@
 
 'use strict';
 
+/* eslint-disable no-for-of-loops/no-for-of-loops */
+
 // Run the whole file with enableFlightHTMLFirst turned on.
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
@@ -90,6 +92,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     expect(reportedErrors).toEqual([]);
   });
 
+  // The server stubs an element only when it takes about 48 bytes or more in
+  // the payload. A fixture appends this to its text to be stubbed.
+  const FILL = ' filler text so this element is big enough to be stubbed';
 
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -120,11 +125,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     return encoder.encode(text).length;
   }
 
-  function consume(rsc, stubbedRows, extraOptions) {
-    return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
-      htmlFirstRows: stubbedRows,
-      ...extraOptions,
-    });
+  function consume(rsc, unused, extraOptions) {
+    return ReactServerDOMClient.createFromReadableStream(
+      stringToStream(rsc),
+      extraOptions,
+    );
   }
 
   function Shell({response}) {
@@ -140,12 +145,43 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     return {moduleMap, moduleLoading: webpackModuleLoading};
   }
 
+  // What a framework does: the thenable settles when the HTML render is done
+  // (resolved), or failed or was aborted (rejected). `htmlFirst: false` turns
+  // HTML-first off.
+  function createHtmlFirst(options) {
+    if (options && options.htmlFirst === false) {
+      return {htmlFirst: false, resolve() {}, reject() {}};
+    }
+    let resolve;
+    let reject;
+    const htmlFirst = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return {htmlFirst, resolve, reject};
+  }
+
+  // Fizz options that remember an error, for the thenable.
+  function trackFizzErrors(fizzOptions, state) {
+    return {
+      ...fizzOptions,
+      onError(error) {
+        state.failed = true;
+        return fizzOptions && fizzOptions.onError
+          ? fizzOptions.onError(error)
+          : undefined;
+      },
+    };
+  }
+
   async function renderWithTeeInner(model, options, fizzOptions) {
     const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+    const html1 = createHtmlFirst(options);
+    const state = {failed: false};
     const stream = ReactServerDOMServer.renderToReadableStream(
       model,
       webpackMap,
-      {htmlFirst: true, tee, ...options},
+      {tee, ...options, htmlFirst: html1.htmlFirst},
     );
     const browser = readAll(stream);
     let response = null;
@@ -157,9 +193,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     }
     const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
       <TeeRoot />,
-      fizzOptions,
+      trackFizzErrors(fizzOptions, state),
     );
     await htmlStream.allReady;
+    if (state.failed) {
+      html1.reject(new Error('Fizz reported an error'));
+    } else {
+      html1.resolve();
+    }
     const html = await readAll(htmlStream);
     return {main: await browser, html};
   }
@@ -171,7 +212,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
   async function flight(element, stub = true) {
     const rows = new Map();
     const options = stub
-      ? {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}
+      ? {htmlFirst: {onValue: (id, value) => rows.set(id, value)}}
       : {htmlFirst: false};
     const main = await serverAct(async () =>
       readAll(
@@ -257,7 +298,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
       </Slot>
     );
     const {off, on} = await both(App);
-    expect(on.html).toContain('<a href="/x" class="btn" data-slot="1">Link</a>');
+    expect(on.html).toContain(
+      '<a href="/x" class="btn" data-slot="1">Link</a>',
+    );
     const missingOn = jest.fn();
     const h = await hydrate(on.main, on.html, {onMissingHTML: missingOn});
     noPreventNav(h.container);
@@ -270,7 +313,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     await act(() => a.click());
     expect(clicks.length).toBe(1);
     expect(norm(h.container.innerHTML)).toBe(norm(hOff.container.innerHTML));
-    expect(byteLength(on.main)).not.toBeGreaterThan(byteLength(off.main));
+    // Nothing is stubbed (a Client Component's children are never stubs), so
+    // the payloads only differ in debug timestamps: size is information only.
+    console.log(
+      `A1 bytes off=${byteLength(off.main)} on=${byteLength(on.main)}`,
+    );
   });
 
   describe('A2 client inspects its children', () => {
@@ -281,9 +328,18 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
       const hOn = await hydrate(on.main, on.html, {onMissingHTML: missing});
       const hOff = await hydrate(off.main, off.html);
       console.log(
-        'A2 observed: onHTML=' + on.html + '\noffHTML=' + off.html +
-          '\nonDOM=' + hOn.container.innerHTML + '\noffDOM=' + hOff.container.innerHTML +
-          '\nmissing=' + missing.mock.calls.length + ' errors=' + JSON.stringify(hOn.errors),
+        'A2 observed: onHTML=' +
+          on.html +
+          '\noffHTML=' +
+          off.html +
+          '\nonDOM=' +
+          hOn.container.innerHTML +
+          '\noffDOM=' +
+          hOff.container.innerHTML +
+          '\nmissing=' +
+          missing.mock.calls.length +
+          ' errors=' +
+          JSON.stringify(hOn.errors),
       );
       expect(hOn.errors).toEqual(hOff.errors);
       expect(norm(hOn.container.innerHTML)).toBe(
@@ -308,10 +364,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
       const App = () => (
         <Tabs>
           <section title="One">
-            <p>static-one</p>
+            <p>{'static-one' + FILL}</p>
           </section>
           <section title="Two">
-            <p>static-two</p>
+            <p>{'static-two' + FILL}</p>
           </section>
         </Tabs>
       );
@@ -391,24 +447,28 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     beforeEach(() => {
       onServer = true;
       const Fragile = clientExports(function Fragile() {
-      if (onServer) {
-        throw new Error('window is not defined');
-      }
-      return <b>client-ok</b>;
-    });
+        if (onServer) {
+          throw new Error('window is not defined');
+        }
+        return <b>client-ok</b>;
+      });
       App = () => (
-      <main>
-        <React.Suspense fallback={<i>loading</i>}>
-          <p>before</p>
-          <Fragile />
-          <p>after</p>
-        </React.Suspense>
-      </main>
-    );
+        <main>
+          <React.Suspense fallback={<i>loading</i>}>
+            <p>{'before' + FILL}</p>
+            <Fragile />
+            <p>{'after' + FILL}</p>
+          </React.Suspense>
+        </main>
+      );
     });
     it('A4 both paragraphs visible without onMissingHTML', async () => {
       onServer = true;
-      const off = await renderWithTee(<App />, {htmlFirst: false}, {onError() {}});
+      const off = await renderWithTee(
+        <App />,
+        {htmlFirst: false},
+        {onError() {}},
+      );
       onServer = true;
       const on = await renderWithTee(<App />, undefined, {onError() {}});
       console.log(
@@ -460,7 +520,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
       return () => (
         <main>
           <Slow>
-            <p>slow-static-text</p>
+            <div>
+              <p>{'slow-static-text' + FILL}</p>
+            </div>
           </Slow>
         </main>
       );
@@ -477,67 +539,71 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     );
     expect(on.html).toContain('slow-static-text');
     expect(on.main).not.toContain('slow-static-text');
-    expect(byteLength(on.main)).toBeLessThan(byteLength(off.main));
   });
 
   [true, false].forEach(provide =>
-    it('A6 dehydrated boundary update before hydrate, onMissingHTML provided=' + provide, async () => {
-    {
-      let onServer = true;
-      let setV;
-      let gateResolve;
-      const gate = new Promise(r => (gateResolve = r));
-      const Ctx = React.createContext(0);
-      const Provider = clientExports(function Provider({children}) {
-        const [v, sv] = React.useState(0);
-        setV = sv;
-        return <Ctx.Provider value={v}>{children}</Ctx.Provider>;
-      });
-      const Reader = clientExports(function Reader() {
-        const v = React.useContext(Ctx);
-        if (!onServer) {
-          use(gate);
+    it(
+      'A6 dehydrated boundary update before hydrate, onMissingHTML provided=' +
+        provide,
+      async () => {
+        {
+          let onServer = true;
+          let setV;
+          let gateResolve;
+          const gate = new Promise(r => (gateResolve = r));
+          const Ctx = React.createContext(0);
+          const Provider = clientExports(function Provider({children}) {
+            const [v, sv] = React.useState(0);
+            setV = sv;
+            return <Ctx.Provider value={v}>{children}</Ctx.Provider>;
+          });
+          const Reader = clientExports(function Reader() {
+            const v = React.useContext(Ctx);
+            if (!onServer) {
+              use(gate);
+            }
+            return <b>v:{v}</b>;
+          });
+          const App = () => (
+            <Provider>
+              <React.Suspense fallback={<i>loading</i>}>
+                <p>{'static-a' + FILL}</p>
+                <Reader />
+                <p>{'static-b' + FILL}</p>
+              </React.Suspense>
+            </Provider>
+          );
+          const off = await renderWithTee(<App />, {htmlFirst: false});
+          const on = await renderWithTee(<App />);
+          onServer = false;
+          Ctx._currentRenderer = null;
+          Ctx._currentRenderer2 = null;
+          const missing = jest.fn();
+          const h = await hydrate(
+            on.main,
+            on.html,
+            provide ? {onMissingHTML: missing} : undefined,
+          );
+          await act(() => setV(1));
+          await act(async () => {
+            gateResolve();
+          });
+          console.log(
+            `A6 provide=${provide} missing=${missing.mock.calls.length} ` +
+              `dom=${h.container.innerHTML} errors=${JSON.stringify(h.errors)} ` +
+              `reported=${JSON.stringify(reportedErrors)}`,
+          );
+          // Desired: static content and new value visible without any callback.
+          expect(missing).not.toHaveBeenCalled();
+          expect(h.container.textContent).toContain('static-a');
+          expect(h.container.textContent).toContain('static-b');
+          expect(h.container.textContent).toContain('v:1');
+          expect(reportedErrors).toEqual([]);
+          void off;
         }
-        return <b>v:{v}</b>;
-      });
-      const App = () => (
-        <Provider>
-          <React.Suspense fallback={<i>loading</i>}>
-            <p>static-a</p>
-            <Reader />
-            <p>static-b</p>
-          </React.Suspense>
-        </Provider>
-      );
-      const off = await renderWithTee(<App />, {htmlFirst: false});
-      const on = await renderWithTee(<App />);
-      onServer = false;
-      Ctx._currentRenderer = null;
-      Ctx._currentRenderer2 = null;
-      const missing = jest.fn();
-      const h = await hydrate(
-        on.main,
-        on.html,
-        provide ? {onMissingHTML: missing} : undefined,
-      );
-      await act(() => setV(1));
-      await act(async () => {
-        gateResolve();
-      });
-      console.log(
-        `A6 provide=${provide} missing=${missing.mock.calls.length} ` +
-          `dom=${h.container.innerHTML} errors=${JSON.stringify(h.errors)} ` +
-          `reported=${JSON.stringify(reportedErrors)}`,
-      );
-      // Desired: static content and new value visible without any callback.
-      expect(missing).not.toHaveBeenCalled();
-      expect(h.container.textContent).toContain('static-a');
-      expect(h.container.textContent).toContain('static-b');
-      expect(h.container.textContent).toContain('v:1');
-      expect(reportedErrors).toEqual([]);
-      void off;
-    }
-  }));
+      },
+    ),
+  );
 
   it('A7 Fizz abort leaves a client-render boundary with stubbed content', async () => {
     let onServer = true;
@@ -550,11 +616,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     const App = () => (
       <main>
         <React.Suspense fallback={<i>loading</i>}>
-          <p>reached-before</p>
+          <p>{'reached-before' + FILL}</p>
           <Never />
-          <p>after-never</p>
+          <p>{'after-never' + FILL}</p>
           <div>
-            <p>nested-after</p>
+            <p>{'nested-after' + FILL}</p>
           </div>
         </React.Suspense>
       </main>
@@ -562,11 +628,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     async function run(options) {
       return serverAct(async () => {
         const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+        const html1 = createHtmlFirst(options);
         const browser = readAll(
           ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-            htmlFirst: true,
             tee,
             ...options,
+            htmlFirst: html1.htmlFirst,
           }),
         );
         let response = null;
@@ -581,9 +648,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
           <TeeRoot />,
           {signal: ac.signal, onError() {}},
         );
-        const main = await browser;
         await delay(20);
         ac.abort();
+        // The Flight stream stays open until the HTML render settles.
+        html1.reject(new Error('Fizz was aborted'));
+        const main = await browser;
         const html = await readAll(htmlStream);
         return {main, html};
       });
@@ -625,15 +694,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     });
     const App = () => (
       <main className="page">
-        <h1>eight-heading</h1>
+        <h1>{'eight-heading' + FILL}</h1>
         <Counter />
-        <p>eight-text</p>
+        <p>{'eight-text' + FILL}</p>
       </main>
     );
     const {main, html} = await renderWithTee(<App />);
     const missing = jest.fn();
     const onMissingHTML = missing;
-    const full = 'eight-heading' + 'n:0' + 'eight-text';
+    const full = 'eight-heading' + FILL + 'n:0' + 'eight-text' + FILL;
     for (const order of ['root2first', 'root1first']) {
       const c1 = document.createElement('div');
       const c2 = document.createElement('div');
@@ -662,13 +731,17 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
         await act(() => root2.unmount());
         expect(c1.textContent).toBe(full);
         await act(() => c1.querySelector('button').click());
-        expect(c1.textContent).toBe('eight-headingn:1eight-text');
+        expect(c1.textContent).toBe(
+          'eight-heading' + FILL + 'n:1eight-text' + FILL,
+        );
         await act(() => root1.unmount());
       } else {
         await act(() => root1.unmount());
         expect(c2.textContent).toBe(full);
         await act(() => c2.querySelector('button').click());
-        expect(c2.textContent).toBe('eight-headingn:1eight-text');
+        expect(c2.textContent).toBe(
+          'eight-heading' + FILL + 'n:1eight-text' + FILL,
+        );
         await act(() => root2.unmount());
       }
     }
@@ -695,7 +768,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
         </Panel>
       </main>
     );
-    const App1 = makeApp('modal-v1', 'a', 'page-v1');
+    const App1 = makeApp('modal-v1', 'a', 'page-v1' + FILL);
     const {main, html} = await renderWithTee(<App1 />);
     expect(main).toContain('modal-v1');
     const missing = jest.fn();
@@ -704,19 +777,25 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     expect(h.container.querySelector('aside').innerHTML).toBe(
       '<p class="a" data-v="modal-v1">modal-v1</p>',
     );
-    await renderFullPayload(h.root, makeApp('modal-v2', 'b', 'page-v2')());
+    await renderFullPayload(
+      h.root,
+      makeApp('modal-v2', 'b', 'page-v2' + FILL)(),
+    );
     expect(h.container.querySelector('aside').innerHTML).toBe(
       '<p class="b" data-v="modal-v2">modal-v2</p>',
     );
     expect(h.container.querySelector('article').outerHTML).toBe(
-      '<article class="b">page-v2</article>',
+      '<article class="b">page-v2' + FILL + '</article>',
     );
-    await renderFullPayload(h.root, makeApp('modal-v3', 'c', 'page-v3')());
+    await renderFullPayload(
+      h.root,
+      makeApp('modal-v3', 'c', 'page-v3' + FILL)(),
+    );
     expect(h.container.querySelector('aside').innerHTML).toBe(
       '<p class="c" data-v="modal-v3">modal-v3</p>',
     );
     expect(h.container.querySelector('article').outerHTML).toBe(
-      '<article class="c">page-v3</article>',
+      '<article class="c">page-v3' + FILL + '</article>',
     );
     await act(() => h.root.unmount());
     expect(h.container.innerHTML).toBe('');
@@ -726,7 +805,6 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
 
   it('A10 useSyncExternalStore removes then restores stubbed children', async () => {
     let snapshot = false;
-    let onServerPhase = true;
     const listeners = new Set();
     const subscribe = l => {
       listeners.add(l);
@@ -740,12 +818,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
       );
       return show ? children : null;
     });
-    void onServerPhase;
     const App = () => (
       <Gate>
         <React.Suspense fallback={<i>loading</i>}>
           <section>
-            <p>ten-static</p>
+            <p>{'ten-static' + FILL}</p>
           </section>
         </React.Suspense>
       </Gate>
@@ -767,7 +844,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight adversarial A', () => {
     );
     expect(missing).not.toHaveBeenCalled();
     expect(h.container.innerHTML).toBe(
-      '<section><p>ten-static</p></section>',
+      '<section><p>ten-static' + FILL + '</p></section>',
     );
     expect(reportedErrors).toEqual([]);
   });

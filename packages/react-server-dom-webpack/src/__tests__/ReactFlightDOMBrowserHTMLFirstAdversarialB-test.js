@@ -9,6 +9,8 @@
 
 'use strict';
 
+/* eslint-disable no-for-of-loops/no-for-of-loops */
+
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
   enableFlightHTMLFirst: true,
@@ -101,6 +103,10 @@ describe('HTML-first Flight adversarial B', () => {
     expect(reportedErrors).toEqual([]);
   });
 
+  // The server stubs an element only when it takes about 48 bytes or more in
+  // the payload. A fixture appends this to its text to be stubbed.
+  const FILL = ' filler text so this element is big enough to be stubbed';
+
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
@@ -150,16 +156,26 @@ describe('HTML-first Flight adversarial B', () => {
   async function renderTeeSafe(model, options, Root = Shell) {
     const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
     const serverErrors = [];
+    // What a framework does: the thenable settles when the HTML render is
+    // done (resolved), or failed or was aborted (rejected). `htmlFirst: false`
+    // turns HTML-first off.
+    let htmlFirst = false;
+    let settle = null;
+    if (!options || options.htmlFirst !== false) {
+      htmlFirst = new Promise((resolve, reject) => {
+        settle = {resolve, reject};
+      });
+    }
     const stream = ReactServerDOMServer.renderToReadableStream(
       model,
       webpackMap,
       {
-        htmlFirst: true,
         tee,
         onError: e => {
           serverErrors.push(e.message);
         },
         ...options,
+        htmlFirst,
       },
     );
     const browser = readAll(stream).then(
@@ -188,6 +204,13 @@ describe('HTML-first Flight adversarial B', () => {
       html = await readAll(htmlStream);
     } catch (e) {
       htmlError = e.message;
+    }
+    if (settle !== null) {
+      if (htmlError !== null) {
+        settle.reject(new Error(htmlError));
+      } else {
+        settle.resolve();
+      }
     }
     const b = await browser;
     return {
@@ -586,9 +609,7 @@ describe('HTML-first Flight adversarial B', () => {
       const a = summary(on);
       const b = summary(off);
       results.push(
-        JSON.stringify(a) === JSON.stringify(b)
-          ? null
-          : {name, on: a, off: b},
+        JSON.stringify(a) === JSON.stringify(b) ? null : {name, on: a, off: b},
       );
     }
     expect(lifetime).toBeTruthy();
@@ -635,7 +656,7 @@ describe('HTML-first Flight adversarial B', () => {
       return <article>{el}</article>;
     });
     const make = () => {
-      const shared = <p className="s">shared</p>;
+      const shared = <p className="s">{'shared' + FILL}</p>;
       return (
         <div>
           {shared}
@@ -654,7 +675,8 @@ describe('HTML-first Flight adversarial B', () => {
         const after = Array.from(m.container.querySelectorAll('*'));
         steps.afterNav = snap(m.container);
         steps.identityKept =
-          before.length === after.length && before.every((n, i) => n === after[i]);
+          before.length === after.length &&
+          before.every((n, i) => n === after[i]);
         nodesBy.x = 1;
       },
     });
@@ -872,9 +894,11 @@ describe('HTML-first Flight adversarial B', () => {
       <div>
         <Echo s="$J1:div">{'$J1:div:key'}</Echo>
         <Echo s="$J1:div:key" />
-        <i>{['$J1:div', '$J1:div:key']}</i>
-        <p>{'$J1:div'}</p>
-        <p title="$J1:div:key">{'$J1:div:key'}</p>
+        <i data-fill={FILL}>{['$J1:div', '$J1:div:key']}</i>
+        <p data-fill={FILL}>{'$J1:div'}</p>
+        <p title="$J1:div:key" data-fill={FILL}>
+          {'$J1:div:key'}
+        </p>
         <ul>
           <li key="$J1:div">a</li>
           <li key="$J1:div:key">b</li>
@@ -909,13 +933,17 @@ describe('HTML-first Flight adversarial B', () => {
 
   // B10 --------------------------------------------------------------
   it('B10 deep and wide static trees', async () => {
-    const deepEl = n => {
-      let el = 'x';
-      for (let i = 0; i < n; i++) {
-        el = React.createElement('div', null, el);
-      }
-      return el;
-    };
+    // jest's loop guard counts the iterations of every loop, in React's source
+    // as well (a Flight chunk with thousands of rows is one loop). Build the
+    // tree without a loop in the test and raise the guard's limit, which is
+    // what `global.__MAX_ITERATIONS__` is for, for this test only.
+    const previousMax = global.__MAX_ITERATIONS__;
+    global.__MAX_ITERATIONS__ = 1e9;
+    const deepEl = n =>
+      Array.from({length: n}).reduce(
+        el => React.createElement('div', null, el),
+        'x',
+      );
     const attempt = async (make, stub) => {
       try {
         const m = await mount(make, {stub});
@@ -942,15 +970,24 @@ describe('HTML-first Flight adversarial B', () => {
       }
     };
     const report = {};
-    for (const n of [3000, 2000, 1000, 700]) {
-      const on = await attempt(() => <section>{deepEl(n)}</section>, true);
-      const off = await attempt(() => <section>{deepEl(n)}</section>, false);
-      report['deep' + n] = {on, off};
-      record('B10-deep-' + n, {on, off});
-      if (off.ok) {
-        break;
-      }
-    }
+    // Bisect the deepest nesting that works (hydrated without errors) in
+    // each mode, within 25 levels, by recursion: no loops in the test.
+    const works = async (n, stub) => {
+      const r = await attempt(() => <section>{deepEl(n)}</section>, stub);
+      return r.ok === true && r.errors.length === 0;
+    };
+    const deepest = async (lo, hi, stub) =>
+      hi - lo <= 25
+        ? lo
+        : (await works(Math.floor((lo + hi) / 2), stub))
+          ? deepest(Math.floor((lo + hi) / 2), hi, stub)
+          : deepest(lo, Math.floor((lo + hi) / 2), stub);
+    expect(await works(500, false)).toBe(true);
+    expect(await works(500, true)).toBe(true);
+    const deepOff = await deepest(500, 4000, false);
+    const deepOn = await deepest(500, 4000, true);
+    console.log(`B10 deepest nesting: off=${deepOff} on=${deepOn}`);
+    record('B10-deepest', {on: deepOn, off: deepOff});
     const wide = n => () => (
       <ul>
         {Array.from({length: n}, (_, i) => (
@@ -969,8 +1006,7 @@ describe('HTML-first Flight adversarial B', () => {
     }
     const bad = Object.keys(report).filter(k => {
       const {on, off} = report[k];
-      // The jest loop guard (6000 iterations) fails flags-off first; only a
-      // case where flags-off works and flags-on does not is a finding.
+      // Only a case where flags-off works and flags-on does not is a finding.
       if (off.ok !== true || off.errors.length) {
         return false;
       }
@@ -979,6 +1015,8 @@ describe('HTML-first Flight adversarial B', () => {
         (on.ok && (on.errors.length || on.domLen !== off.domLen))
       );
     });
+    global.__MAX_ITERATIONS__ = previousMax;
+    expect(deepOn).toBeGreaterThanOrEqual(deepOff);
     expect(bad.map(k => [k, report[k]])).toEqual([]);
   }, 300000);
 
@@ -987,7 +1025,7 @@ describe('HTML-first Flight adversarial B', () => {
     const r = await serverAct(() =>
       renderTeeSafe(
         <main>
-          <p>static</p>
+          <p>{'static' + FILL}</p>
         </main>,
         {htmlFirst: true},
       ),
