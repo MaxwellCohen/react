@@ -934,32 +934,35 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       container.querySelector('td').setAttribute('data-name', 'changed');
       await renderFullPayload(root, <Page {...base} />);
       expect(errors).toEqual([]);
-      // The changed DOM is not what the payload says: fresh DOM replaces it.
-      expect(container.querySelector('table')).not.toBe(table);
+      // Patched in place: the changed attribute is put back, the table kept.
+      expect(container.querySelector('table')).toBe(table);
       expect(container.querySelector('td').getAttribute('data-name')).toBe(
         'one',
       );
       expect(container.querySelector('h1')).toBe(h1);
     });
 
-    it('replaces the stub with fresh DOM when its content changed, keeping the rest', async () => {
+    it('patches changed static content in place, keeping the rest', async () => {
       const {container, root, errors} = await hydratePage();
-      const button = container.querySelector('button');
-      const h1 = container.querySelector('h1');
-      const oldTable = container.querySelector('table');
+      const table = container.querySelector('table');
+      const rows = Array.from(container.querySelectorAll('tr'));
+      const links = Array.from(container.querySelectorAll('a'));
       await renderFullPayload(
         root,
         <Page {...base} rows={['one', 'TWO', 'three']} />,
       );
       expect(errors).toEqual([]);
-      expect(container.querySelector('table')).not.toBe(oldTable);
-      expect(container.querySelector('button')).toBe(button);
-      expect(container.querySelector('h1')).toBe(h1);
-      const rows = container.querySelectorAll('tr');
-      expect(rows.length).toBe(3);
-      expect(rows[1].querySelector('td').textContent).toBe('TWO');
-      expect(rows[1].querySelector('td').getAttribute('data-name')).toBe('TWO');
-      expect(rows[1].querySelector('a').getAttribute('href')).toBe('/TWO');
+      expect(container.querySelector('table')).toBe(table);
+      const after = Array.from(container.querySelectorAll('tr'));
+      expect(after[0]).toBe(rows[0]);
+      expect(after[1]).toBe(rows[1]);
+      expect(after[2]).toBe(rows[2]);
+      expect(container.querySelectorAll('a')[0]).toBe(links[0]);
+      expect(after[1].querySelector('td').textContent).toBe('TWO');
+      expect(after[1].querySelector('td').getAttribute('data-name')).toBe(
+        'TWO',
+      );
+      expect(after[1].querySelector('a').getAttribute('href')).toBe('/TWO');
     });
 
     it('renders the new content when it is not static', async () => {
