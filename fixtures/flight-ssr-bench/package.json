@@ -34,6 +34,7 @@
     "bench:concurrent": "NODE_ENV=production node --expose-gc bench.js --concurrent",
     "bench:server": "NODE_ENV=production node bench-server.js --bench",
     "scenarios:check": "NODE_ENV=production node scenarios-check.js",
-    "scenarios:metrics": "NODE_ENV=production node scenarios-metrics.js"
+    "scenarios:metrics": "NODE_ENV=production node scenarios-metrics.js",
+    "scenarios:hydration": "NODE_ENV=production node scenarios-hydration.js"
   }
 }
