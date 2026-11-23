@@ -93,6 +93,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
+  // The server stubs an element only when it takes about 48 bytes or more in
+  // the payload. A fixture appends this to its text to be stubbed.
+  const FILL = ' filler text so this element is big enough to be stubbed';
+
   async function readAll(stream) {
     const reader = stream.getReader();
     let result = '';
@@ -1037,7 +1041,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // A route tree like Next.js sends: segment data in objects and a Map.
     const model = {
       tree: {
-        data: {rsc: <h1>layout-heading</h1>},
+        data: {rsc: <h1>{'layout-heading' + FILL}</h1>},
         slots: new Map([['children', {data: {rsc: <Page />}}]]),
       },
     };
@@ -1085,7 +1089,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       page: (
         <React.Fragment key="c">
           <main>
-            <h1>fragment-heading</h1>
+            <h1>{'fragment-heading' + FILL}</h1>
             <Counter />
           </main>
         </React.Fragment>
@@ -1139,7 +1143,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           {React.createElement('x:y', null, 'namespaced')}
-          <p>plain</p>
+          <p>{'plain' + FILL}</p>
         </main>
       );
     }
@@ -1153,6 +1157,57 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('namespaced');
   });
 
+  it('leaves a tiny static element in the payload', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <span>label</span>
+          <p>{'long-sentence' + FILL}</p>
+        </main>
+      );
+    }
+    const {main, html} = await flight(<App />);
+    // The span would take less room as a stub than as an element.
+    expect(main).not.toMatch(/\$J[0-9a-f]+:span/);
+    expect(main).toContain('label');
+    expect(main).toMatch(/\$J[0-9a-f]+:p"/);
+    expect(main).not.toContain('long-sentence');
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('label');
+    expect(container.textContent).toContain('long-sentence' + FILL);
+  });
+
+  it('stubs an element that is made of many tiny ones', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <ul>
+            {Array.from({length: 20}, (_, i) => (
+              <li key={i}>x</li>
+            ))}
+          </ul>
+        </main>
+      );
+    }
+    const {main, html} = await flight(<App />);
+    // The subtree counts, so the <ul> is one stub and no <li> is in the bytes.
+    expect(main).toMatch(/\$J[0-9a-f]+:ul"/);
+    expect(main.match(/\$J[0-9a-f]+:/g).length).toBe(1);
+    expect(main).not.toContain('"li"');
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelectorAll('li').length).toBe(20);
+  });
+
   it('adopts a stubbed element that has no inline style', async () => {
     const Counter = clientExports(function Counter() {
       return <button>count</button>;
@@ -1162,7 +1217,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           <math>
-            <mi>x</mi>
+            <mi title={FILL}>x</mi>
             <mo>+</mo>
           </math>
         </main>
@@ -1304,7 +1359,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
     it('is visible when it mounts again after it was unmounted while hidden', async () => {
       function App() {
-        return <h2>page-heading</h2>;
+        return <h2>{'page-heading' + FILL}</h2>;
       }
       const {container, root, Page, response} = await hydrateStubbed(App);
       await act(() => root.render(<Page mode="hidden" response={response} />));
@@ -1319,7 +1374,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         ),
       );
       const h2 = container.querySelector('h2');
-      expect(h2.textContent).toBe('page-heading');
+      expect(h2.textContent).toBe('page-heading' + FILL);
       expect(h2.style.display).toBe('');
     });
   });
@@ -1333,6 +1388,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
     }
     const {main, html} = await flight(<App />);
+    expect(main).toContain('$J');
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
@@ -1463,7 +1519,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <Tabs>
         <article className="panel">
-          <h2>server-panel</h2>
+          <h2>{'server-panel' + FILL}</h2>
         </article>
       </Tabs>
     );
@@ -1487,7 +1543,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const article = container.querySelector('article');
       expect(article.querySelector('h2')).not.toBe(adopted);
       expect(article.outerHTML).toBe(
-        '<article class="panel"><h2>server-panel</h2></article>',
+        '<article class="panel"><h2>server-panel' + FILL + '</h2></article>',
       );
     }
     expect(missing).not.toHaveBeenCalled();
@@ -1531,13 +1587,13 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <List>
         <li key="x">
-          <b>x</b>
+          <b title={FILL}>x</b>
         </li>
         <li key="y">
-          <b>y</b>
+          <b title={FILL}>y</b>
         </li>
         <li key="z">
-          <b>z</b>
+          <b title={FILL}>z</b>
         </li>
       </List>
     );
@@ -1565,7 +1621,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <Panel>
         <div>
-          <p>modal-body</p>
+          <p>{'modal-body' + FILL}</p>
         </div>
       </Panel>
     );
@@ -1616,7 +1672,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           <article>{'page-content '.repeat(10)}</article>
           <Panel>
             <div>
-              <p>modal-body</p>
+              <p>{'modal-body' + FILL}</p>
             </div>
           </Panel>
         </main>
@@ -1638,7 +1694,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       console.log(
         `late rows: stream=${byteLength(main)} the modal's row=${lateBytes}`,
       );
-      expect(lateBytes).toBeLessThan(__DEV__ ? 400 : 80);
+      expect(lateBytes).toBeLessThan(byteLength(FILL) + (__DEV__ ? 400 : 80));
 
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
@@ -1648,14 +1704,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(container.textContent).not.toContain('modal-body');
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside').innerHTML).toBe(
-        '<div><p>modal-body</p></div>',
+        '<div><p>modal-body' + FILL + '</p></div>',
       );
       // Closing and opening it again doesn't need the server either.
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside')).toBe(null);
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside').innerHTML).toBe(
-        '<div><p>modal-body</p></div>',
+        '<div><p>modal-body' + FILL + '</p></div>',
       );
       expect(missing).not.toHaveBeenCalled();
       expect(errors).toEqual([]);
@@ -1671,12 +1727,13 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <div>
           <ClientOnly>
             <section>
-              <p>client-only-content</p>
+              <p>{'client-only-content' + FILL}</p>
             </section>
           </ClientOnly>
         </div>
       );
       const {main, html} = await flightAndSsr(<App />);
+      expect(main).toContain('$J');
       // The section is real; the late row is its child's.
       expect(main).not.toMatch(/\$J[0-9a-f]+:section/);
       expect(main).toContain('client-only-content');
@@ -1686,7 +1743,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         onMissingHTML: missing,
       });
       expect(container.innerHTML).toBe(
-        '<div><section><p>client-only-content</p></section></div>',
+        '<div><section><p>client-only-content' + FILL + '</p></section></div>',
       );
       expect(missing).not.toHaveBeenCalled();
       expect(errors).toEqual([]);
@@ -1833,7 +1890,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           <main>
             <Panel>
               <div>
-                <p>modal-body</p>
+                <p>{'modal-body' + FILL}</p>
               </div>
             </Panel>
             <React.Suspense fallback="loading">
@@ -1883,7 +1940,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           <article>{'page-content '.repeat(10)}</article>
           <Panel>
             <div>
-              <p>modal-body</p>
+              <p>{'modal-body' + FILL}</p>
             </div>
           </Panel>
         </main>
@@ -1952,11 +2009,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       const App = () => (
         <main>
-          <p>before-text</p>
+          <p>{'before-text' + FILL}</p>
           <React.Suspense fallback={<i>loading</i>}>
             <Slow>
               <div>
-                <p>slow-grandchild-text</p>
+                <p>{'slow-grandchild-text' + FILL}</p>
               </div>
             </Slow>
           </React.Suspense>
@@ -2088,9 +2145,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const App = () => (
         <main>
           <template>
-            <p>template-text</p>
+            <p>{'template-text' + FILL}</p>
           </template>
-          <p>after-text</p>
+          <p>{'after-text' + FILL}</p>
         </main>
       );
       const {main, html} = await renderWithTee(<App />);
@@ -2141,7 +2198,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const App = () => (
         <Slot>
           <a href="/x">
-            <span>Link</span>
+            <span>{'Link' + FILL}</span>
           </a>
         </Slot>
       );
@@ -2207,7 +2264,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <Panel>
         <div>
-          <section>modal-body</section>
+          <section>{'modal-body' + FILL}</section>
         </div>
       </Panel>
     );
@@ -2229,13 +2286,13 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return <i>c</i>;
     });
     function Item({label}) {
-      return <li>{label}</li>;
+      return <li>{label + FILL}</li>;
     }
     const App = () => (
       <ul>
         <Client />
         {['a', 'b'].map(l => (
-          <li key={l}>item-{l}</li>
+          <li key={l}>{'item-' + l + FILL}</li>
         ))}
         <Item key="srv" label="from-server-component" />
       </ul>
@@ -2285,7 +2342,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       <div>
         <ClientOnly>
           <section>
-            <p>client-only-content</p>
+            <p>{'client-only-content' + FILL}</p>
           </section>
         </ClientOnly>
       </div>
@@ -2332,17 +2389,17 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       <main>
         <Client fallback={<i>client-prop-text</i>}>
           <div>
-            <p>client-child-text</p>
+            <p>{'client-child-text' + FILL}</p>
           </div>
           <ServerTable />
         </Client>
         <section>
           <Client />
-          <h2>host-child-text</h2>
+          <h2>{'host-child-text' + FILL}</h2>
         </section>
         <React.Suspense fallback={<p>suspense-fallback-text</p>}>
           <ServerTable />
-          <h3>suspense-content-text</h3>
+          <h3>{'suspense-content-text' + FILL}</h3>
         </React.Suspense>
         <ServerTable />
       </main>
@@ -2547,7 +2604,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         await delay(ms);
         return (
           <section id={label}>
-            <p>{label + '-text'}</p>
+            <p>{label + '-text' + FILL}</p>
             {children}
           </section>
         );
@@ -2555,7 +2612,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return function App() {
         return (
           <main>
-            <h1>shell-text</h1>
+            <h1>{'shell-text' + FILL}</h1>
             <Counter />
             <React.Suspense fallback={<i>loading-outer</i>}>
               <Late ms={10} label="outer">
@@ -2614,7 +2671,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const after = getContentNodes(hydrated);
       after.forEach(node => expect(node).not.toBe(null));
       expect(visibleText(hydrated)).toBe(
-        'shell-textn:0outer-textinner-textside-text',
+        'shell-text' +
+          FILL +
+          'n:0outer-text' +
+          FILL +
+          'inner-text' +
+          FILL +
+          'side-text' +
+          FILL,
       );
       expect(errors).toEqual([]);
       expect(missing).not.toHaveBeenCalled();
@@ -2628,6 +2692,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     it('adopts boundaries that are still pending when hydration starts', async () => {
       const App = makeStreamingApp();
       const {main, chunks} = await streamHTML(<App />);
+      expect(main).toContain('$J');
       expect(chunks.length).toBeGreaterThan(1);
       const missing = jest.fn();
       const {container, errors} = await hydrateStream(main, chunks, 1, missing);
@@ -2640,7 +2705,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       nodes.forEach(node => expect(node).not.toBe(null));
       await act(() => container.querySelector('button').click());
       expect(visibleText(container)).toBe(
-        'shell-textn:2outer-textinner-textside-text',
+        'shell-text' +
+          FILL +
+          'n:2outer-text' +
+          FILL +
+          'inner-text' +
+          FILL +
+          'side-text' +
+          FILL,
       );
       expect(getContentNodes(container)).toEqual(nodes);
       expect(errors).toEqual([]);
@@ -2662,14 +2734,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const content = (
         <>
           <Article />
-          <p>static-p</p>
+          <p>{'static-p' + FILL}</p>
           <Fragile />
         </>
       );
       function App() {
         return (
           <main>
-            <h1>shell-text</h1>
+            <h1>{'shell-text' + FILL}</h1>
             {withSuspense ? (
               <React.Suspense fallback={<i>loading</i>}>
                 {content}
@@ -2708,7 +2780,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const h1 = container.querySelector('h1');
       await renderFullPayload(root, <App />);
       expect(visibleText(container)).toBe(
-        'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
+        'shell-text' +
+          FILL +
+          'static-sibling '.repeat(3) +
+          'static-p' +
+          FILL +
+          'client-ok',
       );
       // The full payload has real elements where the stubs were. Where a stub
       // adopted DOM (outside of the boundary) it is what they would render, so
@@ -2727,6 +2804,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           serverErrors.push(error.message);
         },
       });
+      expect(main).toContain('$J');
       expect(serverErrors).toEqual(['window is not defined']);
       expect(chunks.join('')).toContain('loading');
       expect(chunks.join('')).not.toContain('static-sibling');
@@ -2745,7 +2823,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
       // (The container also has the server's error text after <main>.)
       expect(container.querySelector('main').textContent).toBe(
-        'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
+        'shell-text' +
+          FILL +
+          'static-sibling '.repeat(3) +
+          'static-p' +
+          FILL +
+          'client-ok',
       );
       expect(missing).not.toHaveBeenCalled();
       expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);

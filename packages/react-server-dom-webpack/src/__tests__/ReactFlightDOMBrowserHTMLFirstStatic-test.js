@@ -83,6 +83,10 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
+  // The server stubs an element only when it takes about 48 bytes or more in
+  // the payload. A fixture appends this to its text to be stubbed.
+  const FILL = ' filler text so this element is big enough to be stubbed';
+
   async function readAll(stream) {
     const reader = stream.getReader();
     let result = '';
@@ -252,6 +256,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
   it('hydrates SSR HTML with the stripped stream without mismatches', async () => {
     const App = makeApp();
     const stubbed = await flight(<App />, true);
+    expect(stubbed.main).toContain('$J');
     const html = stubbed.html;
     expect(html).toContain('item-199');
     expect(html).toContain('.a{color:red}');
@@ -434,11 +439,11 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     const Mixed = () => (
       <ul>
         <li key="a" className="item">
-          a
+          {'a' + FILL}
         </li>
         <Counter key="c" label="clicks" />
         <li key="b" className="item">
-          b
+          {'b' + FILL}
         </li>
       </ul>
     );
