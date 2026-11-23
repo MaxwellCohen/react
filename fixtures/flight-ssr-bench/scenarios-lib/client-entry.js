@@ -22,6 +22,7 @@ function Shell({response}) {
       setTimeout(() => {
         setTimeout(() => {
           window.__hydrateEnd = performance.now();
+          performance.mark('hydrate-end');
         }, 0);
       }, 0);
     }
@@ -44,6 +45,7 @@ const flightStream = new ReadableStream({
 });
 
 window.__hydrateStart = performance.now();
+performance.mark('hydrate-start');
 const root = hydrateRoot(
   document,
   <Shell

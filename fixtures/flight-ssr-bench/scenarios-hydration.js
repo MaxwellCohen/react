@@ -6,6 +6,8 @@
 //   hydrateMs  window.__hydrateStart (just before hydrateRoot) -> window.__hydrateEnd (two macrotask turns
 //              after the Shell passive effect, which flushes the post-hydration re-render of stubs).
 //              The page is already fully parsed, so the window is main-thread bound.
+//   busyMs     main-thread busy time (sum of RunTask in a CDP trace) between the hydrate-start and hydrate-end marks:
+//              scripts + style/layout/paint, no idle. Idle is where hydrate ms and busyMs differ.
 //   scriptMs   CDP Performance.getMetrics ScriptDuration of the whole load (client.js eval + hydration + effects).
 // Also reports stubs ($J ids in the inlined Flight), HTML/gzip bytes.
 const fs = require('fs');
@@ -42,6 +44,18 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
       const cdp = await c.newCDPSession(page);
       await cdp.send('Performance.enable');
       await cdp.send('Emulation.setCPUThrottlingRate', {rate: throttle});
+      const events = [];
+      cdp.on('Tracing.dataCollected', e => events.push(...e.value));
+      await cdp.send('Tracing.start', {
+        transferMode: 'ReportEvents',
+        traceConfig: {
+          includedCategories: [
+            'disabled-by-default-devtools.timeline',
+            'devtools.timeline',
+            'blink.user_timing',
+          ],
+        },
+      });
       await page.goto(`${base}/${v}/${s.id}/`, {waitUntil: 'load'});
       await page.waitForFunction(() => window.__hydrateEnd !== undefined, null, {
         timeout: 60000,
@@ -50,6 +64,23 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
         hydrateMs: window.__hydrateEnd - window.__hydrateStart,
         toEffectMs: window.__hydratedAt - window.__hydrateStart,
       }));
+      const done = new Promise(r => cdp.once('Tracing.tracingComplete', r));
+      await cdp.send('Tracing.end');
+      await done;
+      const main = events.find(
+        e => e.name === 'thread_name' && e.args && e.args.name === 'CrRendererMain'
+      );
+      const at = n => events.find(e => e.name === n && e.pid === main.pid && e.tid === main.tid);
+      const a = at('hydrate-start').ts;
+      const b = at('hydrate-end').ts;
+      let busy = 0;
+      for (const e of events)
+        if (e.name === 'RunTask' && e.ph === 'X' && e.pid === main.pid && e.tid === main.tid) {
+          const lo = Math.max(e.ts, a);
+          const hi = Math.min(e.ts + e.dur, b);
+          if (hi > lo) busy += hi - lo;
+        }
+      t.busyMs = busy / 1000;
       const m = await cdp.send('Performance.getMetrics');
       const get = n => (m.metrics.find(x => x.name === n) || {value: 0}).value;
       t.scriptMs = get('ScriptDuration') * 1000;
@@ -74,7 +105,7 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
         };
       }
       const acc = Object.fromEntries(
-        ctx.workers.map(w => [w.name, {hydrateMs: [], toEffectMs: [], scriptMs: [], taskMs: []}])
+        ctx.workers.map(w => [w.name, {hydrateMs: [], toEffectMs: [], busyMs: [], scriptMs: [], taskMs: []}])
       );
       for (const w of ctx.workers) await load(w.name, s); // warm up
       for (let k = 0; k < N; k++)
@@ -109,12 +140,12 @@ const FLIGHT_RE = /<script>\(self\.__FLIGHT_DATA[\s\S]*?<\/script>/g;
     `size=${opts.size}, N=${N} interleaved loads per cell, CPU throttle ${throttle}x, builds=\`${opts.builds}\`.`,
     'hydrate ms = __hydrateStart -> __hydrateEnd (median [p25-p75]); script ms = CDP ScriptDuration of the whole load.',
     '',
-    '| scenario | variant | stubs | HTML B | gzip B | hydrate ms | to-effect ms | script ms |',
-    '|---|---|---|---|---|---|---|---|',
+    '| scenario | variant | stubs | HTML B | gzip B | hydrate ms | to-effect ms | busy ms | script ms |',
+    '|---|---|---|---|---|---|---|---|---|',
   ];
   for (const r of rows)
     md.push(
-      `| ${r.scenario} | ${r.variant} | ${r.stubs} | ${r.html} | ${r.gzip} | ${f(r.hydrateMs)} | ${f(r.toEffectMs)} | ${f(r.scriptMs)} |`
+      `| ${r.scenario} | ${r.variant} | ${r.stubs} | ${r.html} | ${r.gzip} | ${f(r.hydrateMs)} | ${f(r.toEffectMs)} | ${f(r.busyMs)} | ${f(r.scriptMs)} |`
     );
   const dir = process.env.SCN_RESULTS_DIR || path.join(__dirname, 'results');
   fs.mkdirSync(dir, {recursive: true});
