@@ -83,14 +83,28 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
     return React.use(read()).page;
   }
 
+  // The server stubs an element only when it takes about 48 bytes or more in
+  // the payload. A fixture appends this to its text to be stubbed.
+  const FILL = ' filler text so this element is big enough to be stubbed';
+
   // Renders `createModel()` once. Returns the bytes, the model decoded from
   // them, and with `ssr` the HTML and the model that Fizz read from the tee.
+  // With `htmlFirst`, the option is a thenable that settles when Fizz is done:
+  // it resolves after allReady and rejects on an error. Without `ssr` nothing
+  // renders HTML, so it resolves as soon as the render has started: the
+  // bytes are all that is read, and the late rows for every stub follow.
   async function render(createModel, {htmlFirst, ssr = true, Root = PageRoot}) {
     let wire = '';
     let fromBytes;
     let fromTee = null;
     let html = null;
     let closed;
+    let htmlDone = null;
+    const htmlFirstOption = htmlFirst
+      ? new Promise((resolve, reject) => {
+          htmlDone = {resolve, reject};
+        })
+      : false;
     const wireClosed = new Promise(resolve => {
       closed = resolve;
     });
@@ -108,7 +122,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       });
       ReactServerDOMServer.renderToPipeableStream(createModel(), turbopackMap, {
         tee,
-        htmlFirst,
+        htmlFirst: htmlFirstOption,
       }).pipe(readable);
       fromBytes = ReactServerDOMClient.createFromNodeStream(
         forClient,
@@ -121,11 +135,24 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
           }
           return fromTee;
         };
-        html = readResult(
-          ReactDOMServer.renderToPipeableStream(
-            React.createElement(Root, {read}),
-          ),
+        const fizz = ReactDOMServer.renderToPipeableStream(
+          React.createElement(Root, {read}),
+          {
+            onAllReady() {
+              if (htmlDone !== null) {
+                htmlDone.resolve();
+              }
+            },
+            onError(error) {
+              if (htmlDone !== null) {
+                htmlDone.reject(error);
+              }
+            },
+          },
         );
+        html = readResult(fizz);
+      } else if (htmlDone !== null) {
+        htmlDone.resolve();
       }
     });
     html = await html;
@@ -155,7 +182,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       return (
         <article>
           <h2>card {tag}</h2>
-          <p>static body of {tag}</p>
+          <p>static body of {tag + FILL}</p>
         </article>
       );
     }
@@ -163,7 +190,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       await new Promise(resolve => setTimeout(resolve, 10));
       ReactServer.addToLedger(Tags, 'late');
       ReactServer.addToLedger(Dynamic, true);
-      return <footer>late static</footer>;
+      return <footer>late static{FILL}</footer>;
     }
     function Page() {
       return (
@@ -230,7 +257,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
         ReactServer.addToLedger(Tags, 'cached');
         return (
           <article>
-            <p>cached static</p>
+            <p>cached static{FILL}</p>
           </article>
         );
       });
@@ -243,7 +270,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       const first = ReactServer.captureLedgers(<First />, [Tags]);
       const second = ReactServer.captureLedgers(<Second />, [Tags]);
       const bare = ReactServer.captureLedgers(
-        <aside key="bare">bare static</aside>,
+        <aside key="bare">bare static{FILL}</aside>,
         [Tags],
       );
       return {
@@ -261,6 +288,8 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
     }
     const off = await render(createModel, {htmlFirst: false});
     const on = await render(createModel, {htmlFirst: true});
+    expect(stubCount(off.wire)).toBe(0);
+    expect(stubCount(on.wire)).toBeGreaterThan(0);
     expect(on.html).toBe(off.html);
     expect(on.wire).not.toContain('cached static');
     expect(on.wire).not.toContain('bare static');
@@ -288,7 +317,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       }
       function Parent() {
         ReactServer.addToLedger(Tags, 'beside');
-        const el = <p key="p">static</p>;
+        const el = <p key="p">static{FILL}</p>;
         const captured = ReactServer.captureLedgers(<Child el={el} />, [Tags]);
         return {
           page: (
@@ -304,6 +333,8 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
     }
     const off = await render(createModel, {htmlFirst: false});
     const on = await render(createModel, {htmlFirst: true});
+    expect(stubCount(off.wire)).toBe(0);
+    expect(stubCount(on.wire)).toBeGreaterThan(0);
     expect(on.html).toBe(off.html);
     expect(await sorted(off.bytes.child)).toEqual(['beside']);
     expect(await sorted(off.tee.child)).toEqual(['beside']);
@@ -322,9 +353,11 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
         ReactServer.addToLedger(Tags, 'page');
         return (
           <main>
-            <h1>shown static</h1>
+            <h1>shown static{FILL}</h1>
             <Hidden>
-              <p>hidden static</p>
+              <div>
+                <p>hidden static{FILL}</p>
+              </div>
             </Hidden>
           </main>
         );
@@ -335,6 +368,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
     const {html, wire, bytes, tee} = await render(createModel, {
       htmlFirst: true,
     });
+    expect(stubCount(wire)).toBeGreaterThan(0);
     expect(html).toContain('shown static');
     expect(html).not.toContain('hidden static');
     expect(wire).not.toContain('shown static');
