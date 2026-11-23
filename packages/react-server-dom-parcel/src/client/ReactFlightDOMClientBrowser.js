@@ -18,7 +18,6 @@ import type {ServerReferenceId} from '../client/ReactFlightClientConfigBundlerPa
 
 import {
   createResponse,
-  attachMissingHTML,
   createStreamState,
   getRoot,
   reportGlobalError,
@@ -115,7 +114,7 @@ function createResponseFromOptions(options: void | Options) {
         }
       : undefined;
 
-  const response = createResponse(
+  return createResponse(
     null, // bundlerConfig
     null, // serverReferenceConfig
     null, // moduleLoading
@@ -140,10 +139,6 @@ function createResponseFromOptions(options: void | Options) {
     debugChannel,
     __DEV__ && options ? options.unstable_requestId : undefined,
   );
-  if (options && options.onMissingHTML) {
-    attachMissingHTML(response, options.onMissingHTML);
-  }
-  return response;
 }
 
 function startReadingFromUniversalStream(
@@ -214,7 +209,6 @@ function startReadingFromStream(
 }
 
 export type Options = {
-  onMissingHTML?: () => void,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},
   temporaryReferences?: TemporaryReferenceSet,
   unstable_allowPartialStream?: boolean,

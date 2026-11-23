@@ -96,7 +96,7 @@ function createResponseFromOptions(options?: Options) {
         }
       : undefined;
 
-  const response = createResponse(
+  return createResponse(
     null, // bundlerConfig
     null, // serverReferenceConfig
     null, // moduleLoading
@@ -121,7 +121,6 @@ function createResponseFromOptions(options?: Options) {
     debugChannel,
     __DEV__ && options ? options.unstable_requestId : undefined,
   );
-  return response;
 }
 
 function startReadingFromStream(

@@ -11,11 +11,12 @@
 
 import {patchSetImmediate} from '../../../../scripts/jest/patchSetImmediate';
 
-// Regression coverage for zero-optin registry SSR flushing Flight :HL hints
-// into Fizz (needs Node ALS + createFrom* during Fizz render).
+// Regression coverage for SSR flushing Flight :HL hints into Fizz when Fizz
+// reads a tee (needs Node ALS + createFromTee during Fizz render).
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
   enableFlightHTMLFirst: true,
+  enableFlightTee: true,
 }));
 
 // Polyfills for test environment
@@ -31,13 +32,14 @@ let FlightReactDOM;
 let React;
 let ReactServerDOMServer;
 let ReactServerDOMClient;
+let ReactServerDOMNodeClient;
+let webpackModuleLoading;
 let ReactDOMFizzServer;
 let Stream;
 
 describe('ReactFlightDOM html-first :HL hints', () => {
   beforeEach(() => {
     jest.resetModules();
-    document.head.innerHTML = '';
 
     patchSetImmediate();
     serverAct = require('internal-test-utils').serverAct;
@@ -47,10 +49,11 @@ describe('ReactFlightDOM html-first :HL hints', () => {
     FlightReactDOM = require('react-dom');
 
     jest.mock('react-server-dom-webpack/server', () =>
-      require('react-server-dom-unbundled/server.node'),
+      require('react-server-dom-webpack/server.node'),
     );
     const WebpackMock = require('./utils/WebpackMock');
     webpackMap = WebpackMock.webpackMap;
+    webpackModuleLoading = WebpackMock.moduleLoading;
     ReactServerDOMServer = require('react-server-dom-webpack/server');
 
     jest.unmock('react-server-dom-webpack/server');
@@ -61,10 +64,12 @@ describe('ReactFlightDOM html-first :HL hints', () => {
     React = require('react');
     use = React.use;
     ReactDOMFizzServer = require('react-dom/server.node');
-    jest.mock('react-server-dom-webpack/client', () =>
-      require('react-server-dom-webpack/client.browser'),
+    // Both ways of reading need the SSR client config, so load the Node
+    // client first.
+    ReactServerDOMNodeClient = jest.requireActual(
+      'react-server-dom-webpack/client.node',
     );
-    ReactServerDOMClient = require('react-server-dom-webpack/client');
+    ReactServerDOMClient = ReactServerDOMNodeClient;
   });
 
   function getTestStream() {
@@ -97,10 +102,10 @@ describe('ReactFlightDOM html-first :HL hints', () => {
     return buffer;
   }
 
-  // Registry SSR used to early-return in ReactDOMFlightServerHostDispatcher
-  // when the hint key was already in request.hints, skipping previousDispatcher.L
-  // (Fizz). Side-channel PASSed; registry did not flush href-first preloads.
-  it('flushes :HL preload hints into Fizz HTML for zero-optin registry SSR', async () => {
+  // The host dispatcher used to early-return when the hint key was already in
+  // request.hints, skipping previousDispatcher.L (Fizz). The tee reader must
+  // flush the same href-first preloads that reading the bytes does.
+  it('flushes :HL preload hints into Fizz HTML when Fizz reads a tee', async () => {
     const HREF = '/hint-preload-image.jpg';
 
     function App() {
@@ -114,16 +119,13 @@ describe('ReactFlightDOM html-first :HL hints', () => {
       );
     }
 
-    async function renderOnce(flightOpts, createOpts) {
-      const {writable: flightWritable, readable: flightReadable} =
-        getTestStream();
+    async function renderBytes() {
+      const flightWritable = new Stream.PassThrough();
 
       await serverAct(() => {
-        ReactServerDOMServer.renderToPipeableStream(
-          <App />,
-          webpackMap,
-          flightOpts,
-        ).pipe(flightWritable);
+        ReactServerDOMServer.renderToPipeableStream(<App />, webpackMap).pipe(
+          flightWritable,
+        );
       });
 
       // Pause so Flight and Fizz don't cross-dispatch on the shared test graph.
@@ -132,10 +134,10 @@ describe('ReactFlightDOM html-first :HL hints', () => {
       let response = null;
       function Root() {
         if (response === null) {
-          response = ReactServerDOMClient.createFromReadableStream(
-            flightReadable,
-            createOpts,
-          );
+          response = ReactServerDOMClient.createFromNodeStream(flightWritable, {
+            moduleMap: {},
+            moduleLoading: webpackModuleLoading,
+          });
         }
         return use(response);
       }
@@ -147,18 +149,66 @@ describe('ReactFlightDOM html-first :HL hints', () => {
       return readAll(fizzReadable);
     }
 
-    const rows = new Map();
-    const sideHtml = await renderOnce(
-      {htmlFirst: {onRow: (id, json) => rows.set(id, json)}},
-      {htmlFirstRows: rows},
-    );
-    const registryHtml = await renderOnce(undefined, undefined);
+    async function renderTee() {
+      const tee = ReactServerDOMNodeClient.createTee({
+        moduleMap: {},
+        moduleLoading: webpackModuleLoading,
+      });
+      let htmlDone;
+      const htmlFirst = new Promise((resolve, reject) => {
+        htmlDone = {resolve, reject};
+      });
+      const {writable: flightWritable, readable: flightReadable} =
+        getTestStream();
+      const {writable: fizzWritable, readable: fizzReadable} = getTestStream();
+
+      let response = null;
+      function Root() {
+        if (response === null) {
+          response = ReactServerDOMNodeClient.createFromTee(tee);
+        }
+        return use(response);
+      }
+
+      await serverAct(() => {
+        ReactServerDOMServer.renderToPipeableStream(<App />, webpackMap, {
+          htmlFirst,
+          tee,
+        }).pipe(flightWritable);
+      });
+      // Pause so Flight and Fizz don't cross-dispatch on the shared test graph.
+      await serverAct(() => {});
+
+      await serverAct(() => {
+        const fizz = ReactDOMFizzServer.renderToPipeableStream(<Root />, {
+          onAllReady() {
+            htmlDone.resolve();
+          },
+          onError() {
+            htmlDone.reject();
+          },
+        });
+        fizz.pipe(fizzWritable);
+      });
+      const [html, flightBytes] = await Promise.all([
+        readAll(fizzReadable),
+        readAll(flightReadable),
+      ]);
+      return {html, flightBytes};
+    }
+
+    const teeResult = await renderTee();
+    const bytesHtml = await renderBytes();
 
     const hrefFirst = html =>
       (html.match(/rel="preload" href="[^"]*" as="image"/g) || []).length;
-    expect(hrefFirst(sideHtml)).toBeGreaterThan(0);
-    expect(hrefFirst(registryHtml)).toBe(hrefFirst(sideHtml));
-    expect(registryHtml).toContain(HREF);
-    expect(sideHtml).toContain(HREF);
+    expect(hrefFirst(teeResult.html)).toBeGreaterThan(0);
+    expect(hrefFirst(bytesHtml)).toBe(hrefFirst(teeResult.html));
+    expect(bytesHtml).toContain(HREF);
+    expect(teeResult.html).toContain(HREF);
+    // The tee render stubbed the static text out of the browser's bytes but
+    // its HTML has it.
+    expect(teeResult.flightBytes).not.toContain('static-host-text-');
+    expect(teeResult.html).toContain('static-host-text-');
   });
 });

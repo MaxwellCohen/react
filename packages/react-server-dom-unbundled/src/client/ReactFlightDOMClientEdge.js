@@ -96,7 +96,7 @@ function createResponseFromOptions(options: Options) {
         }
       : undefined;
 
-  const response = createResponse(
+  return createResponse(
     options.serverConsumerManifest.moduleMap,
     options.serverConsumerManifest.serverModuleMap,
     options.serverConsumerManifest.moduleLoading,
@@ -123,7 +123,6 @@ function createResponseFromOptions(options: Options) {
     debugChannel,
     __DEV__ && options ? options.unstable_requestId : undefined,
   );
-  return response;
 }
 
 function startReadingFromStream(

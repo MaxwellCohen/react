@@ -13,6 +13,7 @@
 jest.mock('shared/ReactFeatureFlags', () => ({
   ...jest.requireActual('shared/ReactFeatureFlags'),
   enableFlightHTMLFirst: true,
+  enableFlightTee: true,
 }));
 
 // Polyfills for test environment
@@ -37,6 +38,8 @@ let ReactDOMClient;
 let ReactDOMFizzServer;
 let ReactServerDOMServer;
 let ReactServerDOMClient;
+let ReactServerDOMEdgeClient;
+let webpackModuleLoading;
 let use;
 
 describe('ReactFlightDOMBrowser html-first stubbing', () => {
@@ -55,6 +58,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     const WebpackMock = require('./utils/WebpackMock');
     clientExports = WebpackMock.clientExports;
     webpackMap = WebpackMock.webpackMap;
+    webpackModuleLoading = WebpackMock.moduleLoading;
     ReactServerDOMServer = require('react-server-dom-webpack/server');
 
     __unmockReact();
@@ -71,6 +75,9 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     );
     ReactServerDOMClient = require('react-server-dom-webpack/client');
     use = React.use;
+    ReactServerDOMEdgeClient = jest.requireActual(
+      'react-server-dom-webpack/client.edge',
+    );
   });
 
   const encoder = new TextEncoder();
@@ -102,34 +109,16 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     return encoder.encode(text).length;
   }
 
-  // `htmlFirstRows` is only given to the consumer that renders HTML (SSR). The
-  // browser consumer doesn't get them and adopts the server DOM instead.
-  function consume(rsc, stubbedRows) {
-    return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
-      htmlFirstRows: stubbedRows,
-    });
+  // The browser consumer only gets the (stubbed) stream and adopts the server
+  // DOM instead of rendering the stubbed content.
+  function consume(rsc) {
+    return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc));
   }
 
   function Shell({response}) {
     return use(response);
   }
 
-  async function ssr({main, rows}) {
-    const response = consume(main, rows);
-    await response;
-    let html;
-    await act(async () => {
-      html = await readAll(
-        await ReactDOMFizzServer.renderToReadableStream(
-          <Shell response={response} />,
-        ),
-      );
-    });
-    return html;
-  }
-
-  // Returns {main, rows}: the stream (what is inlined for the browser) and
-  // the rows the server withheld from it, keyed by id (only for SSR).
   const CSS = '.a{color:red}\n'.repeat(500); // ~7KB
   const JSON_LD = JSON.stringify({
     '@context': 'https://schema.org',
@@ -137,18 +126,67 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
   });
   const BIG = 'big-text-'.repeat(300);
 
-  async function flight(element, stub) {
+  function createTeeManifest() {
+    const moduleMap = {};
+    for (const key in webpackMap) {
+      const metadata = webpackMap[key];
+      moduleMap[metadata.id] = {'*': metadata};
+    }
+    return {moduleMap, moduleLoading: webpackModuleLoading};
+  }
+
+  // Without `stub` this is a plain render (the baseline). With it, this is
+  // what a framework does: the Flight render feeds a tee that Fizz reads in
+  // this process. Returns the browser's payload and the HTML.
+  async function flightInner(element, stub) {
+    if (!stub) {
+      const main = await readAll(
+        ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+          htmlFirst: false,
+        }),
+      );
+      return {main, html: null};
+    }
+    const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+    let htmlDone;
+    const htmlFirst = new Promise((resolve, reject) => {
+      htmlDone = {resolve, reject};
+    });
+    const stream = ReactServerDOMServer.renderToReadableStream(
+      element,
+      webpackMap,
+      {htmlFirst, tee},
+    );
+    const browser = readAll(stream);
+    let response = null;
+    function TeeRoot() {
+      if (response === null) {
+        response = ReactServerDOMEdgeClient.createFromTee(tee);
+      }
+      return <Shell response={response} />;
+    }
+    const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
+      <TeeRoot />,
+    );
+    await htmlStream.allReady;
+    htmlDone.resolve();
+    const html = await readAll(htmlStream);
+    return {main: await browser, html};
+  }
+
+  function flight(element, stub) {
+    return serverAct(() => flightInner(element, stub));
+  }
+
+  // No reader: the elements of the stubbed rows go to `onValue`.
+  async function flightRows(element, extraOptions) {
     const rows = new Map();
-    const options = stub
-      ? {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}
-      : {htmlFirst: false};
     const main = await serverAct(async () =>
       readAll(
-        ReactServerDOMServer.renderToReadableStream(
-          element,
-          webpackMap,
-          options,
-        ),
+        ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+          htmlFirst: {onValue: (id, value) => rows.set(id, value)},
+          ...extraOptions,
+        }),
       ),
     );
     return {main, rows};
@@ -191,14 +229,13 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     expect(stubbed.main).not.toMatch(/^[0-9a-f]+:T/m);
     expect(stubbed.main).toContain('"clicks"');
     expect(byteLength(stubbed.main)).toBeLessThan(2000);
-    // The withheld rows carry the content for SSR.
-    const rows = Array.from(stubbed.rows.values()).join('');
-    expect(rows).toContain('item-199');
-    expect(rows).toContain('big-text-');
+    // The tee reader renders the content for the HTML.
+    expect(stubbed.html).toContain('item-199');
+    expect(stubbed.html).toContain('big-text-');
   });
 
   it('does not stub resources or executable scripts', async () => {
-    const {main, rows} = await flight(
+    const {main, rows} = await flightRows(
       <div>
         <script>{'window.__x=1'}</script>
         <script type="application/ld+json" src="/x.json" />
@@ -206,7 +243,6 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
           {'.zz{color:blue}'}
         </style>
       </div>,
-      true,
     );
     expect(rows.size).toBe(0);
     expect(main).toContain('window.__x=1');
@@ -216,7 +252,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
   it('hydrates SSR HTML with the stripped stream without mismatches', async () => {
     const App = makeApp();
     const stubbed = await flight(<App />, true);
-    const html = await ssr(stubbed);
+    const html = stubbed.html;
     expect(html).toContain('item-199');
     expect(html).toContain('.a{color:red}');
     expect(html).toContain('big-text-');
@@ -322,9 +358,9 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     // Static content inside a Suspense boundary is stubbed too and adopted
     // once the boundary hydrates.
     expect(stubbed.main).not.toContain('late-text');
-    expect(stubbed.rows.size).toBeGreaterThan(0);
+    expect(stubbed.main).toContain('$J');
 
-    const html = await ssr(stubbed);
+    const html = stubbed.html;
     expect(html).toContain('item-199');
     expect(html).toContain('late-text');
     document.open();
@@ -365,7 +401,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
         <Row name="a" details={details} />
       </ul>
     );
-    const stubbed = await flight(<App />, true);
+    const stubbed = await flightRows(<App />);
     // The client element and its props stay in the stream (hydration needs
     // them); the host skeleton around it is not static.
     expect(stubbed.main).toContain('client-notes-');
@@ -411,16 +447,16 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     const allStatic = await flight(<Static />, true);
     expect(allStatic.main).toContain('$J');
     expect(allStatic.main).not.toContain('"ul"');
-    expect(allStatic.rows.size).toBe(1);
+    expect((allStatic.main.match(/\$J/g) || []).length).toBe(1);
 
     // One interactive child: skeleton stays, Counter keeps its props.
     const mixed = await flight(<Mixed />, true);
     expect(mixed.main).toContain('"ul"');
     expect(mixed.main).toContain('"clicks"');
     expect(mixed.main).not.toContain('"a"');
-    expect(mixed.rows.size).toBe(2);
+    expect((mixed.main.match(/\$J/g) || []).length).toBe(2);
 
-    const html = await ssr(mixed);
+    const html = mixed.html;
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
@@ -442,14 +478,11 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     expect(button.textContent).toBe('clicks:1');
   });
 
-  it('hands SSR live rows (no JSON) and renders identical HTML', async () => {
+  it('hands live elements to onValue when there is no reader', async () => {
     const Counter = clientExports(function Counter({label}) {
-      const [n, setN] = React.useState(0);
       return (
         <li>
-          <button onClick={() => setN(n + 1)}>
-            {label}:{n}
-          </button>
+          <button>{label}</button>
         </li>
       );
     });
@@ -463,26 +496,20 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
         </ul>
       </section>
     );
-    const json = await flight(<App />, true);
-
-    const live = new Map();
-    const main = await serverAct(async () =>
-      readAll(
-        ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-          htmlFirst: {
-            onRow: () => {},
-            onValue: (id, value) => live.set(id, value),
-          },
-        }),
-      ),
+    const teed = await flight(<App />, true);
+    const live = await flightRows(<App />);
+    // The rows are live elements, never strings, and hold server output only.
+    expect(live.rows.size).toBeGreaterThan(0);
+    Array.from(live.rows.values()).forEach(v =>
+      expect(typeof v).toBe('object'),
     );
-    // The rows are live values, never strings, and hold server output only.
-    expect(live.size).toBe(json.rows.size);
-    expect(live.size).toBeGreaterThan(0);
-    Array.from(live.values()).forEach(v => expect(typeof v).toBe('object'));
-    expect(main).not.toContain('static static');
-    expect(main).toContain('"clicks"');
-    expect(await ssr({main, rows: live})).toBe(await ssr(json));
+    expect(live.main).not.toContain('static static');
+    expect(live.main).toContain('"clicks"');
+    // The model row is the same with a reader and without one.
+    const modelRow = main => main.split('\n').find(l => l.includes('$J'));
+    expect(modelRow(live.main)).toBe(modelRow(teed.main));
+    expect((live.main.match(/\$J/g) || []).length).toBe(live.rows.size);
+    expect(teed.html).toContain('static static');
   });
 
   it('stubs keyed server components that render array children', async () => {
@@ -507,47 +534,29 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
       </table>
     );
     const stubbed = await flight(<App />, true);
-    expect(stubbed.rows.size).toBe(2);
-    expect(Array.from(stubbed.rows.values())[0]).toContain('"a"');
-    const html = await ssr(stubbed);
+    expect((stubbed.main.match(/\$J/g) || []).length).toBe(2);
+    const html = stubbed.html;
     expect(html).toContain('<tr class="r"><td>a<!-- --> <b>x</b></td></tr>');
   });
 
   // @gate enableTaint
-  it('applies taint checks to live rows like it does to JSON rows', async () => {
+  it('applies taint checks to the elements handed to onValue', async () => {
     const secret = 'very-secret-token-' + 'x'.repeat(40);
-    const run = async (element, live) => {
-      const rows = new Map();
+    const run = async element => {
       const errors = [];
-      const options = {
+      const result = await flightRows(element, {
         onError: e => {
           errors.push(e.message);
         },
-        ...(live
-          ? {htmlFirst: {onValue: (id, v) => rows.set(id, v)}}
-          : {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}),
-      };
-      const main = await serverAct(async () =>
-        readAll(
-          ReactServerDOMServer.renderToReadableStream(
-            element,
-            webpackMap,
-            options,
-          ),
-        ),
-      );
-      return {main, rows, errors};
+      });
+      return {...result, errors};
     };
     // The taint lives as long as this object does; keep it referenced.
     const lifetime = {};
     ReactServer.experimental_taintUniqueValue('no secrets', lifetime, secret);
-    const check = async live => {
-      const hostText = await run(<p>{secret}</p>, live);
-      expect(hostText.errors.join()).toContain('no secrets');
-      expect(Array.from(hostText.rows.values()).join()).not.toContain(secret);
-    };
-    await check(false);
-    await check(true);
+    const hostText = await run(<p>{secret}</p>);
+    expect(hostText.errors.join()).toContain('no secrets');
+    expect(Array.from(hostText.rows.values()).join()).not.toContain(secret);
     expect(lifetime).toBeTruthy();
   });
 });

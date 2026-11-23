@@ -9,7 +9,6 @@
 
 import type {
   Request,
-  HTMLFirstOption,
   ReactClientValue,
 } from 'react-server/src/ReactFlightServer';
 import type {Destination} from 'react-server/src/ReactServerStreamConfigNode';
@@ -157,10 +156,6 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // enableFlightHTMLFirst: a thenable that settles when the HTML render that
-  // reads the `tee` is done. Static host elements are stubbed in the bytes for
-  // that reader. {onValue} takes the stubbed elements instead.
-  htmlFirst?: HTMLFirstOption,
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -208,7 +203,6 @@ export function renderToPipeableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
-    options ? options.htmlFirst : undefined,
   );
   let hasStartedFlowing = false;
   startWork(request);
