@@ -151,6 +151,7 @@ function load(only) {
       interact: mod.interact || [],
       knownFailure: mod.knownFailure || null,
       allowRecoverableErrors: !!mod.allowRecoverableErrors,
+      teeReference: !!mod.teeReference,
     });
   }
   if (errors.length) {

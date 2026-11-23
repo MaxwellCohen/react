@@ -86,9 +86,8 @@ export const enableFlightWeakThenables = __EXPERIMENTAL__;
 
 // Let a Flight Client in the same process read a Flight render directly,
 // through a tee created with `createTee` and passed to the server, instead of
-// parsing the bytes. On in canary too, because HTML-first
-// (enableFlightHTMLFirst) hands the HTML its stubbed elements through a tee.
-export const enableFlightTee: boolean = true;
+// parsing the bytes.
+export const enableFlightTee = __EXPERIMENTAL__;
 
 // Support Server References that point to objects (including Promises), not
 // just functions. On the server the reference is the real object; on the
@@ -126,8 +125,8 @@ export const enableOptimisticKey = __EXPERIMENTAL__;
 // HTML-first Flight. When on, static host markup that a Server Component
 // renders in host position (including inside Suspense children) is left out of
 // the payload inlined for the browser and adopted from the SSR HTML on
-// hydration. A render opts in with `htmlFirst: true` and hands the stubbed
-// elements to the tee that reads it for SSR (enableFlightTee).
+// hydration. A render opts in with the `htmlFirst` option and hands the
+// stubbed elements to the tee that reads it for SSR (enableFlightTee).
 export const enableFlightHTMLFirst: boolean = false;
 
 /**

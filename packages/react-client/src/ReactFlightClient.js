@@ -397,10 +397,8 @@ type Response = {
   _encodeFormAction: void | EncodeFormActionCallback,
   _nonce: ?string,
   _chunks: Map<number, SomeChunk<any>>,
-  // enableFlightHTMLFirst: rows the server withheld from the stream.
-  _stubbedRows: null | StubbedRows,
-  // enableFlightHTMLFirst: the rows a tee handed to this response. It records
-  // which rows get rendered, see StubbedRendered.
+  // enableFlightHTMLFirst: the elements the server stubbed in the bytes, which
+  // a tee handed to this response to render the HTML from.
   _stubbedEntry: null | StubbedRowsEntry,
   // enableFlightHTMLFirst: the `:P` id of the payload, which names it.
   _stubbedRequestId: number,
@@ -454,31 +452,13 @@ function hasGCedResponse(weakResponse: WeakResponse): boolean {
   return __DEV__ && weakResponse.weak.deref() === undefined;
 }
 
-// The side channel for rows the server stubbed from the stream. Rows are
-// complete JSON strings, so they are never interleaved with stream bytes.
-// A row is JSON, or (enableFlightHTMLFirst, in-process) a ready React node.
-export interface StubbedRows {
-  get(id: number): void | string | mixed;
-}
-
-export function attachStubbedRows(
-  weakResponse: WeakResponse,
-  rows: StubbedRows,
-): void {
-  if (enableFlightHTMLFirst) {
-    unwrapWeakResponse(weakResponse)._stubbedRows = rows;
-  }
-}
-
 // enableFlightHTMLFirst: the stubbed elements of the render a tee reads.
 export function setStubbedRowsEntry(
   weakResponse: WeakResponse,
   entry: StubbedRowsEntry,
 ): void {
   if (enableFlightHTMLFirst) {
-    const response = unwrapWeakResponse(weakResponse);
-    response._stubbedRows = entry.rows;
-    response._stubbedEntry = entry;
+    unwrapWeakResponse(weakResponse)._stubbedEntry = entry;
   }
 }
 
@@ -946,11 +926,6 @@ function createResolvedModelChunk<T>(
 ): ResolvedModelChunk<T> {
   // $FlowFixMe[invalid-constructor] Flow doesn't support functions as constructors
   return new ReactPromise(RESOLVED_MODEL, value, {[RESPONSE_SYMBOL]: response});
-}
-
-function createInitializedValueChunk<T>(value: T): InitializedChunk<T> {
-  // $FlowFixMe[invalid-constructor] Flow doesn't support functions as constructors
-  return new ReactPromise(INITIALIZED, value, null);
 }
 
 function createResolvedModuleChunk<T>(
@@ -3085,28 +3060,28 @@ export function decodeModelString(
  * recoverStubbedContent). That payload has real elements where the stubs were,
  * which replace them.
  */
-function StaticStub(props: {
-  tag: string,
-  late: () => null | React$Node,
-  recover: () => Promise<mixed>,
-  saved: StubbedNodeHolder,
-  remember: (node: null | Element) => void,
-  restore: (node: null | Element) => void,
-}): React$Node {
-  // True while hydrating (React reads the server snapshot), false in a plain
-  // client render.
-  const hydrating = React.useSyncExternalStore(
-    subscribeNever,
-    getFalse,
-    getTrue,
-  );
+function StaticStub(
+  props: {
+    tag: string,
+    late: () => null | React$Node,
+    recover: () => Promise<mixed>,
+    saved: StubbedNodeHolder,
+    remember: (node: null | Element) => void,
+    restore: (node: null | Element) => void,
+  },
+  // The renderer that mounts a stub passes whether it is hydrating it (it
+  // knows the type by its $$typeof), so that the stub needs no hook, effect or
+  // second render to find out. A renderer that passes nothing, like Fizz,
+  // renders the element the browser adopts.
+  hydrating: void | boolean,
+): React$Node {
   // A stub that adopted server DOM keeps that node. When the same stub mounts
   // again later (a framework re-rendering a cached payload, e.g. on back
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
   const [slot, setSlot] = React.useState(() => ({
     saved: props.saved,
-    mode: hydrating ? ADOPT : modeWithoutHTML(props.saved),
+    mode: hydrating !== false ? ADOPT : modeWithoutHTML(props.saved),
     generation: 0,
   }));
   // React reuses this fiber for a different stub when unkeyed siblings swap
@@ -3122,20 +3097,6 @@ function StaticStub(props: {
     setSlot(current);
   }
   const mode = current.mode;
-  // React restores `display` from the style prop when it shows a hidden
-  // Activity again. The stub has no props of its own, so it uses the inline
-  // display the server rendered, recorded when the node was adopted.
-  const [savedDisplay, setDisplay] = React.useState(props.saved.display);
-  let display = savedDisplay;
-  if (current !== slot) {
-    display = props.saved.display;
-    setDisplay(display);
-  }
-  React.useLayoutEffect(() => {
-    if (display !== props.saved.display) {
-      setDisplay(props.saved.display);
-    }
-  }, []);
   if (mode === RECOVER) {
     // The server sends the rows that its HTML render did not reach after all.
     const late = props.late();
@@ -3149,7 +3110,6 @@ function StaticStub(props: {
     key: current.generation,
     suppressHydrationWarning: true,
     dangerouslySetInnerHTML: EMPTY_HTML,
-    style: display === null ? undefined : {display},
     ref: mode === RESTORE ? props.restore : props.remember,
   });
 }
@@ -3201,7 +3161,12 @@ function rememberStubbedNode(
     return;
   }
   saved.node = node;
-  if (saved.display === null) {
+  if (saved.html !== null) {
+    // The ref of a node that was hidden by an Activity is attached again when
+    // it is shown. React restores `display` from the style prop then, and the
+    // stub has no props of its own, so put back what the server rendered.
+    restoreStubbedDisplay(saved, node);
+  } else if (saved.display === null) {
     // Adopted while hydrating, so this is the server's inline display.
     // Not every element has an inline style (MathML in some environments).
     const style = (node as any).style;
@@ -3289,17 +3254,6 @@ function restoreStubbedDisplay(saved: StubbedNodeHolder, node: Element): void {
   }
 }
 
-function subscribeNever(): () => void {
-  return noopUnsubscribe;
-}
-function noopUnsubscribe(): void {}
-function getFalse(): boolean {
-  return false;
-}
-function getTrue(): boolean {
-  return true;
-}
-
 // Called when a stub has to render without server HTML. The first call asks
 // the framework (the onMissingHTML option) to render the full,
 // non-stubbed payload. Without that option the page can't get the content
@@ -3357,12 +3311,6 @@ function endStubbedRows(response: Response): void {
   if (end !== null) {
     end.resolve();
   }
-  // Everything but the late rows was emitted. Once the renderer has rendered
-  // what that resolved, the reader is not going to render more of the rows.
-  const entry = response._stubbedEntry;
-  if (entry !== null) {
-    scheduleStubbedSettle(entry);
-  }
 }
 
 // The row of a stubbed element, if the server sent it after all. This never
@@ -3377,51 +3325,31 @@ function getLateStubbedRow(response: Response, id: number): null | React$Node {
 }
 
 // Rendered in place of the stub by the tee's reader (the one that renders
-// HTML), in the slot StaticStub takes in the browser. It is a lazy
-// node: Fizz resolves it only when it renders that position, which records
-// that the HTML contains this row. The server sends the rows that were never
-// rendered to the browser once this consumer settles. A lazy node costs far
-// less than a component render per row.
+// HTML), in the slot StaticStub takes in the browser. It is a lazy node: Fizz
+// resolves it only when it renders that position, which records that the HTML
+// contains this row. The server sends the rows that were never rendered to the
+// browser once the HTML render is done. A lazy node costs far less than a
+// component render per row.
 type StubbedRenderedPayload = {
   entry: StubbedRowsEntry,
   id: number,
-  model: any,
 };
 
 function initStubbedRendered(payload: StubbedRenderedPayload): any {
   payload.entry.rendered.add(payload.id);
-  return payload.model;
+  return payload.entry.rows.get(payload.id);
 }
 
 function createStubbedRenderedElement(
   entry: StubbedRowsEntry,
   id: number,
-  response: Response,
-  model: any,
 ): any {
-  const payload: StubbedRenderedPayload = {entry, id, model};
+  const payload: StubbedRenderedPayload = {entry, id};
   return {
     $$typeof: REACT_LAZY_TYPE,
     _payload: payload,
     _init: initStubbedRendered,
   };
-}
-
-function settleStubbedRows(entry: StubbedRowsEntry): void {
-  const settle = entry.settle;
-  if (settle !== null) {
-    settle();
-  }
-}
-
-// The server wrote everything but the late rows. Give the renderer that reads
-// this response the chance to render what just resolved before telling the
-// server which rows it rendered: its work is scheduled in a task, and what
-// that task unblocks in another.
-function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
-  setTimeout(() => {
-    setTimeout(settleStubbedRows.bind(null, entry), 0);
-  }, 0);
 }
 
 // A framework can decode the same payload more than once (Next.js decodes part
@@ -3522,46 +3450,14 @@ function parseModelString(
           const keyColon = value.indexOf(':', colon + 1);
           const ref = value.slice(2, colon);
           const id = parseInt(ref, 16);
-          const rows = response._stubbedRows;
-          if (!response._chunks.has(id) && rows !== null) {
-            const json = rows.get(id);
-            if (json !== undefined) {
-              response._chunks.set(
-                id,
-                typeof json === 'string'
-                  ? createResolvedModelChunk(response, json)
-                  : createInitializedValueChunk(json),
-              );
-            } else {
-              // This consumer renders HTML, so there is no DOM to adopt: a
-              // stub would silently turn into an empty element and the
-              // browser would then adopt that. Rows are looked up
-              // synchronously, so a missing one can't arrive later either.
-              // eslint-disable-next-line react-internal/prod-error-codes
-              throw new Error(
-                'Missing stubbed row ' +
-                  ref +
-                  '. The htmlFirstRows option must contain every row that ' +
-                  'the server handed to htmlFirst for this payload.',
-              );
-            }
-          }
           const stubKey = keyColon === -1 ? null : value.slice(keyColon + 1);
           const entry = response._stubbedEntry;
-          if (response._chunks.has(id) && (rows !== null || entry !== null)) {
-            // The consumer that renders HTML has the row: render the real
-            // element. The browser keeps a stub even when the row arrived
-            // late, so one slot never holds a stub and a real element for
-            // different rows (tabs swapping unkeyed children).
-            return getOutlinedModel(
-              response,
-              ref,
-              parentObject,
-              key,
-              entry !== null
-                ? createStubbedRenderedElement.bind(null, entry, id)
-                : createModel,
-            );
+          if (entry !== null) {
+            // This reader renders the HTML and has the element by value. The
+            // browser keeps a stub even when the row arrived late, so one slot
+            // never holds a stub and a real element for different rows (tabs
+            // swapping unkeyed children).
+            return createStubbedRenderedElement(entry, id);
           }
           return createStaticStubElement(
             response,
@@ -3927,7 +3823,6 @@ function ResponseInstance(
   this._encodeFormAction = encodeFormAction;
   this._nonce = nonce;
   this._chunks = chunks;
-  this._stubbedRows = null;
   this._stubbedEntry = null;
   this._stubbedRequestId = 0;
   this._stubbedEnd = null;
@@ -4250,15 +4145,6 @@ function resolveModel(
     }
     chunks.set(id, newChunk);
   } else {
-    if (
-      enableFlightHTMLFirst &&
-      response._stubbedRows !== null &&
-      response._stubbedRows.get(id) !== undefined
-    ) {
-      // A late row for content this consumer already has from its side
-      // channel (it rendered the real element). Nothing to do.
-      return;
-    }
     if (__DEV__) {
       resolveChunkDebugInfo(response, streamState, chunk);
     }

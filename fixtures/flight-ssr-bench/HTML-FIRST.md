@@ -14,7 +14,6 @@ Static host output in host position:
 
 - children of host elements
 - children of Suspense boundaries
-- `children` of Client Components (layouts, slots)
 - the entries of a root element map such as `{page, layout}`, which is how Waku shapes its payload
 
 A region is stubbed only if everything in it is static: primitive props, no `ref`, no client references, no Suspense and no pending promises. Tags that need client identity (`form`, `input`, `img`, `svg`, `title`, `link`, `meta`, and similar) are never stubbed. A `<style>` without `precedence` and `href`, and JSON or `application/ld+json` `<script>` blocks, can be. Large strings inside an stubbed region stay in that region and never reach the main stream.
@@ -23,32 +22,35 @@ Client Components are never stubbed and keep all their props. Props other than `
 
 ## How a framework uses it
 
-The framework reads the Flight render that feeds HTML SSR through a tee and passes `htmlFirst: true` on it:
+The framework reads the Flight render that feeds HTML SSR through a tee and passes `htmlFirst`, a promise that settles when that HTML render is done, on it:
 
 ```js
 const tee = createTee(serverConsumerManifest);       // client, before the render
-const stream = renderToReadableStream(model, manifest, {htmlFirst: true, tee});
+let done;
+const htmlFirst = new Promise((resolve, reject) => (done = {resolve, reject}));
+const stream = renderToReadableStream(model, manifest, {htmlFirst, tee});
 // inside the Fizz render:
 const root = createFromTee(tee);                     // instead of createFromReadableStream
 // `stream` is still inlined into the HTML for the browser
+// Fizz onAllReady: done.resolve();   Fizz onError or abort: done.reject(error);
 ```
 
 From there:
 
 1. While Flight walks the render, it writes a `$J` stub to the bytes and hands the real element to the tee's reader at the same node (tee method `h`). Fizz sees the full content and writes complete HTML.
 2. The bytes carry the stubs and a random `:P<id>` row that names the payload, so every decode of it in the browser shares the node that hydration adopted.
-3. Content the reader never rendered (the children of a closed modal) is written to the bytes as late rows once the tee has closed and the reader has rendered what it is going to render. A reader that never renders keeps the stream open for at most one second.
+3. Content the reader never rendered (the children of a closed modal) is written to the bytes as late rows once `htmlFirst` has resolved. If it rejects (Fizz reported an error or was aborted), a late row is written for every stub. The Flight stream stays open until `htmlFirst` settles; there are no timers.
 4. The browser sees the stubs and adopts the HTML.
 
-`htmlFirst: true` without a tee stubs nothing, and the bytes are identical to omitting it. The tee is in every server entry (Node, Edge and Browser) and the Node and Edge clients. On a runtime without `AsyncLocalStorage`, the Edge client runs hints directly, as reading bytes does.
+`htmlFirst` without a tee stubs nothing (unless `onValue` is given), and `htmlFirst: true` does nothing. The tee is in every server entry (Node, Edge and Browser) and the Node and Edge clients. On a runtime without `AsyncLocalStorage`, the Edge client runs hints directly, as reading bytes does.
 
 Without the option nothing is stubbed. Navigation, refetch and action responses therefore need no change, and forgetting the option loses the savings but breaks nothing. React cannot tell where a stream is going, because the bytes are identical either way, so the framework has to say. It already knows which requests are which: Waku serves RSC requests under an `RSC/` URL prefix, and Next.js sends an `RSC: 1` header.
 
-For out-of-process or custom consumers, pass `htmlFirst: {onRow, onValue}` instead, with or without a tee. `onRow(id, json)` receives the row as JSON and `onValue(id, value)` receives the live element. The SSR-side client then takes the rows as the `htmlFirstRows` option. The same taint checks apply as on the normal path.
+For a consumer with no reader, pass `htmlFirst: {onValue(id, element)}`, which receives the live element of each stub. The JSON side channel (`onRow`, `htmlFirstRows`) is gone. The same taint checks apply as on the normal path. An element a Client Component receives in `children` is never a stub (what is inside it can still be).
 
 If a stub ends up client-rendered with no server DOM behind it (a modal or `ClientOnly` wrapper mounted after hydration, or a boundary that client-renders after a server error), React cannot recreate the content. Pass `onMissingHTML` to `createFromReadableStream` or `createFromFetch` and refetch a full payload there. Without it the stub suspends and reports an uncaught error that names the element.
 
-On a client navigation the response is an ordinary full payload with real elements where the stubs were. If a stub's DOM already renders the new element, React keeps the stub and its DOM; if the content changed, React patches the DOM in place (see [Keeping stubs on later full payloads](#keeping-stubs-on-later-full-payloads)). Client components keep their state.
+On a client navigation the response is an ordinary full payload with real elements where the stubs were. If a stub's DOM already renders the new element, React keeps the stub and its DOM; if the content changed, React replaces the DOM; there is no in-place patch (see [Keeping stubs on later full payloads](#keeping-stubs-on-later-full-payloads)). Client components keep their state.
 
 ## Compared with the registry version
 
@@ -56,10 +58,10 @@ On a client navigation the response is an ordinary full payload with real elemen
 |---|---|---|
 | How SSR gets the stubbed elements | a map on `globalThis`, claimed by the first in-process `createFrom*` that reads a `:P` id | the tee's reader, which the framework creates for that render |
 | How SSR reads the rest of the payload | parses the bytes | gets values from the tee, no parse |
-| When late rows start | a `:q` row plus timers that guess when SSR is done | when the tee closes |
+| When late rows start | a `:q` row plus timers that guess when SSR is done | when the `htmlFirst` thenable settles (no timers) |
 | Lifetime of unclaimed rows | FinalizationRegistry, or a fallback release | none: nothing global holds them |
 | Fizz changes | `currentRequest` kept pinned so late hints reach Fizz | none; the tee runs hints in the reader's context |
-| Framework change | pass `htmlFirst: true` | create a tee, pass `{htmlFirst: true, tee}`, read with `createFromTee` |
+| Framework change | pass `htmlFirst: true` | create a tee, pass `{htmlFirst: <thenable>, tee}`, settle it when Fizz is done, read with `createFromTee` |
 | Channels | the flag alone | the flag; `enableFlightTee` is on in canary on this branch |
 
 The tee also needed one scheduling change: a pass runs the tasks it pinged before it yields, so the reader doesn't render up to a row that was split for size and suspend on each piece.
@@ -123,7 +125,7 @@ A stub that unmounts keeps its node's attributes and HTML as strings, so a later
 
 With the recovery wired, a modal whose static children mount only after a click shows its content, the same as stock. Without the recovery, the same page reports an uncaught error and never shows the content. (`waku-htmlfirst-bench`, page `late-modal`, three variants.)
 
-The corpus (`yarn scenarios:check --size full --variants off,tee --browser chromium`) loads each page with and without the flag and checks that:
+The corpus (`yarn scenarios:check --size full --variants off,all --browser chromium`) loads each page with and without the flag and checks that:
 
 - the hydrated DOM and the DOM after interaction are equal,
 - there are no console or hydration errors,
