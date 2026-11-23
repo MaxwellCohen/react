@@ -47,7 +47,7 @@ export type {TemporaryReferenceSet};
 type CallServerCallback = <A, T>(string, args: A) => Promise<T>;
 
 export type Options = {
-  // Prototype (enableFlightHTMLFirst): rows withheld by the server.
+  // enableFlightHTMLFirst: rows withheld by the server.
   htmlFirstRows?: {get(id: number): void | string, ...},
   onMissingHTML?: () => void,
   moduleBaseURL?: string,

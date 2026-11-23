@@ -218,7 +218,7 @@ function startReadingFromStream(
 }
 
 export type Options = {
-  // Prototype (enableFlightHTMLFirst): rows withheld by the server.
+  // enableFlightHTMLFirst: rows withheld by the server.
   htmlFirstRows?: {get(id: number): void | string, ...},
   onMissingHTML?: () => void,
   debugChannel?: {writable?: WritableStream, readable?: ReadableStream, ...},

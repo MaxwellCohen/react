@@ -152,8 +152,8 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // enableFlightHTMLFirst: `true` stubs static hosts for in-process SSR
-  // (internal registry); {onRow, onValue} receive the rows instead.
+  // enableFlightHTMLFirst: `true` stubs static hosts for the `tee` that reads
+  // this render for SSR; {onRow, onValue} receive the rows instead.
   htmlFirst?:
     | boolean
     | {
