@@ -402,7 +402,7 @@ type Response = {
   // enableFlightHTMLFirst: the rows a tee handed to this response. It records
   // which rows get rendered, see StubbedRendered.
   _stubbedEntry: null | StubbedRowsEntry,
-  // enableFlightHTMLFirst: the `:Q` id of the payload, which names it.
+  // enableFlightHTMLFirst: the `:P` id of the payload, which names it.
   _stubbedRequestId: number,
   // enableFlightHTMLFirst: resolves when the stream ends, for stubs that
   // wait for a late row.
@@ -3422,7 +3422,7 @@ function scheduleStubbedSettle(entry: StubbedRowsEntry): void {
 
 // A framework can decode the same payload more than once (Next.js decodes part
 // of the initial payload again for its client cache). The stubs of every
-// decode share the node that hydration adopted, keyed by the payload's `:Q` id
+// decode share the node that hydration adopted, keyed by the payload's `:P` id
 // and the row id. The map holds them weakly, so a node lives only as long as
 // some decoded payload still references its stub. The key is dropped once its
 // holder is collected, so the map does not grow with every payload.
@@ -6194,7 +6194,7 @@ function processFullStringRow(
       resolveHint(response, code, row.slice(1));
       return;
     }
-    case 81 /* "Q" */: {
+    case 80 /* "P" */: {
       // enableFlightHTMLFirst: the id of the payload, see
       // getStubbedNodeHolder.
       if (enableFlightHTMLFirst) {
@@ -6285,49 +6285,10 @@ function processFullStringRow(
   }
 }
 
-// The entry points for a tee (see shared/ReactFlightTee). A tee gets whole
-// rows from a Flight Server in the same process, in emit order, so it skips
-// the byte framing but parses the rows the same way.
-
-export function processWireRow(
-  weakResponse: WeakResponse,
-  streamState: StreamState,
-  row: string,
-): void {
-  if (hasGCedResponse(weakResponse)) {
-    return;
-  }
-  const response = unwrapWeakResponse(weakResponse);
-  incrementChunkDebugInfo(streamState, row.length);
-  let i = 0;
-  let id = 0;
-  let code = row.charCodeAt(i++);
-  while (code !== 58 /* ":" */) {
-    id = (id << 4) | (code > 96 ? code - 87 : code - 48);
-    code = row.charCodeAt(i++);
-  }
-  // The same tags as processBinaryChunk. The length-prefixed ones arrive
-  // through processWireText and processWireBinary instead.
-  let tag = row.charCodeAt(i);
-  if (
-    (tag > 64 && tag < 91) /* "A"-"Z" */ ||
-    tag === 35 /* "#" */ ||
-    tag === 114 /* "r" */ ||
-    tag === 120 /* "x" */
-  ) {
-    i++;
-  } else {
-    tag = 0;
-  }
-  // Drop the trailing newline.
-  processFullStringRow(
-    response,
-    streamState,
-    id,
-    tag,
-    row.slice(i, row.length - 1),
-  );
-}
+// The entry points for a tee (see shared/ReactFlightTee) that a string row
+// can't take. A tee gets whole rows from a Flight Server in the same process,
+// in emit order. It reads each string row with processStringChunk, and the
+// length-prefixed rows arrive here instead, without their framing.
 
 export function processWireText(
   weakResponse: WeakResponse,
