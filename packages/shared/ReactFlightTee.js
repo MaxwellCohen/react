@@ -10,7 +10,7 @@
 import ReactVersion from 'shared/ReactVersion';
 
 // A tee lets a Flight Client in the same process read a Flight render without
-// parsing its bytes. The client creates it with `createTee` and it's passed to
+// reading its bytes. The client creates it with `createTee` and it's passed to
 // the server render, which keeps writing bytes to its destination and also
 // hands every row to the tee as it's emitted. The reader then calls
 // `createFromTee` to get the root.
@@ -64,11 +64,11 @@ export type FlightTeeDispatcher = {
     value: string,
   ) => mixed,
   // A complete row, including its header and trailing newline.
-  +w /* processWireRow */: (tee: FlightTee, row: string) => void,
+  +w /* row */: (tee: FlightTee, row: string) => void,
   // A length-prefixed text row. The text is passed by reference.
-  +t /* processWireText */: (tee: FlightTee, id: number, text: string) => void,
+  +t /* text */: (tee: FlightTee, id: number, text: string) => void,
   // A length-prefixed binary row. The tee copies the bytes.
-  +y /* processWireBinary */: (
+  +y /* binary */: (
     tee: FlightTee,
     id: number,
     tag: number,

@@ -36,7 +36,7 @@ const root = createFromTee(tee);                     // instead of createFromRea
 From there:
 
 1. While Flight walks the render, it writes a `$J` stub to the bytes and hands the real element to the tee's reader at the same node (tee method `h`). Fizz sees the full content and writes complete HTML.
-2. The bytes carry the stubs and a random `:Q<id>` row that names the payload, so every decode of it in the browser shares the node that hydration adopted.
+2. The bytes carry the stubs and a random `:P<id>` row that names the payload, so every decode of it in the browser shares the node that hydration adopted.
 3. Content the reader never rendered (the children of a closed modal) is written to the bytes as late rows once the tee has closed and the reader has rendered what it is going to render. A reader that never renders keeps the stream open for at most one second.
 4. The browser sees the stubs and adopts the HTML.
 
@@ -54,7 +54,7 @@ On a client navigation the response is an ordinary full payload with real elemen
 
 | | Registry ([#24](https://github.com/MaxwellCohen/react/pull/24)) | Tee (this branch) |
 |---|---|---|
-| How SSR gets the stubbed elements | a map on `globalThis`, claimed by the first in-process `createFrom*` that reads a `:Q` id | the tee's reader, which the framework creates for that render |
+| How SSR gets the stubbed elements | a map on `globalThis`, claimed by the first in-process `createFrom*` that reads a `:P` id | the tee's reader, which the framework creates for that render |
 | How SSR reads the rest of the payload | parses the bytes | gets values from the tee, no parse |
 | When late rows start | a `:q` row plus timers that guess when SSR is done | when the tee closes |
 | Lifetime of unclaimed rows | FinalizationRegistry, or a fallback release | none: nothing global holds them |

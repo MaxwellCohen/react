@@ -175,6 +175,9 @@ describe('ReactFlightTurbopackDOMTee', () => {
     await serverAct(() => {
       flight = startFlight(createModel(), useTee, options);
     });
+    if (options && options.afterFlight) {
+      options.afterFlight();
+    }
     return renderFizz(flight, options);
   }
 
@@ -1479,21 +1482,6 @@ describe('ReactFlightTurbopackDOMTee', () => {
   });
 
   // @gate enableFlightTee
-  it('throws when the tee is from another version', async () => {
-    const tee = ReactServerDOMClient.createTee(manifest());
-    tee._version = '0.0.0-other';
-    // Another version's dispatcher can have different methods, so the server
-    // checks the version before it reads the dispatcher.
-    tee._dispatcher = null;
-    expect(() =>
-      ReactServerDOMServer.renderToPipeableStream({a: 1}, turbopackMap, {tee}),
-    ).toThrow(
-      'The tee was created by a different version of React than the one ' +
-        'rendering. The Flight Client and Server must be the same version.',
-    );
-  });
-
-  // @gate enableFlightTee
   it('throws when the tee is read before it is passed to a render', () => {
     const tee = ReactServerDOMClient.createTee(manifest());
     expect(() => ReactServerDOMClient.createFromTee(tee)).toThrow(
@@ -1566,86 +1554,6 @@ describe('ReactFlightTurbopackDOMTee', () => {
     expect(fromTee).toEqual(fromBytes);
   });
 
-  // The rows of a prerender stay queued until its prelude is read. Checking
-  // whether the tee can close must not scan that queue on every pass, or a
-  // render with many deferred rows takes quadratic time.
-  // @gate enableFlightTee
-  it('closes without rescanning queued rows on every pass', async () => {
-    const count = 200;
-    const never = new Promise(() => {});
-    let queueReads = 0;
-    function countReads(array) {
-      return new Proxy(array, {
-        get(target, key, receiver) {
-          if (typeof key === 'string' && /^\d+$/.test(key)) {
-            queueReads++;
-          }
-          return Reflect.get(target, key, receiver);
-        },
-      });
-    }
-    async function read(useTee) {
-      mockOnAttachTee = request => {
-        request.completedRegularChunks = countReads(
-          request.completedRegularChunks,
-        );
-        if (__DEV__) {
-          request.completedDebugChunks = countReads(
-            request.completedDebugChunks,
-          );
-        }
-      };
-      queueReads = 0;
-      const controller = new AbortController();
-      const tee = useTee
-        ? ReactServerDOMClient.createTee(manifest())
-        : undefined;
-      let preludePromise;
-      await serverAct(() => {
-        // Each item resolves in a timer after the one before it, so each is
-        // emitted by its own work pass.
-        const items = [];
-        let previous = Promise.resolve();
-        for (let i = 0; i < count; i++) {
-          previous = previous.then(
-            () => new Promise(resolve => setTimeout(() => resolve(i), 0)),
-          );
-          items.push(previous);
-        }
-        preludePromise = ReactServerDOMStaticServer.prerenderToNodeStream(
-          {items, rest: never},
-          turbopackMap,
-          {signal: controller.signal, tee},
-        );
-      });
-      await serverAct(() => controller.abort());
-      const {prelude} = await preludePromise;
-      // The tee's prelude is never read, so every row is still queued.
-      const root = useTee
-        ? ReactServerDOMClient.createFromTee(tee)
-        : ReactServerDOMClient.createFromNodeStream(prelude, manifest());
-      const value = await root;
-      const resolved = await serverAct(() => Promise.all(value.items));
-      let reason = null;
-      await serverAct(async () => {
-        try {
-          await value.rest;
-        } catch (error) {
-          reason = error.message;
-        }
-      });
-      return {resolved, reason};
-    }
-    const fromBytes = await read(false);
-    const fromTee = await read(true);
-    expect(fromBytes).toEqual({
-      resolved: Array.from({length: count}, (_, i) => i),
-      reason: 'Connection closed.',
-    });
-    expect(fromTee).toEqual(fromBytes);
-    expect(queueReads).toBeLessThan(count);
-  });
-
   // @gate enableFlightTee
   it('reads binary and large text rows', async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
@@ -1697,5 +1605,378 @@ describe('ReactFlightTurbopackDOMTee', () => {
     const html = await renderAfterFlight(createModel, true);
     expect(html).toBe(await renderAfterFlight(createModel, false));
     expect(html).toContain('<pre>1,2,3,4</pre>');
+  });
+
+  // @gate enableFlightTee && enableTaint
+  it('writes and tees the bytes it checked when the buffer changes after the check', async () => {
+    // Larger than a view, so writing it reads the buffer's `resizable`.
+    const length = 1250;
+    const secret = new Uint32Array(length).fill(0x5ec2e7);
+    ReactServer.experimental_taintUniqueValue(
+      'Cannot pass a secret to the client',
+      process,
+      secret,
+    );
+    function Client({bytes}) {
+      return React.createElement(
+        'pre',
+        null,
+        bytes[0] + ',' + bytes[length - 1],
+      );
+    }
+    const ClientReference = clientExports(Client);
+    function createModel() {
+      const bytes = new Uint32Array(length).fill(1);
+      const buffer = bytes.buffer;
+      // Overwrites the bytes with the secret when it's read.
+      Object.defineProperty(buffer, 'resizable', {
+        get() {
+          new Uint32Array(buffer).set(secret);
+          return false;
+        },
+      });
+      return ReactServer.createElement(ClientReference, {bytes});
+    }
+    let warned = false;
+    const options = {
+      afterFlight() {
+        if (!warned && !ArrayBuffer.prototype.hasOwnProperty('detached')) {
+          // Once per module instance.
+          warned = true;
+          assertConsoleErrorDev([
+            'React copied a partial view into a fresh buffer as a safety precaution because the environment does not implement ArrayBuffer.prototype.detached. ' +
+              'This negatively impacts performance. ' +
+              'Please upgrade to a modern Node.js version.',
+          ]);
+        }
+      },
+    };
+    const html = await renderAfterFlight(createModel, true, options);
+    expect(html).toBe(await renderAfterFlight(createModel, false, options));
+    expect(html).toContain('<pre>1,1</pre>');
+  });
+
+  // @gate enableFlightTee && enableTaint
+  it('writes and tees the length it checked when a resizable buffer grows', async () => {
+    const secret = new Uint32Array(1251).fill(0x5ec2e7);
+    ReactServer.experimental_taintUniqueValue(
+      'Cannot pass a secret to the client',
+      process,
+      secret,
+    );
+    function Client({bytes}) {
+      return React.createElement('pre', null, bytes.length);
+    }
+    const ClientReference = clientExports(Client);
+    function createModel() {
+      const buffer = new ArrayBuffer(5000, {maxByteLength: 5004});
+      const bytes = new Uint32Array(buffer).fill(1);
+      // Without a length, a view of a resizable buffer tracks its length.
+      Object.defineProperty(bytes, 'byteLength', {get: () => undefined});
+      // Grows the buffer to the secret's length, and fills it with the
+      // secret, when it's read.
+      Object.defineProperty(buffer, 'byteLength', {
+        get() {
+          buffer.resize(5004);
+          new Uint32Array(buffer).set(secret);
+          return 5004;
+        },
+      });
+      return ReactServer.createElement(ClientReference, {bytes});
+    }
+    const html = await renderAfterFlight(createModel, true);
+    expect(html).toBe(await renderAfterFlight(createModel, false));
+    expect(html).toContain('<pre>1250</pre>');
+  });
+
+  // The server side of a tee, read by a tee that records what it's handed
+  // instead of a Flight Client.
+  describe('with a recording tee', () => {
+    function readBytes(stream) {
+      return new Promise((resolve, reject) => {
+        let buffer = '';
+        const writable = new Stream.PassThrough();
+        // One character per byte, like the binary rows in the log below.
+        writable.setEncoding('latin1');
+        writable.on('data', chunk => {
+          buffer += chunk;
+        });
+        writable.on('error', error => {
+          reject(error);
+        });
+        writable.on('end', () => {
+          resolve(buffer);
+        });
+        stream.pipe(writable);
+      });
+    }
+
+    // A tee that logs what the server hands it, with each row in the form the
+    // destination gets it.
+    function createRecordingTee() {
+      const log = [];
+      let connected = false;
+      const tee = {
+        _version: ReactServer.version,
+        _dispatcher: {
+          c() {
+            if (connected) {
+              return false;
+            }
+            connected = true;
+            return true;
+          },
+          // Declines every model row, so the server sends it as a wire row.
+          b() {
+            return null;
+          },
+          w(t, row) {
+            log.push(row);
+          },
+          t(t, id, text) {
+            const length = Buffer.byteLength(text, 'utf8');
+            log.push(id.toString(16) + ':T' + length.toString(16) + ',' + text);
+          },
+          y(t, id, tag, bytes) {
+            log.push(
+              id.toString(16) +
+                ':' +
+                String.fromCharCode(tag) +
+                bytes.byteLength.toString(16) +
+                ',' +
+                // Copies the bytes, as a tee has to.
+                Buffer.from(bytes).toString('latin1'),
+            );
+          },
+          C() {
+            log.push('close');
+          },
+          X(t, error) {
+            log.push('error: ' + error.message);
+          },
+        },
+      };
+      return {tee, log};
+    }
+
+    // Removes each row the tee got from the bytes, and returns what's left.
+    function removeRows(bytes, log) {
+      let rest = bytes;
+      for (let i = 0; i < log.length; i++) {
+        const row = log[i];
+        if (row === 'close') {
+          continue;
+        }
+        const index = rest.indexOf(row);
+        if (index === -1) {
+          throw new Error('The bytes do not contain the row ' + row);
+        }
+        rest = rest.slice(0, index) + rest.slice(index + row.length);
+      }
+      return rest;
+    }
+
+    async function renderRecorded(model, tee, options) {
+      let bytes;
+      await serverAct(async () => {
+        const readable = new Stream.PassThrough();
+        const result = readBytes(readable);
+        ReactServerDOMServer.renderToPipeableStream(model, turbopackMap, {
+          ...options,
+          tee,
+        }).pipe(readable);
+        bytes = await result;
+      });
+      return bytes;
+    }
+
+    it('hands the tee every row the destination gets, then closes it', async () => {
+      function Client() {
+        return null;
+      }
+      const ClientReference = clientExports(Client);
+      async function Server() {
+        FlightReactDOM.preload('/style.css', {as: 'style'});
+        await null;
+        return ReactServer.createElement(ClientReference, {
+          shared,
+          again: shared,
+        });
+      }
+      const shared = {date: new Date(0)};
+      const model = {
+        node: ReactServer.createElement(Server),
+        symbol: Symbol.for('tee'),
+        later: Promise.resolve('later'),
+        failed: Promise.reject(new Error('failed')),
+        bytes: new Uint8Array([1, 2, 255]),
+        ints: new Int32Array([7, -8]),
+        text: 'x'.repeat(2000),
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue('a');
+            controller.close();
+          },
+        }),
+      };
+      const {tee, log} = createRecordingTee();
+      const bytes = await renderRecorded(model, tee, {onError() {}});
+      if (gate(flags => flags.enableFlightTee)) {
+        expect(removeRows(bytes, log)).toBe('');
+        expect(log.indexOf('close')).toBe(log.length - 1);
+      } else {
+        expect(log).toEqual([]);
+      }
+    });
+
+    // @gate enableFlightTee
+    it('hands the tee the length the bytes get when a resizable buffer grows', async () => {
+      const buffer = new ArrayBuffer(5000, {maxByteLength: 5004});
+      const bytes = new Uint8Array(buffer).fill(1);
+      // Without a length, a view of a resizable buffer tracks its length.
+      Object.defineProperty(bytes, 'byteLength', {get: () => undefined});
+      // Grows the buffer when it's read.
+      Object.defineProperty(buffer, 'byteLength', {
+        get() {
+          buffer.resize(5004);
+          return 5004;
+        },
+      });
+      const {tee, log} = createRecordingTee();
+      const written = await renderRecorded({bytes}, tee);
+      expect(removeRows(written, log)).toBe('');
+    });
+
+    // @gate enableFlightTee
+    it('closes a prerender’s tee once every row is emitted, before its prelude is read', async () => {
+      const never = new Promise(() => {});
+      const controller = new AbortController();
+      const {tee, log} = createRecordingTee();
+      let preludePromise;
+      await serverAct(() => {
+        preludePromise = ReactServerDOMStaticServer.prerenderToNodeStream(
+          {ready: 'yes', later: never},
+          turbopackMap,
+          {signal: controller.signal, tee},
+        );
+      });
+      await serverAct(() => controller.abort());
+      expect(log[log.length - 1]).toBe('close');
+      const {prelude} = await preludePromise;
+      expect(removeRows(await readBytes(prelude), log)).toBe('');
+    });
+
+    // @gate enableFlightTee
+    it('errors the tee when the render fails fatally', async () => {
+      function App() {
+        throw new Error('boom');
+      }
+      let calls = 0;
+      const {tee, log} = createRecordingTee();
+      await serverAct(() => {
+        ReactServerDOMServer.renderToPipeableStream(
+          ReactServer.createElement(App),
+          turbopackMap,
+          {
+            tee,
+            // Throwing from onError while handling a render error is a fatal
+            // error. The fatal error is reported again, which passes.
+            onError() {
+              if (calls++ === 0) {
+                throw new Error('fatal');
+              }
+            },
+          },
+        ).pipe(new Stream.PassThrough());
+      });
+      expect(log).toContain('error: fatal');
+      expect(log).not.toContain('close');
+    });
+
+    // @gate enableFlightTee
+    it('throws when the tee is from another version', async () => {
+      const {tee} = createRecordingTee();
+      tee._version = '0.0.0-other';
+      // Another version's dispatcher can have different methods, so the server
+      // checks the version before it reads the dispatcher.
+      tee._dispatcher = null;
+      expect(() =>
+        ReactServerDOMServer.renderToPipeableStream({a: 1}, turbopackMap, {
+          tee,
+        }),
+      ).toThrow(
+        'The tee was created by a different version of React than the one ' +
+          'rendering. The Flight Client and Server must be the same version.',
+      );
+    });
+
+    // @gate enableFlightTee
+    it('throws when the tee is passed to a second render', async () => {
+      const {tee} = createRecordingTee();
+      await renderRecorded({which: 'first'}, tee);
+      expect(() =>
+        ReactServerDOMServer.renderToPipeableStream(
+          {which: 'second'},
+          turbopackMap,
+          {tee},
+        ),
+      ).toThrow(
+        'The tee is already being written to by another render. A tee can ' +
+          'only be passed to one render.',
+      );
+    });
+
+    // The rows of a prerender stay queued until its prelude is read. Checking
+    // whether the tee can close must not scan that queue on every pass, or a
+    // render with many deferred rows takes quadratic time.
+    // @gate enableFlightTee
+    it('closes without rescanning queued rows on every pass', async () => {
+      const count = 200;
+      const never = new Promise(() => {});
+      let queueReads = 0;
+      function countReads(array) {
+        return new Proxy(array, {
+          get(target, key, receiver) {
+            if (typeof key === 'string' && /^\d+$/.test(key)) {
+              queueReads++;
+            }
+            return Reflect.get(target, key, receiver);
+          },
+        });
+      }
+      mockOnAttachTee = request => {
+        request.completedRegularChunks = countReads(
+          request.completedRegularChunks,
+        );
+        if (__DEV__) {
+          request.completedDebugChunks = countReads(
+            request.completedDebugChunks,
+          );
+        }
+      };
+      const controller = new AbortController();
+      const {tee, log} = createRecordingTee();
+      await serverAct(() => {
+        // Each item resolves in a timer after the one before it, so each is
+        // emitted by its own work pass.
+        const items = [];
+        let previous = Promise.resolve();
+        for (let i = 0; i < count; i++) {
+          previous = previous.then(
+            () => new Promise(resolve => setTimeout(() => resolve(i), 0)),
+          );
+          items.push(previous);
+        }
+        ReactServerDOMStaticServer.prerenderToNodeStream(
+          {items, rest: never},
+          turbopackMap,
+          {signal: controller.signal, tee},
+        );
+      });
+      await serverAct(() => controller.abort());
+      // The prelude is never read, so every row is still queued.
+      expect(log[log.length - 1]).toBe('close');
+      expect(queueReads).toBeLessThan(count);
+    });
   });
 });
