@@ -70,7 +70,7 @@ The tee also needed one scheduling change: a pass runs the tasks it pinged befor
 
 ## Results
 
-These are for the build of November 23, 2026. The framework runs used the files in release [`html-first-flight-tee-d5dd0f5`](https://github.com/MaxwellCohen/react-eco-ci/releases/tag/html-first-flight-tee-d5dd0f5), which has React at `d5dd0f511d` on the canary channel with both flags forced on. "Previous" is the build of November 19, 2026 (React `189973d24a` for the frameworks). Numbers from the registry version are dated November 19, 2026 and are in [results-tee/README.md](./results-tee/README.md). The corpus commands and tables for this build are in [results-tee/final-2026-11-23/README.md](./results-tee/final-2026-11-23/README.md).
+These are for the build of November 23, 2026. The framework runs used the files in release [`html-first-flight-tee-d5dd0f5`](https://github.com/MaxwellCohen/react-eco-ci/releases/tag/html-first-flight-tee-d5dd0f5), which has React at `d5dd0f511d` on the canary channel with both flags forced on. "Previous" is the build of November 19, 2026 (React `189973d24a` for the frameworks). Numbers from the registry version are dated November 19, 2026 and are in [results-tee/README.md](https://github.com/MaxwellCohen/react/tree/rsc/html-first-results/fixtures/flight-ssr-bench/results-tee/). The corpus commands and tables for this build are in [results-tee/final-2026-11-23/README.md](https://github.com/MaxwellCohen/react/tree/rsc/html-first-results/fixtures/flight-ssr-bench/results-tee/final-2026-11-23/).
 
 ### Corpus
 
