@@ -1,3 +1,5 @@
+Note: the numbers below are for the build of November 19, 2026. The final build's results are in [final-2026-11-23/README.md](./final-2026-11-23/README.md).
+
 # HTML-first Flight over the Flight tee: corpus bytes, browser checks, timing
 
 Measured on 2026-11-19. 41 pages, `--size full`.
