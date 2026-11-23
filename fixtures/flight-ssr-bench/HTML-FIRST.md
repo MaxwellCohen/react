@@ -23,7 +23,7 @@ Client Components are never stubbed and keep all their props. Props other than `
 
 The framework passes `htmlFirst: true` on the Flight render that feeds HTML SSR. Nothing else is needed. From there:
 
-1. Flight stores the stubbed rows in a registry on `globalThis` and writes a `:Q<id>` row into the stream.
+1. Flight stores the stubbed rows in a registry on `globalThis` and writes a `:P<id>` row into the stream.
 2. The first in-process `createFrom*` on that stream claims the rows, so Fizz sees the full content and writes complete HTML. Rows that are never claimed (nothing in-process reads the stream) are released when the Flight request is garbage collected, which only happens once no consumer can still read the stream.
 3. The browser has an empty registry. It sees the stubs and adopts the HTML.
 
@@ -48,7 +48,7 @@ Flag off against flag on at full size, summed over the 41 pages. Measured at `31
 | Inlined Flight | 9,280,754 | 1,977,902 | −78.7% |
 | Brotli | 479,414 | 286,520 | −40.2% |
 
-A few heavy pages account for most of this. The five biggest (`data-grid-server-cells`, `wide-tree`, `huge-inline-svg`, `marketing-style-jsonld`, `docs-sidebar-toc`) make up about 80% of the gzip bytes saved. The median page saves 7.8%, nine pages are within ±1%, and seven pages get slightly larger: `repeated-long-strings` (+12.4%), `tabs-panels-prop`, `nested-suspense-waterfall`, `all-client`, `suspense-fallback-shown-late`, `full-refresh-focus` and `server-element-via-props` (each under +2%). `all-client` has nothing to stub and pays for the `:Q` row. See [SCENARIOS.md](./SCENARIOS.md) and `yarn scenarios:metrics`.
+A few heavy pages account for most of this. The five biggest (`data-grid-server-cells`, `wide-tree`, `huge-inline-svg`, `marketing-style-jsonld`, `docs-sidebar-toc`) make up about 80% of the gzip bytes saved. The median page saves 7.8%, nine pages are within ±1%, and seven pages get slightly larger: `repeated-long-strings` (+12.4%), `tabs-panels-prop`, `nested-suspense-waterfall`, `all-client`, `suspense-fallback-shown-late`, `full-refresh-focus` and `server-element-via-props` (each under +2%). `all-client` has nothing to stub and pays for the `:P` row. See [SCENARIOS.md](./SCENARIOS.md) and `yarn scenarios:metrics`.
 
 ### Waku
 
