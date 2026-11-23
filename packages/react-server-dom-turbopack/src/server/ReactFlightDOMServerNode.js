@@ -9,6 +9,7 @@
 
 import type {
   Request,
+  HTMLFirstOption,
   ReactClientValue,
 } from 'react-server/src/ReactFlightServer';
 import type {Destination} from 'react-server/src/ReactServerStreamConfigNode';
@@ -152,14 +153,10 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
-  // enableFlightHTMLFirst: `true` stubs static hosts for the `tee` that reads
-  // this render for SSR; {onRow, onValue} receive the rows instead.
-  htmlFirst?:
-    | boolean
-    | {
-        onRow?: (id: number, json: string) => void,
-        onValue?: (id: number, value: mixed) => void,
-      },
+  // enableFlightHTMLFirst: a thenable that settles when the HTML render that
+  // reads the `tee` is done. Static host elements are stubbed in the bytes for
+  // that reader. {onValue} takes the stubbed elements instead.
+  htmlFirst?: HTMLFirstOption,
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,

@@ -131,9 +131,9 @@ async function init({files, clientMode}) {
 
 async function render({id, size, recoverErrors}) {
   problems = [];
-  const optIn = VARIANT !== 'off';
+  const optIn = VARIANT === 'all';
   const t = process.hrtime.bigint();
-  const html = await nodeStreamToString(
+  let html = await nodeStreamToString(
     renderFlightFizzNode(
       bundle.renderRSCNode,
       roots[id],
@@ -141,8 +141,7 @@ async function render({id, size, recoverErrors}) {
       clientManifest,
       ssrManifest,
       {
-        // The SSR render opts in with htmlFirst: true; React's internal
-        // registry feeds SSR. No framework side channel.
+        // Tee + htmlFirst thenable (settled by Fizz, see render-helpers).
         stub: optIn,
         tee: VARIANT === 'tee',
         recoverErrors: !!recoverErrors,
@@ -150,6 +149,9 @@ async function render({id, size, recoverErrors}) {
     )
   );
   const ms = Number(process.hrtime.bigint() - t) / 1e6;
+  // The payload id row (`:P<random hex>`) varies in length by a byte between
+  // renders; pin it so byte counts are deterministic.
+  html = html.replace(/:P[0-9a-f]+\\n/g, ':Pc0ffee0c0ffee0\\n');
   return {html, ms, problems: problems.splice(0)};
 }
 

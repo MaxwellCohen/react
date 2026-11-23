@@ -93,6 +93,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
+  // The server stubs an element only when it takes about 48 bytes or more in
+  // the payload. A fixture appends this to its text to be stubbed.
+  const FILL = ' filler text so this element is big enough to be stubbed';
+
   async function readAll(stream) {
     const reader = stream.getReader();
     let result = '';
@@ -119,31 +123,36 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     return encoder.encode(text).length;
   }
 
-  // `htmlFirstRows` is only given to the consumer that renders HTML (SSR). The
-  // browser consumer doesn't get them and adopts the server DOM instead.
-  function consume(rsc, stubbedRows, extraOptions) {
-    return ReactServerDOMClient.createFromReadableStream(stringToStream(rsc), {
-      htmlFirstRows: stubbedRows,
-      ...extraOptions,
-    });
+  // The browser's consumer: it reads the bytes only, so a stub adopts the
+  // server DOM.
+  function consume(rsc, extraOptions) {
+    return ReactServerDOMClient.createFromReadableStream(
+      stringToStream(rsc),
+      extraOptions,
+    );
   }
 
   function Shell({response}) {
     return use(response);
   }
 
-  async function ssr({main, rows}) {
-    const response = consume(main, rows);
+  // The HTML of `{main, html}` from `flight`. A full payload (no `html`) is
+  // rendered to HTML from its bytes.
+  async function ssr({main, html}) {
+    if (html !== undefined) {
+      return html;
+    }
+    const response = consume(main);
     await response;
-    let html;
+    let result;
     await act(async () => {
-      html = await readAll(
+      result = await readAll(
         await ReactDOMFizzServer.renderToReadableStream(
           <Shell response={response} />,
         ),
       );
     });
-    return html;
+    return result;
   }
 
   // What a framework does with a tee: the Flight render writes its bytes for
@@ -162,10 +171,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
   async function renderWithTeeInner(model, options, Root = Shell) {
     const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+    // Settles when the HTML render is done, as a framework does.
+    let htmlDone;
+    const htmlFirst = new Promise((resolve, reject) => {
+      htmlDone = {resolve, reject};
+    });
     const stream = ReactServerDOMServer.renderToReadableStream(
       model,
       webpackMap,
-      {htmlFirst: true, tee, ...options},
+      {htmlFirst, tee, ...options},
     );
     const browser = readAll(stream);
     let response = null;
@@ -180,6 +194,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     );
     // Suspense boundaries complete in place, without inline scripts.
     await htmlStream.allReady;
+    htmlDone.resolve();
     const html = await readAll(htmlStream);
     return {main: await browser, html};
   }
@@ -188,13 +203,69 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     return serverAct(() => renderWithTeeInner(model, options, Root));
   }
 
-  // Returns {main, rows}: the stream (what is inlined for the browser) and
-  // the rows the server withheld from it, keyed by id (only for SSR).
+  // A render with a tee that the test drives step by step: `settle` settles
+  // the htmlFirst thenable, `renderHTML` renders the page from the tee,
+  // `text()` is what the browser's stream has so far and `ended()` says
+  // whether it is closed. `browser` resolves with all of it. Call it inside
+  // serverAct.
+  function startTee(model, options, Root = Shell) {
+    const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+    const settle = {};
+    const htmlFirst = new Promise((resolve, reject) => {
+      settle.resolve = resolve;
+      settle.reject = reject;
+    });
+    const stream = ReactServerDOMServer.renderToReadableStream(
+      model,
+      webpackMap,
+      {htmlFirst, tee, ...options},
+    );
+    let text = '';
+    let ended = false;
+    const reader = stream.getReader();
+    const browser = (async () => {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) {
+          ended = true;
+          return text;
+        }
+        text += decoder.decode(value);
+      }
+    })();
+    let response = null;
+    function TeeRoot() {
+      if (response === null) {
+        response = ReactServerDOMEdgeClient.createFromTee(tee);
+      }
+      return <Root response={response} />;
+    }
+    return {
+      settle,
+      browser,
+      text: () => text,
+      ended: () => ended,
+      renderHTML: fizzOptions =>
+        ReactDOMFizzServer.renderToReadableStream(<TeeRoot />, fizzOptions),
+    };
+  }
+
+  function macrotasks(count = 3) {
+    return new Promise(resolve => {
+      let left = count;
+      (function next() {
+        if (left-- === 0) {
+          resolve();
+        } else {
+          setTimeout(next, 10);
+        }
+      })();
+    });
+  }
+
+  // Returns {main, html}: the stream (what is inlined for the browser) and
+  // the HTML (only when it is rendered with a tee).
   async function renderApp(count, stub) {
-    const rows = new Map();
-    const options = stub
-      ? {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}
-      : {htmlFirst: false};
     const Counter = clientExports(function Counter({label}) {
       const [n, setN] = React.useState(0);
       return (
@@ -228,43 +299,42 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
     }
 
+    if (stub) {
+      return renderWithTee(<App size={count} />);
+    }
     const main = await serverAct(async () =>
       readAll(
         ReactServerDOMServer.renderToReadableStream(
           <App size={count} />,
           webpackMap,
-          options,
+          {htmlFirst: false},
         ),
       ),
     );
-    return {main, rows};
+    return {main, html: undefined};
   }
 
-  it('shrinks the payload of a static 1000 row server table', async () => {
-    const baseline = await renderApp(1000, false);
-    const stubbed = await renderApp(1000, true);
-    const rowBytes = Array.from(stubbed.rows.values()).reduce(
-      (n, json) => n + byteLength(json),
-      0,
-    );
+  it('shrinks the payload of a static 700 row server table', async () => {
+    const baseline = await renderApp(700, false);
+    const stubbed = await renderApp(700, true);
     console.log(
-      `1000 rows, Flight bytes: baseline=${byteLength(baseline.main)} ` +
+      `700 rows, Flight bytes: baseline=${byteLength(baseline.main)} ` +
         `stubbed stream (inlined in HTML)=${byteLength(stubbed.main)} ` +
-        `withheld rows (SSR only)=${rowBytes}`,
+        `HTML=${byteLength(stubbed.html)}`,
     );
     expect(baseline.main).not.toContain('$J');
-    expect(stubbed.rows.size).toBeGreaterThan(0);
+    expect(stubbed.html).toContain('name-699');
     expect(byteLength(stubbed.main)).toBeLessThan(
       byteLength(baseline.main) / 20,
     );
     expect(stubbed.main).toContain('"clicks"');
-    expect(stubbed.main).not.toContain('name-999');
+    expect(stubbed.main).not.toContain('name-699');
     expect(stubbed.main).not.toContain('line1');
   });
 
   it('hydrates from a payload with stubbed static host elements', async () => {
     // Fizz's chunk count per segment trips the jest infinite loop guard (6000
-    // iterations) at 1000 rows, so hydration uses fewer rows than the byte test.
+    // iterations) at 1000 rows, so these tests use fewer rows.
     const ROWS = 500;
     // Small page: SSR output must be identical with and without stubbing.
     expect(await ssr(await renderApp(10, true))).toBe(
@@ -276,7 +346,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(stubbedForBrowser).toContain('"clicks"');
     expect(stubbedForBrowser).not.toContain('name-499');
 
-    // SSR gets the withheld rows through the side channel.
+    // SSR rendered the elements the stubs stand for.
     const html = await ssr(stubbed);
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -405,7 +475,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const button = container.querySelector('button');
 
     // The browser reads the bytes only → stubs → adopt HTML.
-    const response = consume(main, undefined);
+    const response = consume(main);
     await response;
     await act(() => {
       ReactDOMClient.hydrateRoot(container, <Shell response={response} />);
@@ -456,7 +526,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(withoutTime(main)).toBe(withoutTime(stock));
     expect(main).not.toContain(':P');
 
-    const html = await ssr({main, rows: undefined});
+    const html = await ssr({main});
     expect(html).toContain('only-client');
   });
 
@@ -608,14 +678,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       );
     }
 
-    const main = await renderOnce({htmlFirst: true});
-    const html = await ssr({main, rows: undefined});
+    const {main, html} = await renderWithTee(<App size={ROWS} />);
+    expect(main).toContain('$J');
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
     const table = container.querySelector('table');
     const button = container.querySelector('button');
-    const response = consume(main, undefined);
+    const response = consume(main);
     await response;
     let root;
     await act(() => {
@@ -661,19 +731,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </section>
       </main>
     );
-    const first = await serverAct(async () =>
-      readAll(
-        ReactServerDOMServer.renderToReadableStream(
-          <Page v="a" />,
-          webpackMap,
-          {
-            htmlFirst: true,
-          },
-        ),
-      ),
-    );
-    const html = await ssr({main: first, rows: undefined});
-    const {container, root, errors} = await hydrate(first, html);
+    const first = await flight(<Page v="a" />);
+    expect(first.main).toContain('$J');
+    const {container, root, errors} = await hydrate(first.main, first.html);
     const full = await flight(<Page v="b" />, false);
     const response = consume(full.main);
     await response;
@@ -732,7 +792,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     async function hydratePage(props = base) {
       const first = await flight(<Page {...props} />);
       expect(first.main).toContain('$J');
-      const html = await ssr({main: first.main, rows: first.rows});
+      const html = await ssr(first);
       const result = await hydrate(first.main, html);
       const container = result.container;
       const nodes = Array.from(container.querySelectorAll('*'));
@@ -874,35 +934,32 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       container.querySelector('td').setAttribute('data-name', 'changed');
       await renderFullPayload(root, <Page {...base} />);
       expect(errors).toEqual([]);
-      // Patched in place: the changed attribute is put back, the table kept.
-      expect(container.querySelector('table')).toBe(table);
+      // The changed DOM is not what the payload says: fresh DOM replaces it.
+      expect(container.querySelector('table')).not.toBe(table);
       expect(container.querySelector('td').getAttribute('data-name')).toBe(
         'one',
       );
       expect(container.querySelector('h1')).toBe(h1);
     });
 
-    it('patches changed static content in place, keeping the rest', async () => {
+    it('replaces the stub with fresh DOM when its content changed, keeping the rest', async () => {
       const {container, root, errors} = await hydratePage();
-      const table = container.querySelector('table');
-      const rows = Array.from(container.querySelectorAll('tr'));
-      const links = Array.from(container.querySelectorAll('a'));
+      const button = container.querySelector('button');
+      const h1 = container.querySelector('h1');
+      const oldTable = container.querySelector('table');
       await renderFullPayload(
         root,
         <Page {...base} rows={['one', 'TWO', 'three']} />,
       );
       expect(errors).toEqual([]);
-      expect(container.querySelector('table')).toBe(table);
-      const after = Array.from(container.querySelectorAll('tr'));
-      expect(after[0]).toBe(rows[0]);
-      expect(after[1]).toBe(rows[1]);
-      expect(after[2]).toBe(rows[2]);
-      expect(container.querySelectorAll('a')[0]).toBe(links[0]);
-      expect(after[1].querySelector('td').textContent).toBe('TWO');
-      expect(after[1].querySelector('td').getAttribute('data-name')).toBe(
-        'TWO',
-      );
-      expect(after[1].querySelector('a').getAttribute('href')).toBe('/TWO');
+      expect(container.querySelector('table')).not.toBe(oldTable);
+      expect(container.querySelector('button')).toBe(button);
+      expect(container.querySelector('h1')).toBe(h1);
+      const rows = container.querySelectorAll('tr');
+      expect(rows.length).toBe(3);
+      expect(rows[1].querySelector('td').textContent).toBe('TWO');
+      expect(rows[1].querySelector('td').getAttribute('data-name')).toBe('TWO');
+      expect(rows[1].querySelector('a').getAttribute('href')).toBe('/TWO');
     });
 
     it('renders the new content when it is not static', async () => {
@@ -958,7 +1015,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     document.body.appendChild(container);
     container.innerHTML = html;
     const table = container.querySelector('table');
-    const bResponse = consume(main, undefined);
+    const bResponse = consume(main);
     await bResponse;
     await act(() => {
       ReactDOMClient.hydrateRoot(container, <MapShell response={bResponse} />);
@@ -984,7 +1041,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // A route tree like Next.js sends: segment data in objects and a Map.
     const model = {
       tree: {
-        data: {rsc: <h1>layout-heading</h1>},
+        data: {rsc: <h1>{'layout-heading' + FILL}</h1>},
         slots: new Map([['children', {data: {rsc: <Page />}}]]),
       },
     };
@@ -1014,7 +1071,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     document.body.appendChild(container);
     container.innerHTML = html;
     const table = container.querySelector('table');
-    const bResponse = consume(main, undefined);
+    const bResponse = consume(main);
     await bResponse;
     await act(() => {
       ReactDOMClient.hydrateRoot(container, <TreeShell response={bResponse} />);
@@ -1032,7 +1089,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       page: (
         <React.Fragment key="c">
           <main>
-            <h1>fragment-heading</h1>
+            <h1>{'fragment-heading' + FILL}</h1>
             <Counter />
           </main>
         </React.Fragment>
@@ -1065,12 +1122,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </main>
       );
     }
-    const {main, rows} = await flight(<App />);
+    const {main, html} = await flight(<App />);
     // The <hr> stays inline; the <p> around the <br> is still stubbed.
     expect(main).not.toMatch(/\$J[0-9a-f]+:hr/);
     expect(main).toMatch(/\$J[0-9a-f]+:p/);
     expect(main).not.toContain('line-one');
-    const html = await ssr({main, rows});
     expect(html).toContain('<hr/>');
     const {container, errors} = await hydrate(main, html);
     expect(errors).toEqual([]);
@@ -1087,19 +1143,69 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           {React.createElement('x:y', null, 'namespaced')}
-          <p>plain</p>
+          <p>{'plain' + FILL}</p>
         </main>
       );
     }
-    const {main, rows} = await flight(<App />);
+    const {main, html} = await flight(<App />);
     // The stub is "$J<id>:<tag>[:<key>]", which can't carry this tag.
     expect(main).not.toMatch(/\$J[0-9a-f]+:x/);
     expect(main).toContain('x:y');
     expect(main).toMatch(/\$J[0-9a-f]+:p/);
-    const html = await ssr({main, rows});
     const {container, errors} = await hydrate(main, html);
     expect(errors).toEqual([]);
     expect(container.textContent).toContain('namespaced');
+  });
+
+  it('leaves a tiny static element in the payload', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <span>label</span>
+          <p>{'long-sentence' + FILL}</p>
+        </main>
+      );
+    }
+    const {main, html} = await flight(<App />);
+    // The span would take less room as a stub than as an element.
+    expect(main).not.toMatch(/\$J[0-9a-f]+:span/);
+    expect(main).toContain('label');
+    expect(main).toMatch(/\$J[0-9a-f]+:p"/);
+    expect(main).not.toContain('long-sentence');
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.textContent).toContain('label');
+    expect(container.textContent).toContain('long-sentence' + FILL);
+  });
+
+  it('stubs an element that is made of many tiny ones', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <ul>
+            {Array.from({length: 20}, (_, i) => (
+              <li key={i}>x</li>
+            ))}
+          </ul>
+        </main>
+      );
+    }
+    const {main, html} = await flight(<App />);
+    // The subtree counts, so the <ul> is one stub and no <li> is in the bytes.
+    expect(main).toMatch(/\$J[0-9a-f]+:ul"/);
+    expect(main.match(/\$J[0-9a-f]+:/g).length).toBe(1);
+    expect(main).not.toContain('"li"');
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelectorAll('li').length).toBe(20);
   });
 
   it('adopts a stubbed element that has no inline style', async () => {
@@ -1111,16 +1217,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           <math>
-            <mi>x</mi>
+            <mi title={FILL}>x</mi>
             <mo>+</mo>
           </math>
         </main>
       );
     }
-    const {main, rows} = await flight(<App />);
+    const {main, html} = await flight(<App />);
     // <math> is never stubbed, but its children are.
     expect(main).toMatch(/\$J[0-9a-f]+:mi/);
-    const html = await ssr({main, rows});
     const {container, errors} = await hydrate(main, html);
     expect(errors).toEqual([]);
     expect(container.querySelector('mi').textContent).toBe('x');
@@ -1136,14 +1241,13 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </main>
       );
     }
-    const {main, rows} = await flight(<App />);
+    const {main, html} = await flight(<App />);
     expect(main).toMatch(/\$J[0-9a-f]+:main/);
-    const html = await ssr({main, rows});
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
     const missing = [];
-    const response = consume(main, undefined, {
+    const response = consume(main, {
       onMissingHTML: () => missing.push('missing'),
     });
     await response;
@@ -1184,7 +1288,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     container.innerHTML = html;
     const missing = [];
     const onMissingHTML = () => missing.push('missing');
-    const first = consume(main, undefined, {onMissingHTML});
+    const first = consume(main, {onMissingHTML});
     await first;
     let root;
     await act(() => {
@@ -1192,7 +1296,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     // A framework decodes the payload again for its cache and renders that
     // copy later, after the page was replaced.
-    const second = consume(main, undefined, {onMissingHTML});
+    const second = consume(main, {onMissingHTML});
     await second;
     await act(() => root.render(<p>elsewhere</p>));
     await act(() => root.render(<Shell response={second} />));
@@ -1203,13 +1307,6 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
   describe('inside a hidden Activity', () => {
     async function hydrateStubbed(App) {
-      const main = await serverAct(() =>
-        readAll(
-          ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
-            htmlFirst: true,
-          }),
-        ),
-      );
       function Page({mode, response}) {
         return (
           <React.Activity mode={mode}>
@@ -1217,20 +1314,16 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           </React.Activity>
         );
       }
-      const ssrResponse = consume(main, undefined);
-      await ssrResponse;
-      let html;
-      await act(async () => {
-        html = await readAll(
-          await ReactDOMFizzServer.renderToReadableStream(
-            <Page mode="visible" response={ssrResponse} />,
-          ),
-        );
-      });
+      const {main, html} = await renderWithTee(
+        <App />,
+        undefined,
+        ({response}) => <Page mode="visible" response={response} />,
+      );
+      expect(main).toContain('$J');
       const container = document.createElement('div');
       document.body.appendChild(container);
       container.innerHTML = html;
-      const response = consume(main, undefined, {
+      const response = consume(main, {
         onMissingHTML: () => {
           throw new Error('missing');
         },
@@ -1246,7 +1339,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return {container, root, Page, response};
     }
 
-    it('keeps the inline display of an stubbed element through hide and show', async () => {
+    it('keeps the inline display of a stubbed element through hide and show', async () => {
       function App() {
         return (
           <section style={{display: 'flex'}}>
@@ -1266,7 +1359,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
     it('is visible when it mounts again after it was unmounted while hidden', async () => {
       function App() {
-        return <h2>page-heading</h2>;
+        return <h2>{'page-heading' + FILL}</h2>;
       }
       const {container, root, Page, response} = await hydrateStubbed(App);
       await act(() => root.render(<Page mode="hidden" response={response} />));
@@ -1281,7 +1374,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         ),
       );
       const h2 = container.querySelector('h2');
-      expect(h2.textContent).toBe('page-heading');
+      expect(h2.textContent).toBe('page-heading' + FILL);
       expect(h2.style.display).toBe('');
     });
   });
@@ -1294,13 +1387,13 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         </main>
       );
     }
-    const {main, rows} = await flight(<App />);
-    const html = await ssr({main, rows});
+    const {main, html} = await flight(<App />);
+    expect(main).toContain('$J');
     const container = document.createElement('div');
     document.body.appendChild(container);
     container.innerHTML = html;
     const missing = [];
-    const response = consume(main, undefined, {
+    const response = consume(main, {
       onMissingHTML: () => missing.push('missing'),
     });
     await response;
@@ -1323,29 +1416,37 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(restored.textContent).toBe('snapshot-heading');
   });
 
-  // Returns {main, rows}: rendered with or without stubbing.
+  // Returns {main, html}: rendered with a tee (html) or in full (no html).
   async function flight(element, stub = true) {
-    const rows = new Map();
-    const options = stub
-      ? {htmlFirst: {onRow: (id, json) => rows.set(id, json)}}
-      : {htmlFirst: false};
+    if (stub) {
+      return renderWithTee(element);
+    }
     const main = await serverAct(async () =>
       readAll(
-        ReactServerDOMServer.renderToReadableStream(
-          element,
-          webpackMap,
-          options,
-        ),
+        ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+          htmlFirst: false,
+        }),
       ),
     );
-    return {main, rows};
+    return {main, html: undefined};
   }
 
-  function rowsText(rows) {
-    return Array.from(rows.values()).join('\n');
+  // Like `flight`, but the render is aborted once the HTML is done, so the
+  // server writes no late row: a stub whose content SSR did not render has
+  // nothing to adopt and nothing to restore from.
+  async function flightWithoutLateRows(element) {
+    const controller = new AbortController();
+    return serverAct(async () => {
+      const t = startTee(element, {signal: controller.signal, onError() {}});
+      const htmlStream = await t.renderHTML();
+      await htmlStream.allReady;
+      const html = await readAll(htmlStream);
+      controller.abort(new Error('aborted'));
+      return {main: await t.browser, html};
+    });
   }
 
-  // Hydrates `html` with the (row-less) browser payload `main`.
+  // Hydrates `html` with the browser payload `main`.
   // `flightOptions` go to createFromReadableStream (e.g. onMissingHTML).
   // `rootOptions` go to hydrateRoot.
   async function hydrate(main, html, flightOptions, rootOptions) {
@@ -1353,7 +1454,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     document.body.appendChild(container);
     container.innerHTML = html;
     const errors = [];
-    const response = consume(main, undefined, flightOptions);
+    const response = consume(main, flightOptions);
     await response;
     let root;
     await act(() => {
@@ -1394,7 +1495,6 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       <Tabs panels={[<div key="a">panel-A</div>, <div key="b">panel-B</div>]} />
     );
     const f = await flight(<App />);
-    expect(f.rows.size).toBe(0);
     expect(f.main).not.toContain('$J');
     const html = await ssr(f);
     const {container, errors} = await hydrate(f.main, html);
@@ -1419,28 +1519,31 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <Tabs>
         <article className="panel">
-          <h2>server-panel</h2>
+          <h2>{'server-panel' + FILL}</h2>
         </article>
       </Tabs>
     );
     const f = await flight(<App />);
-    expect(f.main).toContain('$J');
+    // The article is a child of a Client Component, so it is real. Its child
+    // is stubbed.
+    expect(f.main).not.toMatch(/\$J[0-9a-f]+:article/);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:h2/);
     const html = await ssr(f);
     const missing = jest.fn();
     const {container, errors} = await hydrate(f.main, html, {
       onMissingHTML: missing,
     });
     const [serverTab, clientTab] = container.querySelectorAll('button');
-    const adopted = container.querySelector('article');
+    const adopted = container.querySelector('h2');
     for (let i = 0; i < 3; i++) {
       await act(() => clientTab.click());
       expect(container.querySelector('article')).toBe(null);
       expect(container.textContent).toContain('client-panel');
       await act(() => serverTab.click());
       const article = container.querySelector('article');
-      expect(article).not.toBe(adopted);
+      expect(article.querySelector('h2')).not.toBe(adopted);
       expect(article.outerHTML).toBe(
-        '<article class="panel"><h2>server-panel</h2></article>',
+        '<article class="panel"><h2>server-panel' + FILL + '</h2></article>',
       );
     }
     expect(missing).not.toHaveBeenCalled();
@@ -1470,7 +1573,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.querySelector('ul').textContent).toBe('zyx');
   });
 
-  it('stubs keyed static children of a client list; reorder moves adopted DOM', async () => {
+  it('keeps keyed children of a client list real and stubs their children; reorder moves adopted DOM', async () => {
     const List = clientExports(function List({children}) {
       const [rev, setRev] = React.useState(false);
       const items = React.Children.toArray(children);
@@ -1483,14 +1586,20 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <List>
-        <li key="x">x</li>
-        <li key="y">y</li>
-        <li key="z">z</li>
+        <li key="x">
+          <b title={FILL}>x</b>
+        </li>
+        <li key="y">
+          <b title={FILL}>y</b>
+        </li>
+        <li key="z">
+          <b title={FILL}>z</b>
+        </li>
       </List>
     );
     const f = await flight(<App />);
-    expect(f.rows.size).toBeGreaterThan(0);
-    expect(f.main).toMatch(/\$J[0-9a-f]+:li:x"/);
+    expect(f.main).not.toMatch(/\$J[0-9a-f]+:li/);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:b"/);
     const html = await ssr(f);
     const {container, errors} = await hydrate(f.main, html);
     expect(container.querySelector('ul').textContent).toBe('xyz');
@@ -1511,11 +1620,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <Panel>
-        <p>modal-body</p>
+        <div>
+          <p>{'modal-body' + FILL}</p>
+        </div>
       </Panel>
     );
-    const f = await flight(<App />);
-    expect(f.rows.size).toBeGreaterThan(0);
+    // No late row, so the stub of the closed panel has nothing to adopt.
+    const f = await flightWithoutLateRows(<App />);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:p"/);
+    expect(f.main).not.toMatch(/\$J[0-9a-f]+:div/);
     expect(f.main).not.toContain('modal-body');
     const html = await ssr(f);
     const missing = jest.fn();
@@ -1540,34 +1653,6 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return renderWithTee(element, options);
     }
 
-    // The same payload with the stubbed rows withheld and no late rows: what
-    // the server writes when SSR rendered all of them.
-    async function flightOnly(element) {
-      return serverAct(() =>
-        readAll(
-          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
-            htmlFirst: {onRow() {}},
-          }),
-        ),
-      );
-    }
-
-    // The tee is never read, so nothing renders the rows. The server closes
-    // the stream after its settle timeout and writes every row.
-    async function unreadTee(element) {
-      return serverAct(() => {
-        const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
-        return readAll(
-          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
-            htmlFirst: true,
-            tee,
-          }),
-        );
-      });
-    }
-
-    const withoutRequestId = main => main.replace(/^:P[0-9a-f]+\n/m, '');
-
     function createPanel() {
       return clientExports(function Panel({children}) {
         const [open, setOpen] = React.useState(false);
@@ -1586,7 +1671,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <article>{'page-content '.repeat(10)}</article>
           <Panel>
-            <p>modal-body</p>
+            <div>
+              <p>{'modal-body' + FILL}</p>
+            </div>
           </Panel>
         </main>
       );
@@ -1597,15 +1684,17 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       // content is not, so its row was written after all.
       expect(main).not.toContain('page-content');
       expect(main).toContain('modal-body');
-      const unrendered = await flightOnly(<App />);
-      expect(unrendered).not.toContain('modal-body');
-      const lateBytes = byteLength(main) - byteLength(unrendered);
+      // One row, after the rest of the payload. In DEV it comes with its
+      // debug info.
+      const lateRows = main
+        .split('\n')
+        .filter(row => row.includes('modal-body'));
+      expect(lateRows.length).toBe(1);
+      const lateBytes = byteLength(lateRows[0]);
       console.log(
-        `late rows: stubbed=${byteLength(unrendered)} ` +
-          `with the modal's row=${byteLength(main)} (+${lateBytes})`,
+        `late rows: stream=${byteLength(main)} the modal's row=${lateBytes}`,
       );
-      // One row. In DEV it comes with its debug info.
-      expect(lateBytes).toBeLessThan(__DEV__ ? 400 : 80);
+      expect(lateBytes).toBeLessThan(byteLength(FILL) + (__DEV__ ? 400 : 80));
 
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
@@ -1615,14 +1704,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(container.textContent).not.toContain('modal-body');
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside').innerHTML).toBe(
-        '<p>modal-body</p>',
+        '<div><p>modal-body' + FILL + '</p></div>',
       );
       // Closing and opening it again doesn't need the server either.
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside')).toBe(null);
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside').innerHTML).toBe(
-        '<p>modal-body</p>',
+        '<div><p>modal-body' + FILL + '</p></div>',
       );
       expect(missing).not.toHaveBeenCalled();
       expect(errors).toEqual([]);
@@ -1637,17 +1726,25 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const App = () => (
         <div>
           <ClientOnly>
-            <p>client-only-content</p>
+            <section>
+              <p>{'client-only-content' + FILL}</p>
+            </section>
           </ClientOnly>
         </div>
       );
       const {main, html} = await flightAndSsr(<App />);
+      expect(main).toContain('$J');
+      // The section is real; the late row is its child's.
+      expect(main).not.toMatch(/\$J[0-9a-f]+:section/);
+      expect(main).toContain('client-only-content');
       expect(html).not.toContain('client-only-content');
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
         onMissingHTML: missing,
       });
-      expect(container.innerHTML).toBe('<div><p>client-only-content</p></div>');
+      expect(container.innerHTML).toBe(
+        '<div><section><p>client-only-content' + FILL + '</p></section></div>',
+      );
       expect(missing).not.toHaveBeenCalled();
       expect(errors).toEqual([]);
     });
@@ -1665,8 +1762,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       const App = () => (
         <Tabs>
-          <article key="a">{'panel-A '.repeat(10)}</article>
-          <article key="b">{'panel-B '.repeat(10)}</article>
+          <article key="a">
+            <p>{'panel-A '.repeat(10)}</p>
+          </article>
+          <article key="b">
+            <p>{'panel-B '.repeat(10)}</p>
+          </article>
         </Tabs>
       );
       const {main, html} = await flightAndSsr(<App />);
@@ -1675,6 +1776,8 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       // Panel A is adopted from the HTML; panel B's row was written late.
       expect(main).not.toContain('panel-A');
       expect(main).toContain('panel-B');
+      // The articles are children of a Client Component: real, not stubs.
+      expect(main).not.toMatch(/\$J[0-9a-f]+:article/);
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
         onMissingHTML: missing,
@@ -1707,8 +1810,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       const App = () => (
         <Tabs>
-          <article>{'panel-A '.repeat(10)}</article>
-          <article>{'panel-B '.repeat(10)}</article>
+          <article>
+            <p>{'panel-A '.repeat(10)}</p>
+          </article>
+          <article>
+            <p>{'panel-B '.repeat(10)}</p>
+          </article>
         </Tabs>
       );
       const {main, html} = await flightAndSsr(<App />);
@@ -1717,6 +1824,8 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       // Panel A is adopted from the HTML; panel B's row was written late.
       expect(main).not.toContain('panel-A');
       expect(main).toContain('panel-B');
+      // The articles are children of a Client Component: real, not stubs.
+      expect(main).not.toMatch(/\$J[0-9a-f]+:article/);
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
         onMissingHTML: missing,
@@ -1760,31 +1869,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(main).toContain('$J');
       expect(main).not.toContain('page-content');
       expect(main).not.toContain('streamed-content');
-      // What the server writes when it sends no late rows.
-      const unrendered = await flightOnly(<App />);
-      expect(withoutRequestId(main).split('\n').length).toBe(
-        unrendered.split('\n').length,
-      );
-      if (!__DEV__) {
-        // Timing rows differ between two renders in DEV.
-        expect(withoutRequestId(main)).toBe(unrendered);
-      }
+      // No row carries the content: nothing was written late.
+      expect(main).not.toContain('static');
       const {container, errors} = await hydrate(main, html);
       expect(container.textContent).toContain('streamed-content');
       expect(errors).toEqual([]);
-    });
-
-    it('closes the stream when nothing in this process renders it', async () => {
-      const Panel = createPanel();
-      const main = await unreadTee(
-        <Panel>
-          <p>modal-body</p>
-        </Panel>,
-      );
-      // Nothing rendered the row, so the browser gets it after all.
-      expect(main).toContain('$J');
-      expect(main).toContain('modal-body');
-      expect(main).not.toContain(':q\n');
     });
 
     it('closes the stream without late rows when the render is aborted', async () => {
@@ -1800,7 +1889,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         const stream = ReactServerDOMServer.renderToReadableStream(
           <main>
             <Panel>
-              <p>modal-body</p>
+              <div>
+                <p>{'modal-body' + FILL}</p>
+              </div>
             </Panel>
             <React.Suspense fallback="loading">
               <Never />
@@ -1808,7 +1899,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           </main>,
           webpackMap,
           {
-            htmlFirst: true,
+            htmlFirst: new Promise(() => {}),
             tee,
             signal: controller.signal,
             onError(error) {
@@ -1829,6 +1920,337 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
   });
 
+  describe('the htmlFirst thenable', () => {
+    function createPanel() {
+      return clientExports(function Panel({children}) {
+        const [open, setOpen] = React.useState(false);
+        return (
+          <div>
+            <button onClick={() => setOpen(!open)}>toggle</button>
+            {open ? <aside>{children}</aside> : null}
+          </div>
+        );
+      });
+    }
+
+    it('keeps the stream open until the thenable settles', async () => {
+      const Panel = createPanel();
+      const App = () => (
+        <main>
+          <article>{'page-content '.repeat(10)}</article>
+          <Panel>
+            <div>
+              <p>{'modal-body' + FILL}</p>
+            </div>
+          </Panel>
+        </main>
+      );
+      let main;
+      let before;
+      let endedBefore;
+      await serverAct(async () => {
+        const t = startTee(<App />);
+        const htmlStream = await t.renderHTML();
+        await htmlStream.allReady;
+        await readAll(htmlStream);
+        await macrotasks(5);
+        endedBefore = t.ended();
+        before = t.text();
+        t.settle.resolve();
+        main = await t.browser;
+        expect(t.ended()).toBe(true);
+      });
+      // Everything was written and the HTML is done, but the stream is open.
+      expect(endedBefore).toBe(false);
+      expect(before).toContain('$J');
+      expect(before).not.toContain('modal-body');
+      // The thenable settling writes the late row, then closes the stream.
+      expect(main.startsWith(before)).toBe(true);
+      expect(main).toContain('modal-body');
+      expect(main.slice(before.length)).toContain('modal-body');
+    });
+
+    it('writes a row for every stubbed row when the thenable rejects', async () => {
+      const ROWS = 3;
+      let main;
+      let fulfilled;
+      await serverAct(async () => {
+        const t = startTee(sharedAppElement(ROWS));
+        const htmlStream = await t.renderHTML();
+        await htmlStream.allReady;
+        const html = await readAll(htmlStream);
+        expect(html).toContain('name-2');
+        t.settle.reject(new Error('The HTML render failed'));
+        main = await t.browser;
+      });
+      await serverAct(async () => {
+        fulfilled = (await renderWithTeeInner(sharedAppElement(ROWS))).main;
+      });
+      // SSR rendered all of it, and still the payload carries all of it.
+      expect(fulfilled).not.toContain('name-2');
+      expect(main).toContain('name-0');
+      expect(main).toContain('name-2');
+      expect(main).toContain('Report');
+      const html = (await flight(sharedAppElement(ROWS))).html;
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML() {
+          throw new Error('missing');
+        },
+      });
+      expect(errors).toEqual([]);
+      expect(container.querySelectorAll('tr').length).toBe(ROWS);
+    });
+
+    it('writes no late row for content that SSR rendered while a Client Component suspended', async () => {
+      const slow = new Promise(resolve => setTimeout(resolve, 50));
+      const Slow = clientExports(function Slow({children}) {
+        use(slow);
+        return <section>{children}</section>;
+      });
+      const App = () => (
+        <main>
+          <p>{'before-text' + FILL}</p>
+          <React.Suspense fallback={<i>loading</i>}>
+            <Slow>
+              <div>
+                <p>{'slow-grandchild-text' + FILL}</p>
+              </div>
+            </Slow>
+          </React.Suspense>
+        </main>
+      );
+      const {main, html} = await renderWithTee(<App />);
+      expect(html).toContain('slow-grandchild-text');
+      expect(html).toContain('before-text');
+      expect(main).toMatch(/\$J[0-9a-f]+:p"/);
+      expect(main).not.toMatch(/\$J[0-9a-f]+:div/);
+      expect(main).not.toContain('slow-grandchild-text');
+      expect(main).not.toContain('before-text');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML: missing,
+      });
+      expect(container.textContent).toContain('slow-grandchild-text');
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
+    it('stubs nothing when htmlFirst is true', async () => {
+      const element = sharedAppElement(5);
+      const outputs = [];
+      const options = [true, undefined];
+      for (let i = 0; i < options.length; i++) {
+        const htmlFirst = options[i];
+        outputs.push(
+          await serverAct(async () =>
+            readAll(
+              ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+                htmlFirst,
+                tee: ReactServerDOMEdgeClient.createTee(createTeeManifest()),
+              }),
+            ),
+          ),
+        );
+      }
+      const withoutTime = text =>
+        text.replace(/^[0-9a-f]*:(N|D\{"time").*\n/gm, '');
+      expect(withoutTime(outputs[0])).toBe(withoutTime(outputs[1]));
+      expect(outputs[0]).not.toContain('$J');
+      expect(outputs[0]).not.toContain(':P');
+      expect(outputs[0]).toContain('name-4');
+    });
+
+    it('serializes what is rendered after the thenable settled in full', async () => {
+      let release;
+      const gate = new Promise(resolve => {
+        release = resolve;
+      });
+      async function Later() {
+        await gate;
+        return (
+          <section>
+            <p>later-text</p>
+          </section>
+        );
+      }
+      const App = () => (
+        <main>
+          <h1>head-text</h1>
+          <React.Suspense fallback={<i>loading</i>}>
+            <Later />
+          </React.Suspense>
+        </main>
+      );
+      let main;
+      await serverAct(async () => {
+        const t = startTee(<App />);
+        await macrotasks(2);
+        // The HTML render is done (or failed) before the Server Component is.
+        t.settle.resolve();
+        await macrotasks(2);
+        expect(t.ended()).toBe(false);
+        release();
+        main = await t.browser;
+        expect(t.ended()).toBe(true);
+      });
+      expect(main).toContain('later-text');
+      expect(main).not.toMatch(/\$J[0-9a-f]+:section/);
+      // What was stubbed before is written as a late row.
+      expect(main).toContain('head-text');
+    });
+
+    it('gives the HTML and a late row the same value of a getter', async () => {
+      const Panel = createPanel();
+      function colorStyle() {
+        let reads = 0;
+        const style = {};
+        Object.defineProperty(style, 'color', {
+          enumerable: true,
+          get() {
+            return reads++ === 0 ? 'red' : 'blue';
+          },
+        });
+        return style;
+      }
+      const App = () => (
+        <main>
+          <p style={colorStyle()}>rendered-text</p>
+          <Panel>
+            <div>
+              <p style={colorStyle()}>closed-text</p>
+            </div>
+          </Panel>
+        </main>
+      );
+      const {main, html} = await renderWithTee(<App />);
+      expect(html).toContain('<p style="color:red">rendered-text</p>');
+      expect(html).not.toContain('blue');
+      expect(html).not.toContain('closed-text');
+      // The closed panel's element was not rendered, so its row is late.
+      expect(main).not.toContain('rendered-text');
+      expect(main).toContain('closed-text');
+      expect(main).toContain('red');
+      expect(main).not.toContain('blue');
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML() {
+          throw new Error('missing');
+        },
+      });
+      await act(() => container.querySelector('button').click());
+      expect(errors).toEqual([]);
+      expect(container.querySelector('aside p').style.color).toBe('red');
+    });
+
+    it('never stubs the children of a template', async () => {
+      const App = () => (
+        <main>
+          <template>
+            <p>{'template-text' + FILL}</p>
+          </template>
+          <p>{'after-text' + FILL}</p>
+        </main>
+      );
+      const {main, html} = await renderWithTee(<App />);
+      expect(html).toContain('template-text');
+      expect(main).toContain('template-text');
+      expect(main).not.toContain('after-text');
+      expect(main).not.toMatch(/\$J[0-9a-f]+:template/);
+      // Only the element after the template is a stub.
+      expect(main.match(/\$J[0-9a-f]+:/g).length).toBe(1);
+    });
+
+    it('does not let Server Components render a stub from a payload', async () => {
+      const App = () => (
+        <main>
+          <h1>stub-heading</h1>
+          <p>stub-text</p>
+        </main>
+      );
+      const {main} = await renderWithTee(<App />);
+      expect(main).toContain('$J');
+      const decoded = await consume(main);
+      const errors = [];
+      await serverAct(async () => {
+        await readAll(
+          ReactServerDOMServer.renderToReadableStream(decoded, webpackMap, {
+            onError(error) {
+              errors.push(error.message);
+            },
+          }),
+        );
+      });
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0]).toContain(
+        'A stub from an HTML-first payload cannot be rendered by Server Components',
+      );
+    });
+  });
+
+  describe('a Client Component that inspects its children', () => {
+    it('keeps the className of an asChild element and adopts the HTML', async () => {
+      const onClick = jest.fn(event => event.preventDefault());
+      const Slot = clientExports(function Slot({children}) {
+        return React.cloneElement(React.Children.only(children), {
+          className: 'btn',
+          onClick,
+        });
+      });
+      const App = () => (
+        <Slot>
+          <a href="/x">
+            <span>{'Link' + FILL}</span>
+          </a>
+        </Slot>
+      );
+      const {main, html} = await renderWithTee(<App />);
+      expect(html).toContain('<a href="/x" class="btn">');
+      // The <a> is real, so cloneElement saw an element; its child is a stub.
+      expect(main).not.toMatch(/\$J[0-9a-f]+:a/);
+      expect(main).toMatch(/\$J[0-9a-f]+:span/);
+      expect(main).not.toContain('Link');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(main, html, {
+        onMissingHTML: missing,
+      });
+      const link = container.querySelector('a');
+      expect(link.className).toBe('btn');
+      await act(() => link.click());
+      expect(onClick).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('a')).toBe(link);
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+    });
+
+    it('keeps the <li> children it filters by type', async () => {
+      const OnlyItems = clientExports(function OnlyItems({children}) {
+        return (
+          <ul>
+            {React.Children.toArray(children).filter(
+              child => child.type === 'li',
+            )}
+          </ul>
+        );
+      });
+      const App = () => (
+        <OnlyItems>
+          <li>
+            <b>one</b>
+          </li>
+          <p>skipped</p>
+          <li>
+            <b>two</b>
+          </li>
+        </OnlyItems>
+      );
+      const {main, html} = await renderWithTee(<App />);
+      expect(html).toBe('<ul><li><b>one</b></li><li><b>two</b></li></ul>');
+      expect(main).not.toMatch(/\$J[0-9a-f]+:li/);
+      const {container, errors} = await hydrate(main, html);
+      expect(errors).toEqual([]);
+      expect(container.innerHTML).toBe(html);
+    });
+  });
+
   it('names the missing element when late-mounted content has no recovery callback', async () => {
     const Panel = clientExports(function Panel({children}) {
       const [open, setOpen] = React.useState(false);
@@ -1841,10 +2263,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <Panel>
-        <section>modal-body</section>
+        <div>
+          <section>{'modal-body' + FILL}</section>
+        </div>
       </Panel>
     );
-    const f = await flight(<App />);
+    const f = await flightWithoutLateRows(<App />);
     const html = await ssr(f);
     const {container} = await hydrate(f.main, html);
     await act(() => container.querySelector('button').click());
@@ -1857,18 +2281,18 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).not.toContain('modal-body');
   });
 
-  it('keeps the key on the stub of an stubbed element', async () => {
+  it('keeps the key on the stub of a stubbed element', async () => {
     const Client = clientExports(function Client() {
       return <i>c</i>;
     });
     function Item({label}) {
-      return <li>{label}</li>;
+      return <li>{label + FILL}</li>;
     }
     const App = () => (
       <ul>
         <Client />
         {['a', 'b'].map(l => (
-          <li key={l}>item-{l}</li>
+          <li key={l}>{'item-' + l + FILL}</li>
         ))}
         <Item key="srv" label="from-server-component" />
       </ul>
@@ -1900,7 +2324,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       </main>
     );
     const f = await flight(<App />);
-    expect(f.rows.size).toBe(0);
+    expect(f.main).not.toContain('$J');
     const html = await ssr(f);
     const {container, errors} = await hydrate(f.main, html);
     await act(() => container.querySelector('button').click());
@@ -1917,12 +2341,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <div>
         <ClientOnly>
-          <p>client-only-content</p>
+          <section>
+            <p>{'client-only-content' + FILL}</p>
+          </section>
         </ClientOnly>
       </div>
     );
-    const f = await flight(<App />);
-    expect(f.rows.size).toBeGreaterThan(0);
+    const f = await flightWithoutLateRows(<App />);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:p"/);
+    expect(f.main).not.toMatch(/\$J[0-9a-f]+:section/);
     expect(f.main).not.toContain('client-only-content');
     const html = await ssr(f);
     const missing = jest.fn();
@@ -1938,29 +2365,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('client-only-content');
   });
 
-  it('fails the SSR consumer when an stubbed row is missing', async () => {
-    const App = () => <article>{'important '.repeat(10)}</article>;
-    const f = await flight(<App />);
-    expect(f.rows.size).toBe(1);
-    const response = consume(f.main, new Map());
-    let error;
-    try {
-      await response;
-      await act(async () => {
-        await readAll(
-          await ReactDOMFizzServer.renderToReadableStream(
-            <Shell response={response} />,
-            {onError() {}},
-          ),
-        );
-      });
-    } catch (e) {
-      error = e;
-    }
-    expect(error && error.message).toContain('Missing stubbed row');
-  });
-
-  it('stubs host-position static hosts including client children, not other props', async () => {
+  it('stubs host-position static hosts, and inside client children, not other props', async () => {
     const Client = clientExports(function Client({children, fallback}) {
       return (
         <div>
@@ -1983,36 +2388,44 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <main>
         <Client fallback={<i>client-prop-text</i>}>
-          <p>client-child-text</p>
+          <div>
+            <p>{'client-child-text' + FILL}</p>
+          </div>
           <ServerTable />
         </Client>
         <section>
           <Client />
-          <h2>host-child-text</h2>
+          <h2>{'host-child-text' + FILL}</h2>
         </section>
         <React.Suspense fallback={<p>suspense-fallback-text</p>}>
           <ServerTable />
-          <h3>suspense-content-text</h3>
+          <h3>{'suspense-content-text' + FILL}</h3>
         </React.Suspense>
         <ServerTable />
       </main>
     );
     const f = await flight(<App />);
-    const stubbed = rowsText(f.rows);
-    // Stubbed: server output, host children, Suspense children, and client children.
-    expect(stubbed).toContain('server-row-text');
-    expect(stubbed).toContain('host-child-text');
-    expect(stubbed).toContain('suspense-content-text');
-    expect(stubbed).toContain('client-child-text');
-    expect(f.main).not.toContain('host-child-text');
-    expect(f.main).not.toContain('suspense-content-text');
-    expect(f.main).not.toContain('client-child-text');
+    // Stubbed: server output, host children, Suspense children, and what is
+    // inside the children of a client component. They are in the HTML.
+    [
+      'server-row-text',
+      'host-child-text',
+      'suspense-content-text',
+      'client-child-text',
+    ].forEach(text => {
+      expect(f.html).toContain(text);
+      expect(f.main).not.toContain(text);
+    });
     // Kept: non-children client props, and Suspense fallbacks.
     ['client-prop-text', 'suspense-fallback-text'].forEach(kept => {
-      expect(stubbed).not.toContain(kept);
       expect(f.main).toContain(kept);
     });
     expect(f.main).toMatch(/\$J[0-9a-f]+:table/);
+    // The children of the client component are real: the div, and the
+    // table of the Server Component. What is in them is stubbed.
+    expect(f.main).not.toMatch(/\$J[0-9a-f]+:div/);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:p"/);
+    expect(f.main).toMatch(/\$J[0-9a-f]+:tbody"/);
     const html = await ssr(f);
     const {errors} = await hydrate(f.main, html);
     expect(errors).toEqual([]);
@@ -2046,7 +2459,25 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           </div>
         );
       }
-      await flight(node);
+      // Only the server's walk matters, so no HTML is rendered: the render is
+      // aborted, which closes the stream without late rows.
+      const controller = new AbortController();
+      await serverAct(async () => {
+        const stream = ReactServerDOMServer.renderToReadableStream(
+          node,
+          webpackMap,
+          {
+            htmlFirst: new Promise(() => {}),
+            tee: ReactServerDOMEdgeClient.createTee(createTeeManifest()),
+            signal: controller.signal,
+            onError() {},
+          },
+        );
+        const browser = readAll(stream);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        controller.abort(new Error('aborted'));
+        await browser;
+      });
       return reads;
     }
     const shallow = await countTypeReads(20);
@@ -2067,7 +2498,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       </main>
     );
     const f = await flight(<App />);
-    expect(f.rows.size).toBeGreaterThan(0);
+    expect(f.html).toContain(T);
     expect(f.main).not.toContain(T);
     expect(f.main).not.toContain('big-text-');
   });
@@ -2077,71 +2508,44 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    // Streams the HTML of `app` like a server does. The SSR consumer gets the
-    // Flight rows of the stubbed content that contains each marker in `later`
-    // one at a time, in that order, so Fizz completes those boundaries in that
-    // order. Returns the browser payload and the HTML chunks (the shell, then
-    // one chunk per released row).
-    async function streamHTML(app, later = [], fizzOptions) {
-      const f = await flight(app);
-      const lines = f.main.split('\n').filter(line => line !== '');
-      const held = later.map(marker => {
-        let id = -1;
-        f.rows.forEach((json, key) => {
-          if (json.includes(marker)) {
-            id = key;
-          }
+    // Streams the HTML of `app` like a server does, reading the Flight
+    // render through a tee. Boundaries complete as the Flight rows arrive, so
+    // the HTML comes in chunks: the shell, then one per completed boundary.
+    // Like a framework, it rejects the htmlFirst thenable when Fizz reported
+    // an error. Returns the browser payload and the HTML chunks.
+    function streamHTML(app, fizzOptions) {
+      return serverAct(async () => {
+        let failed = false;
+        const t = startTee(app);
+        const htmlStream = await t.renderHTML({
+          ...fizzOptions,
+          onError(error) {
+            failed = true;
+            if (fizzOptions && fizzOptions.onError) {
+              fizzOptions.onError(error);
+            }
+          },
         });
-        const line = lines.find(l => l.includes('"$J' + id.toString(16) + ':'));
-        expect(line).toBeDefined();
-        return line;
-      });
-      let controller;
-      const ssrStream = new ReadableStream({
-        type: 'bytes',
-        start(c) {
-          controller = c;
-        },
-      });
-      const send = text => controller.enqueue(encoder.encode(text));
-      send(
-        lines
-          .filter(line => !held.includes(line))
-          .map(line => line + '\n')
-          .join(''),
-      );
-      const response = ReactServerDOMClient.createFromReadableStream(
-        ssrStream,
-        {htmlFirstRows: f.rows},
-      );
-      let buffer = '';
-      await act(async () => {
-        const html = await ReactDOMFizzServer.renderToReadableStream(
-          <Shell response={response} />,
-          fizzOptions,
-        );
-        const reader = html.getReader();
-        (async () => {
+        const chunks = [];
+        const reader = htmlStream.getReader();
+        const reading = (async () => {
           while (true) {
             const {done, value} = await reader.read();
             if (done) {
               return;
             }
-            buffer += decoder.decode(value);
+            chunks.push(decoder.decode(value));
           }
         })();
+        await htmlStream.allReady;
+        if (failed) {
+          t.settle.reject(new Error('The HTML render failed'));
+        } else {
+          t.settle.resolve();
+        }
+        await reading;
+        return {main: await t.browser, chunks};
       });
-      const chunks = [buffer];
-      for (let i = 0; i < held.length; i++) {
-        const line = held[i];
-        buffer = '';
-        await act(async () => {
-          send(line + '\n');
-        });
-        chunks.push(buffer);
-      }
-      controller.close();
-      return {main: f.main, chunks};
     }
 
     // Inserts HTML chunks into `container` and runs Fizz's inline scripts.
@@ -2200,7 +2604,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         await delay(ms);
         return (
           <section id={label}>
-            <p>{label + '-text'}</p>
+            <p>{label + '-text' + FILL}</p>
             {children}
           </section>
         );
@@ -2208,7 +2612,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return function App() {
         return (
           <main>
-            <h1>shell-text</h1>
+            <h1>{'shell-text' + FILL}</h1>
             <Counter />
             <React.Suspense fallback={<i>loading-outer</i>}>
               <Late ms={10} label="outer">
@@ -2233,19 +2637,23 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
     it('stubs and adopts late server components in nested boundaries completed out of order', async () => {
       const App = makeStreamingApp();
-      // Fizz completes the outer, then the side, then the inner boundary.
-      const {main, chunks} = await streamHTML(<App />, [
-        'outer-text',
-        'side-text',
-        'inner-text',
-      ]);
+      // The Flight server resolves the side, then the outer, then the inner
+      // boundary, and Fizz completes them in that order. Boundaries that
+      // complete together share a chunk.
+      const {main, chunks} = await streamHTML(<App />);
       ['shell-text', 'outer-text', 'inner-text', 'side-text'].forEach(text =>
         expect(main).not.toContain(text),
       );
       expect(chunks[0]).toContain('loading-outer');
       expect(chunks[0]).not.toContain('side-text');
-      expect(chunks[2]).toContain('side-text');
-      expect(chunks[3]).toContain('inner-text');
+      const all = chunks.join('');
+      expect(all.indexOf('side-text')).toBeGreaterThan(0);
+      expect(all.indexOf('outer-text')).toBeGreaterThan(
+        all.indexOf('side-text'),
+      );
+      expect(all.indexOf('inner-text')).toBeGreaterThan(
+        all.indexOf('outer-text'),
+      );
 
       const missing = jest.fn();
       const container = document.createElement('div');
@@ -2263,7 +2671,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const after = getContentNodes(hydrated);
       after.forEach(node => expect(node).not.toBe(null));
       expect(visibleText(hydrated)).toBe(
-        'shell-textn:0outer-textinner-textside-text',
+        'shell-text' +
+          FILL +
+          'n:0outer-text' +
+          FILL +
+          'inner-text' +
+          FILL +
+          'side-text' +
+          FILL,
       );
       expect(errors).toEqual([]);
       expect(missing).not.toHaveBeenCalled();
@@ -2276,11 +2691,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
     it('adopts boundaries that are still pending when hydration starts', async () => {
       const App = makeStreamingApp();
-      const {main, chunks} = await streamHTML(<App />, [
-        'side-text',
-        'outer-text',
-        'inner-text',
-      ]);
+      const {main, chunks} = await streamHTML(<App />);
+      expect(main).toContain('$J');
+      expect(chunks.length).toBeGreaterThan(1);
       const missing = jest.fn();
       const {container, errors} = await hydrateStream(main, chunks, 1, missing);
       expect(visibleText(container)).toContain('loading-outer');
@@ -2292,7 +2705,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       nodes.forEach(node => expect(node).not.toBe(null));
       await act(() => container.querySelector('button').click());
       expect(visibleText(container)).toBe(
-        'shell-textn:2outer-textinner-textside-text',
+        'shell-text' +
+          FILL +
+          'n:2outer-text' +
+          FILL +
+          'inner-text' +
+          FILL +
+          'side-text' +
+          FILL,
       );
       expect(getContentNodes(container)).toEqual(nodes);
       expect(errors).toEqual([]);
@@ -2314,14 +2734,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const content = (
         <>
           <Article />
-          <p>static-p</p>
+          <p>{'static-p' + FILL}</p>
           <Fragile />
         </>
       );
       function App() {
         return (
           <main>
-            <h1>shell-text</h1>
+            <h1>{'shell-text' + FILL}</h1>
             {withSuspense ? (
               <React.Suspense fallback={<i>loading</i>}>
                 {content}
@@ -2340,9 +2760,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       };
     }
 
-    async function expectRecovery(throwOnServer, withSuspense) {
-      const {App, goToClient} = makeFragileApp(throwOnServer, withSuspense);
-      const {main, chunks} = await streamHTML(<App />, [], {onError() {}});
+    async function expectRecovery(withSuspense) {
+      const {App, goToClient} = makeFragileApp(false, withSuspense);
+      const {main, chunks} = await streamHTML(<App />, {onError() {}});
       expect(main).not.toContain('static-sibling');
       expect(main).not.toContain('static-p');
       goToClient();
@@ -2360,7 +2780,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const h1 = container.querySelector('h1');
       await renderFullPayload(root, <App />);
       expect(visibleText(container)).toBe(
-        'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
+        'shell-text' +
+          FILL +
+          'static-sibling '.repeat(3) +
+          'static-p' +
+          FILL +
+          'client-ok',
       );
       // The full payload has real elements where the stubs were. Where a stub
       // adopted DOM (outside of the boundary) it is what they would render, so
@@ -2371,20 +2796,53 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return {chunks, errors};
     }
 
-    it('recovers a boundary that client-renders after a server error', async () => {
-      const {chunks, errors} = await expectRecovery(true, true);
+    it('writes every row when the HTML render failed, so a boundary that client-renders after a server error shows its static siblings', async () => {
+      const {App, goToClient} = makeFragileApp(true, true);
+      const serverErrors = [];
+      const {main, chunks} = await streamHTML(<App />, {
+        onError(error) {
+          serverErrors.push(error.message);
+        },
+      });
+      expect(main).toContain('$J');
+      expect(serverErrors).toEqual(['window is not defined']);
       expect(chunks.join('')).toContain('loading');
-      expect(errors.length).toBe(1);
+      expect(chunks.join('')).not.toContain('static-sibling');
+      // Fizz failed, so the framework rejected: every stubbed row is in the
+      // payload, including the shell's, which SSR did render.
+      expect(main).toContain('static-sibling');
+      expect(main).toContain('static-p');
+      expect(main).toContain('shell-text');
+      goToClient();
+      const missing = jest.fn();
+      const {container, errors} = await hydrateStream(
+        main,
+        chunks,
+        chunks.length,
+        missing,
+      );
+      // (The container also has the server's error text after <main>.)
+      expect(container.querySelector('main').textContent).toBe(
+        'shell-text' +
+          FILL +
+          'static-sibling '.repeat(3) +
+          'static-p' +
+          FILL +
+          'client-ok',
+      );
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+      expect(reportedErrors).toEqual([]);
     });
 
     it('recovers a boundary that client-renders after a hydration mismatch', async () => {
-      const {errors} = await expectRecovery(false, true);
+      const {errors} = await expectRecovery(true);
       expect(errors.length).toBe(1);
       expect(errors[0]).toContain('recoverable');
     });
 
     it('recovers a root that client-renders after a hydration mismatch', async () => {
-      const {errors} = await expectRecovery(false, false);
+      const {errors} = await expectRecovery(false);
       // The mismatch, and the full payload rendered before the root committed.
       expect(errors.length).toBe(2);
       errors.forEach(e => expect(e).toContain('recoverable'));
@@ -2393,8 +2851,8 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     it('reports an error and keeps the page when onMissingHTML is not provided', async () => {
       for (let i = 0; i < 2; i++) {
         const withSuspense = i === 0;
-        const {App, goToClient} = makeFragileApp(withSuspense, withSuspense);
-        const {main, chunks} = await streamHTML(<App />, [], {onError() {}});
+        const {App, goToClient} = makeFragileApp(false, withSuspense);
+        const {main, chunks} = await streamHTML(<App />, {onError() {}});
         goToClient();
         const {container, errors} = await hydrateStream(
           main,

@@ -3,6 +3,7 @@
 // Correctness matrix: every scenario x build variant, rendered in-process
 // (Flight -> Fizz with the HTML-FIRST.md opt-in), hydrated in a real browser.
 // Usage: SCENARIO_BUILDS=<dir> node scenarios-check.js [--only a,b] [--size smoke|full] [--builds dir] [--browser chromium|firefox|webkit]
+const path = require('path');
 const {parseArgs} = require('./scenarios-lib/common');
 const {boot} = require('./scenarios-lib/boot');
 const {
@@ -14,6 +15,15 @@ const {
 
 (async () => {
   const opts = parseArgs(process.argv.slice(2));
+  // Scenarios with `teeReference` compare `all` with a tee read WITHOUT stubbing
+  // (variant `tee`, the `all` build, htmlFirst: false) instead of with `off`.
+  if (
+    opts.variants.includes('all') &&
+    require('./src/scenarios').select(opts.only).some(s => s.teeReference)
+  ) {
+    opts.variants.splice(1, 0, 'tee');
+    opts.buildDirs.tee = opts.buildDirs.tee || path.join(opts.builds, 'all');
+  }
   const ctx = await boot(opts, {client: true});
   const pages = {};
   const flights = {};
@@ -30,6 +40,7 @@ const {
   try {
     for (const s of ctx.scenarios) {
       for (const w of ctx.workers) {
+        if (w.name === 'tee' && !s.teeReference) continue;
         const failures = [];
         const key = w.name + '/' + s.id;
         let snaps = {};
@@ -62,9 +73,10 @@ const {
             );
           failures.push(...out.failures);
           if (w.name === 'off') refs[s.id] = snaps;
-          else if (refs[s.id]) {
+          else if (w.name === 'tee') refs[s.id + '#tee'] = snaps;
+          else if (refs[s.teeReference ? s.id + '#tee' : s.id]) {
             for (const k of ['hydrated', 'interacted']) {
-              const ref = refs[s.id][k];
+              const ref = refs[s.teeReference ? s.id + '#tee' : s.id][k];
               if (
                 ref !== undefined &&
                 snaps[k] !== undefined &&
@@ -74,7 +86,9 @@ const {
                   check: 'dom-vs-off',
                   message:
                     k +
-                    ' DOM differs from flags-off DOM: ' +
+                    ' DOM differs from ' +
+                    (s.teeReference ? 'unstubbed-tee' : 'flags-off') +
+                    ' DOM: ' +
                     firstDiff(ref, snaps[k]),
                 });
               }

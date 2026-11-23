@@ -120,7 +120,6 @@ async function check(browser, kind) {
     'baseline',
     'client-rows',
     'server-rows-baseline',
-    'html-first-json',
     'html-first',
   ]) {
     const runs = [];

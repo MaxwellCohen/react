@@ -116,6 +116,7 @@ import {
   enableSchedulingProfiler,
   enableTransitionTracing,
   enableLegacyHidden,
+  enableFlightHTMLFirst,
   enableCPUSuspense,
   disableLegacyMode,
   enableViewTransition,
@@ -126,6 +127,7 @@ import getComponentNameFromType from 'shared/getComponentNameFromType';
 import ReactStrictModeWarnings from './ReactStrictModeWarnings';
 import {
   REACT_LAZY_TYPE,
+  REACT_STATIC_STUB_TYPE,
   REACT_FORWARD_REF_TYPE,
   REACT_MEMO_TYPE,
   REACT_CONTEXT_TYPE,
@@ -1510,6 +1512,14 @@ function updateFunctionComponent(
   if (!disableLegacyContext && !disableLegacyContextForFunctionComponents) {
     const unmaskedContext = getUnmaskedContext(workInProgress, Component, true);
     context = getMaskedContext(workInProgress, unmaskedContext);
+  }
+  if (
+    enableFlightHTMLFirst &&
+    (Component as any).$$typeof === REACT_STATIC_STUB_TYPE
+  ) {
+    // A stub that a Flight client rendered for a static host element adopts
+    // the server rendered DOM, so it has to know whether there is any.
+    context = getIsHydrating();
   }
 
   let nextChildren;

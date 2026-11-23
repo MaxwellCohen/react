@@ -70,7 +70,7 @@ Design, results and contract: [HTML-FIRST.md](./HTML-FIRST.md). Scenario authori
 | Script | Purpose |
 | --- | --- |
 | `yarn e2e` | Real-Chromium check: hydration adopts the server DOM, interactivity, client navigation, hydration timing. Needs Playwright and `CHROME_PATH` pointing at a Chromium. |
-| `yarn scenarios:check` | 41-scenario browser corpus (`--variants off,all`, `--browser chromium\|firefox\|webkit`). Needs `SCENARIO_BUILDS` with `off/` and `all/`. |
+| `yarn scenarios:check` | 41-scenario browser corpus (`--variants off,all` (`all` = tee + `htmlFirst` thenable), `--browser chromium\|firefox\|webkit`). Needs `SCENARIO_BUILDS` with `off/` and `all/`. |
 | `yarn scenarios:metrics` | Byte + in-process timing matrix for the corpus (writes `results/`, git-ignored). |
 | `yarn bench:inproc` | Interleaved in-process median render time per variant (less noisy than req/s). |
 | `node e2e/bindings-smoke.js` | Every server binding x entry (webpack, turbopack, parcel, unbundled, esm). Needs a build that also has react and react-dom in `build/node_modules`. |

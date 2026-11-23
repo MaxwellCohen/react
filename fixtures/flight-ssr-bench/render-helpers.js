@@ -45,56 +45,6 @@ function renderFizzEdge(AppComponent, itemCount) {
 // Returns a Node Readable stream of HTML with injected Flight scripts.
 // ---------------------------------------------------------------------------
 
-// opts.live (enableFlightHTMLFirst): hand SSR the stubbed rows as live React
-// nodes (no JSON). Client references in them are resolved with the same
-// manifest the server uses, which a framework has in hand in-process.
-const ELEMENT = Symbol.for('react.transitional.element');
-const CLIENT_REF = Symbol.for('react.client.reference');
-
-function makeLiveResolver(clientManifest) {
-  const cache = new Map();
-  function resolveType(ref) {
-    let c = cache.get(ref.$$id);
-    if (c === undefined) {
-      const [href, name] = ref.$$id.split('#');
-      const mod = global.__webpack_require__(clientManifest[href].id);
-      c = name && name !== '*' ? mod[name] : mod.default || mod;
-      cache.set(ref.$$id, c);
-    }
-    return c;
-  }
-  return function resolve(node) {
-    if (node === null || typeof node !== 'object') return node;
-    if (Array.isArray(node)) {
-      let out = null;
-      for (let i = 0; i < node.length; i++) {
-        const r = resolve(node[i]);
-        if (r !== node[i]) {
-          if (out === null) out = node.slice();
-          out[i] = r;
-        }
-      }
-      return out || node;
-    }
-    if (node.$$typeof === ELEMENT) {
-      const type = node.type;
-      const nextType =
-        type !== null &&
-        (typeof type === 'function' || typeof type === 'object') &&
-        type.$$typeof === CLIENT_REF
-          ? resolveType(type)
-          : type;
-      const children = node.props.children;
-      const nextChildren = resolve(children);
-      if (nextType === type && nextChildren === children) return node;
-      const props = Object.assign({}, node.props);
-      if (children !== undefined) props.children = nextChildren;
-      return Object.assign({}, node, {type: nextType, props});
-    }
-    return node;
-  };
-}
-
 function renderFlightFizzNode(
   renderRSCNode,
   AppComponent,
@@ -112,40 +62,44 @@ function renderFlightFizzNode(
     createFromTee,
   } = require('react-server-dom-webpack/client');
 
-  // opts.tee: SSR reads the render through a tee instead of parsing its bytes.
-  // With opts.stub, `htmlFirst: true` hands the stubbed elements to the tee.
-  const tee = opts && opts.tee ? createTee(ssrManifest) : null;
-
-  // opts.stub: enableFlightHTMLFirst. The SSR render opts in with
-  // `htmlFirst: true` (React's internal registry, no side channel). Pass
-  // opts.sideChannel: true to use an explicit Map (JSON or live) instead.
-  const useSideChannel = opts && opts.stub && opts.sideChannel === true;
-  const stubbedRows = useSideChannel ? new Map() : null;
+  // opts.stub: enableFlightHTMLFirst. SSR reads the render through a tee and
+  // the render gets `htmlFirst: <thenable>`, which settles when this HTML
+  // render is done: resolved after Fizz allReady, rejected if Fizz reports an
+  // error or is aborted (React then writes a late row for every stub).
+  // opts.tee alone: a tee without stubbing (`htmlFirst: false`).
+  const stub = !!(opts && opts.stub);
+  const tee = stub || (opts && opts.tee) ? createTee(ssrManifest) : null;
+  let htmlDone = null;
+  const htmlFirst = stub
+    ? new Promise(function (resolve, reject) {
+        htmlDone = {resolve, reject, settled: false};
+      })
+    : false;
+  function settleHTML(error) {
+    if (htmlDone === null || htmlDone.settled) return;
+    htmlDone.settled = true;
+    if (error === undefined) htmlDone.resolve();
+    else htmlDone.reject(error);
+  }
   const {pipe: rscPipe} = renderRSCNode(
     clientManifest,
     AppComponent,
     itemCount,
-    stubbedRows
-      ? opts.live
-        ? (() => {
-            const resolve = makeLiveResolver(clientManifest);
-            return {
-              htmlFirst: {
-                onValue: (id, v) => stubbedRows.set(id, resolve(v)),
-              },
-            };
-          })()
-        : {htmlFirst: {onRow: (id, json) => stubbedRows.set(id, json)}}
-      : opts && opts.stub
-        ? {htmlFirst: true, tee: tee || undefined}
-        : {htmlFirst: false, tee: tee || undefined}
+    {htmlFirst, tee: tee || undefined}
   );
 
   let flightStream;
   let flightScripts = '';
+  // Resolves when the Flight stream has ended (late rows come after Fizz is
+  // done, so the injector waits for it before it writes the trailer).
+  let flightEnded = Promise.resolve();
   if (tee !== null) {
     // SSR reads the tee, so the bytes only go to the inlined scripts.
     const forInline = new PassThrough();
+    flightEnded = new Promise(function (resolve) {
+      forInline.on('end', resolve);
+      forInline.on('error', resolve);
+    });
     forInline.on('data', function (chunk) {
       flightScripts +=
         '<script>(self.__FLIGHT_DATA||=[]).push(' +
@@ -181,18 +135,17 @@ function renderFlightFizzNode(
       cachedResult = createFromTee(tee);
     }
     if (!cachedResult) {
-      cachedResult = createFromNodeStream(
-        flightStream,
-        ssrManifest,
-        stubbedRows ? {htmlFirstRows: stubbedRows} : undefined
-      );
+      cachedResult = createFromNodeStream(flightStream, ssrManifest);
     }
     return React.use(cachedResult);
   }
 
   const output = new PassThrough();
 
-  const {pipe} = renderToPipeableStream(React.createElement(Root), {
+  const {pipe, abort} = renderToPipeableStream(React.createElement(Root), {
+    onAllReady() {
+      settleHTML();
+    },
     onShellReady() {
       if (inject) {
         // Buffer HTML chunks within a tick to avoid injecting scripts mid-tag.
@@ -222,23 +175,25 @@ function renderFlightFizzNode(
             cb();
           },
           flush(cb) {
-            if (timeout) {
-              clearTimeout(timeout);
-              for (const buf of buffered) {
-                let str = buf.toString();
-                if (str.endsWith(trailer)) {
-                  str = str.slice(0, -trailer.length);
+            flightEnded.then(() => {
+              if (timeout) {
+                clearTimeout(timeout);
+                for (const buf of buffered) {
+                  let str = buf.toString();
+                  if (str.endsWith(trailer)) {
+                    str = str.slice(0, -trailer.length);
+                  }
+                  this.push(str);
                 }
-                this.push(str);
+                buffered.length = 0;
               }
-              buffered.length = 0;
-            }
-            if (flightScripts) {
-              this.push(flightScripts);
-              flightScripts = '';
-            }
-            this.push(trailer);
-            cb();
+              if (flightScripts) {
+                this.push(flightScripts);
+                flightScripts = '';
+              }
+              this.push(trailer);
+              cb();
+            });
           },
         });
         pipe(injector);
@@ -249,10 +204,17 @@ function renderFlightFizzNode(
     },
     onError(e) {
       if (e && /^This rendered a large document/.test(e.message)) return; // advisory, not a failure
+      settleHTML(e);
       console.error('Flight+Fizz Node error:', e);
       if (!(opts && opts.recoverErrors)) output.destroy(e);
     },
   });
+
+  // The HTML stream going away before Fizz finished counts as an abort.
+  output.on('close', function () {
+    settleHTML(new Error('HTML render aborted'));
+  });
+  output.abort = abort;
 
   return output;
 }
