@@ -133,7 +133,7 @@ let failed = false;
           [
             'zero opt-in',
             mAuto.includes('$J') &&
-              mAuto.includes(':Q') &&
+              mAuto.includes(':P') &&
               !mAuto.includes(BIG),
           ],
           ['explicit off', !mOff.includes('$J') && mOff.includes(BIG)],
