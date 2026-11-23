@@ -3060,28 +3060,28 @@ export function decodeModelString(
  * recoverStubbedContent). That payload has real elements where the stubs were,
  * which replace them.
  */
-function StaticStub(props: {
-  tag: string,
-  late: () => null | React$Node,
-  recover: () => Promise<mixed>,
-  saved: StubbedNodeHolder,
-  remember: (node: null | Element) => void,
-  restore: (node: null | Element) => void,
-}): React$Node {
-  // True while hydrating (React reads the server snapshot), false in a plain
-  // client render.
-  const hydrating = React.useSyncExternalStore(
-    subscribeNever,
-    getFalse,
-    getTrue,
-  );
+function StaticStub(
+  props: {
+    tag: string,
+    late: () => null | React$Node,
+    recover: () => Promise<mixed>,
+    saved: StubbedNodeHolder,
+    remember: (node: null | Element) => void,
+    restore: (node: null | Element) => void,
+  },
+  // The renderer that mounts a stub passes whether it is hydrating it (it
+  // knows the type by its $$typeof), so that the stub needs no hook, effect or
+  // second render to find out. A renderer that passes nothing, like Fizz,
+  // renders the element the browser adopts.
+  hydrating: void | boolean,
+): React$Node {
   // A stub that adopted server DOM keeps that node. When the same stub mounts
   // again later (a framework re-rendering a cached payload, e.g. on back
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
   const [slot, setSlot] = React.useState(() => ({
     saved: props.saved,
-    mode: hydrating ? ADOPT : modeWithoutHTML(props.saved),
+    mode: hydrating !== false ? ADOPT : modeWithoutHTML(props.saved),
     generation: 0,
   }));
   // React reuses this fiber for a different stub when unkeyed siblings swap
@@ -3097,20 +3097,6 @@ function StaticStub(props: {
     setSlot(current);
   }
   const mode = current.mode;
-  // React restores `display` from the style prop when it shows a hidden
-  // Activity again. The stub has no props of its own, so it uses the inline
-  // display the server rendered, recorded when the node was adopted.
-  const [savedDisplay, setDisplay] = React.useState(props.saved.display);
-  let display = savedDisplay;
-  if (current !== slot) {
-    display = props.saved.display;
-    setDisplay(display);
-  }
-  React.useLayoutEffect(() => {
-    if (display !== props.saved.display) {
-      setDisplay(props.saved.display);
-    }
-  }, []);
   if (mode === RECOVER) {
     // The server sends the rows that its HTML render did not reach after all.
     const late = props.late();
@@ -3124,7 +3110,6 @@ function StaticStub(props: {
     key: current.generation,
     suppressHydrationWarning: true,
     dangerouslySetInnerHTML: EMPTY_HTML,
-    style: display === null ? undefined : {display},
     ref: mode === RESTORE ? props.restore : props.remember,
   });
 }
@@ -3176,7 +3161,12 @@ function rememberStubbedNode(
     return;
   }
   saved.node = node;
-  if (saved.display === null) {
+  if (saved.html !== null) {
+    // The ref of a node that was hidden by an Activity is attached again when
+    // it is shown. React restores `display` from the style prop then, and the
+    // stub has no props of its own, so put back what the server rendered.
+    restoreStubbedDisplay(saved, node);
+  } else if (saved.display === null) {
     // Adopted while hydrating, so this is the server's inline display.
     // Not every element has an inline style (MathML in some environments).
     const style = (node as any).style;
@@ -3262,17 +3252,6 @@ function restoreStubbedDisplay(saved: StubbedNodeHolder, node: Element): void {
   } else {
     style.removeProperty('display');
   }
-}
-
-function subscribeNever(): () => void {
-  return noopUnsubscribe;
-}
-function noopUnsubscribe(): void {}
-function getFalse(): boolean {
-  return false;
-}
-function getTrue(): boolean {
-  return true;
 }
 
 // Called when a stub has to render without server HTML. The first call asks
