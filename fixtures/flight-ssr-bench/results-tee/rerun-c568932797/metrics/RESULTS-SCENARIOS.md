@@ -1,6 +1,6 @@
 # Scenario corpus results
 
-size=full, N=1 interleaved renders per cell, builds=`/private/tmp/claude-501/-Users-maxcohen-code-react-ecosystem/d4b14db0-012e-4635-a1be-6203fc5af593/scratchpad/builds-c56`. Bytes are deterministic; times are in-process Flight->Fizz render (median ms [Q1-Q3]) and noisy on a shared machine.
+size=full, N=1 interleaved renders per cell, builds=`<builds>`. Bytes are deterministic; times are in-process Flight->Fizz render (median ms [Q1-Q3]) and noisy on a shared machine.
 Percentages are vs the flags-off build. REGRESSION: any bytes +0.5% or time ratio >1.05 with non-overlapping IQRs. NO-BENEFIT: gzip change within +-1%.
 
 | scenario | expected | variant | HTML B | gzip B | brotli B | inlined Flight B | median ms [IQR] | time x off | flags |

@@ -2,7 +2,7 @@
   "size": "full",
   "n": 15,
   "throttle": 4,
-  "builds": "/private/tmp/claude-501/-Users-maxcohen-code-react-ecosystem/d4b14db0-012e-4635-a1be-6203fc5af593/scratchpad/builds-c56",
+  "builds": "<builds>",
   "rows": [
     {
       "scenario": "cart-quantity-steppers",

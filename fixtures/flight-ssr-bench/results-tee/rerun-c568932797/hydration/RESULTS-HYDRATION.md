@@ -1,4 +1,4 @@
-size=full, N=15 interleaved loads per cell, CPU throttle 4x, builds=`/private/tmp/claude-501/-Users-maxcohen-code-react-ecosystem/d4b14db0-012e-4635-a1be-6203fc5af593/scratchpad/builds-c56`.
+size=full, N=15 interleaved loads per cell, CPU throttle 4x, builds=`<builds>`.
 hydrate ms = __hydrateStart -> __hydrateEnd (median [p25-p75]); script ms = CDP ScriptDuration of the whole load.
 
 | scenario | variant | stubs | HTML B | gzip B | hydrate ms | to-effect ms | busy ms | script ms |
