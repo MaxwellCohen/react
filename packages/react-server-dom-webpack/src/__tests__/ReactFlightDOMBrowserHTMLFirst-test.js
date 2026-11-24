@@ -2731,4 +2731,247 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(container.innerHTML).toBe('<section><p>ten-static</p></section>');
     });
   });
+
+  describe('nesting that the HTML parser rewrites', () => {
+    // The payload with HTML-first on and off, rendered from one call site so
+    // that debug info is the same.
+    async function payloads(App) {
+      const render = htmlFirst =>
+        serverAct(() =>
+          readAll(
+            ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+              htmlFirst,
+            }),
+          ),
+        );
+      const on = await render(true);
+      const off = await render(false);
+      // The model of the root. The other rows are debug info.
+      const root = text => text.match(/^0:[^D].*$/m)[0];
+      return {on: root(on), off: root(off)};
+    }
+
+    const invalid = {
+      'a block in a p': {
+        tag: 'div',
+        App: () => (
+          <section>
+            <p>
+              <div>x</div>
+            </p>
+          </section>
+        ),
+      },
+      'a block in an inline element in a p': {
+        tag: 'ul',
+        App: () => (
+          <section>
+            <p>
+              <span>
+                <ul>
+                  <li>x</li>
+                </ul>
+              </span>
+            </p>
+          </section>
+        ),
+      },
+      'a p in a p': {
+        tag: 'p',
+        App: () => (
+          <section>
+            <p>
+              a<p>b</p>
+            </p>
+          </section>
+        ),
+      },
+      'a table in a p': {
+        tag: 'table',
+        App: () => (
+          <section>
+            <p>
+              <table>
+                <tbody>
+                  <tr>
+                    <td>x</td>
+                  </tr>
+                </tbody>
+              </table>
+            </p>
+          </section>
+        ),
+      },
+      'an a in an a': {
+        tag: 'a',
+        App: () => (
+          <section>
+            <a href="/1">
+              a<span>{<a href="/2">b</a>}</span>
+            </a>
+          </section>
+        ),
+      },
+      'a tr in a table': {
+        tag: 'tr',
+        App: () => (
+          <section>
+            <table>
+              <tr>
+                <td>x</td>
+              </tr>
+            </table>
+          </section>
+        ),
+      },
+      'text in a table': {
+        tag: 'tr',
+        App: () => (
+          <section>
+            <table>
+              <tbody>
+                <tr>x</tr>
+              </tbody>
+            </table>
+          </section>
+        ),
+      },
+      'a div in a tr': {
+        tag: 'div',
+        App: () => (
+          <section>
+            <table>
+              <tbody>
+                <tr>
+                  <div>x</div>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        ),
+      },
+      'a td in a div': {
+        tag: 'td',
+        App: () => (
+          <section>
+            <div>
+              <td>x</td>
+            </div>
+          </section>
+        ),
+      },
+      'an li in an li': {
+        tag: 'li',
+        App: () => (
+          <section>
+            <ul>
+              <li>
+                a<li>b</li>
+              </li>
+            </ul>
+          </section>
+        ),
+      },
+      'a heading in a heading': {
+        tag: 'h2',
+        App: () => (
+          <section>
+            <h1>
+              a<h2>b</h2>
+            </h1>
+          </section>
+        ),
+      },
+      'an image element': {
+        tag: 'image',
+        App: () => (
+          <section>
+            <image />
+          </section>
+        ),
+      },
+    };
+    Object.keys(invalid).forEach(name => {
+      it('does not stub ' + name, async () => {
+        const {on} = await payloads(invalid[name].App);
+        // The element the parser rewrites is in the payload as it is.
+        expect(on).toContain('["$","' + invalid[name].tag + '"');
+      });
+    });
+
+    it('does not stub what the parent of a Client Component sibling would rewrite', async () => {
+      const Client = clientExports(function Client() {
+        return <i>client</i>;
+      });
+      const {on} = await payloads(() => (
+        <section>
+          <Client />
+          <p>
+            <div>block-in-p</div>
+          </p>
+          <table>
+            <tr>
+              <td>tr-in-table</td>
+            </tr>
+          </table>
+        </section>
+      ));
+      expect(on).toContain('["$","div"');
+      expect(on).toContain('["$","tr"');
+    });
+
+    it('still stubs valid nesting that looks alike', async () => {
+      const {on} = await payloads(() => (
+        <section>
+          <p>
+            <span>
+              <b>a</b>
+            </span>
+          </p>
+          <ul>
+            <li>
+              <ul>
+                <li>nested</li>
+              </ul>
+            </li>
+          </ul>
+          <table>
+            <thead>
+              <tr>
+                <th>h</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <p>in a cell</p>
+                  <a href="/1">
+                    <b>x</b>
+                  </a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <a href="/2">
+            <table>
+              <tbody>
+                <tr>
+                  <td>
+                    <a href="/3">in a cell in a link</a>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </a>
+          <dl>
+            <dt>t</dt>
+            <dd>d</dd>
+          </dl>
+        </section>
+      ));
+      expect(on).toContain('$J');
+      expect(on).not.toContain('nested');
+      expect(on).not.toContain('in a cell in a link');
+    });
+  });
 });
