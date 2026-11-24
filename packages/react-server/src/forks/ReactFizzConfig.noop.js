@@ -63,6 +63,7 @@ export const pushTextInstance = $$$config.pushTextInstance;
 export const pushStartInstance = $$$config.pushStartInstance;
 export const pushEndInstance = $$$config.pushEndInstance;
 export const pushSegmentFinale = $$$config.pushSegmentFinale;
+export const pushStubbedRowMarker = $$$config.pushStubbedRowMarker;
 export const pushFormStateMarkerIsMatching =
   $$$config.pushFormStateMarkerIsMatching;
 export const pushFormStateMarkerIsNotMatching =

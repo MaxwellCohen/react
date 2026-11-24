@@ -38,6 +38,7 @@ let serverAct;
 let React;
 let ReactDOMClient;
 let ReactDOMFizzServer;
+let ReactDOMFizzStatic;
 let ReactServerDOMServer;
 let ReactServerDOMClient;
 let ReactServerDOMEdgeClient;
@@ -76,6 +77,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     React = require('react');
     ReactDOMClient = require('react-dom/client');
     ReactDOMFizzServer = require('react-dom/server.browser');
+    ReactDOMFizzStatic = require('react-dom/static.browser');
     jest.mock('react-server-dom-webpack/client', () =>
       require('react-server-dom-webpack/client.browser'),
     );
@@ -117,6 +119,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         controller.close();
       },
     });
+  }
+
+  // The comments the server writes before the DOM of a stub, which a page
+  // without them (a minifier removed them) lacks.
+  function withoutMarkers(html) {
+    return html.replace(/<!--J[0-9a-f]+:[0-9a-f]+-->/g, '');
   }
 
   function byteLength(text) {
@@ -243,6 +251,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     return {
       settle,
       browser,
+      element: <TeeRoot />,
       text: () => text,
       ended: () => ended,
       renderHTML: fizzOptions =>
@@ -337,7 +346,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // iterations) at 1000 rows, so these tests use fewer rows.
     const ROWS = 500;
     // Small page: SSR output must be identical with and without stubbing.
-    expect(await ssr(await renderApp(10, true))).toBe(
+    expect(withoutMarkers(await ssr(await renderApp(10, true)))).toBe(
       await ssr(await renderApp(10, false)),
     );
     const stubbed = await renderApp(ROWS, true);
@@ -922,7 +931,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       actual.querySelectorAll('[style]').forEach(node => {
         node.setAttribute('style', node.style.cssText);
       });
-      expect(actual.innerHTML.replace(/<!-- -->/g, '')).toBe(
+      expect(withoutMarkers(actual.innerHTML).replace(/<!-- -->/g, '')).toBe(
         expected.innerHTML,
       );
     });
@@ -934,32 +943,35 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       container.querySelector('td').setAttribute('data-name', 'changed');
       await renderFullPayload(root, <Page {...base} />);
       expect(errors).toEqual([]);
-      // The changed DOM is not what the payload says: fresh DOM replaces it.
-      expect(container.querySelector('table')).not.toBe(table);
+      // Patched in place: the changed attribute is put back, the table kept.
+      expect(container.querySelector('table')).toBe(table);
       expect(container.querySelector('td').getAttribute('data-name')).toBe(
         'one',
       );
       expect(container.querySelector('h1')).toBe(h1);
     });
 
-    it('replaces the stub with fresh DOM when its content changed, keeping the rest', async () => {
+    it('patches changed static content in place, keeping the rest', async () => {
       const {container, root, errors} = await hydratePage();
-      const button = container.querySelector('button');
-      const h1 = container.querySelector('h1');
-      const oldTable = container.querySelector('table');
+      const table = container.querySelector('table');
+      const rows = Array.from(container.querySelectorAll('tr'));
+      const links = Array.from(container.querySelectorAll('a'));
       await renderFullPayload(
         root,
         <Page {...base} rows={['one', 'TWO', 'three']} />,
       );
       expect(errors).toEqual([]);
-      expect(container.querySelector('table')).not.toBe(oldTable);
-      expect(container.querySelector('button')).toBe(button);
-      expect(container.querySelector('h1')).toBe(h1);
-      const rows = container.querySelectorAll('tr');
-      expect(rows.length).toBe(3);
-      expect(rows[1].querySelector('td').textContent).toBe('TWO');
-      expect(rows[1].querySelector('td').getAttribute('data-name')).toBe('TWO');
-      expect(rows[1].querySelector('a').getAttribute('href')).toBe('/TWO');
+      expect(container.querySelector('table')).toBe(table);
+      const after = Array.from(container.querySelectorAll('tr'));
+      expect(after[0]).toBe(rows[0]);
+      expect(after[1]).toBe(rows[1]);
+      expect(after[2]).toBe(rows[2]);
+      expect(container.querySelectorAll('a')[0]).toBe(links[0]);
+      expect(after[1].querySelector('td').textContent).toBe('TWO');
+      expect(after[1].querySelector('td').getAttribute('data-name')).toBe(
+        'TWO',
+      );
+      expect(after[1].querySelector('a').getAttribute('href')).toBe('/TWO');
     });
 
     it('renders the new content when it is not static', async () => {
@@ -2767,9 +2779,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(main).not.toContain('static-p');
       goToClient();
       const missing = jest.fn();
+      // Without the markers there is nothing to rebuild the content from.
       const {container, errors, root} = await hydrateStream(
         main,
-        chunks,
+        chunks.map(withoutMarkers),
         chunks.length,
         missing,
       );
@@ -2856,7 +2869,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         goToClient();
         const {container, errors} = await hydrateStream(
           main,
-          chunks,
+          chunks.map(withoutMarkers),
           chunks.length,
           undefined,
         );
@@ -2870,6 +2883,380 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           withSuspense ? 'loading' : 'static-p',
         );
       }
+    });
+
+    describe('server DOM that React discards before a stub adopts it', () => {
+      [true, false].forEach(provide =>
+        it(
+          'rebuilds a boundary that client-renders after a context update, with onMissingHTML ' +
+            (provide ? 'provided' : 'not provided'),
+          async () => {
+            let onServer = true;
+            let setValue;
+            let openGate;
+            const gate = new Promise(resolve => (openGate = resolve));
+            const Ctx = React.createContext(0);
+            const Provider = clientExports(function Provider({children}) {
+              const [value, setter] = React.useState(0);
+              setValue = setter;
+              return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+            });
+            const Reader = clientExports(function Reader() {
+              const value = React.useContext(Ctx);
+              if (!onServer) {
+                use(gate);
+              }
+              return <b>v:{value}</b>;
+            });
+            const App = () => (
+              <Provider>
+                <React.Suspense fallback={<i>loading</i>}>
+                  <p>{'static-a' + FILL}</p>
+                  <Reader />
+                  <p>{'static-b' + FILL}</p>
+                </React.Suspense>
+              </Provider>
+            );
+            const {main, html} = await renderWithTee(<App />);
+            expect(main).not.toContain('static-a');
+            expect(html).toContain('static-a');
+            onServer = false;
+            // The client renders with its own copy of the context.
+            Ctx._currentRenderer = null;
+            Ctx._currentRenderer2 = null;
+            const missing = jest.fn();
+            const {container, errors} = await hydrate(
+              main,
+              html,
+              provide ? {onMissingHTML: missing} : undefined,
+            );
+            // The context changes before the dehydrated boundary hydrates, so
+            // React client-renders it and the stubs render while the server
+            // DOM is still in the document.
+            await act(() => setValue(1));
+            await act(async () => {
+              openGate();
+            });
+            expect(missing).not.toHaveBeenCalled();
+            expect(visibleText(container)).toBe(
+              'static-a' + FILL + 'v:1static-b' + FILL,
+            );
+            expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual(
+              [],
+            );
+          },
+        ),
+      );
+
+      it('rebuilds stubs that show again after React removed their dehydrated boundary', async () => {
+        let snapshot = false;
+        const listeners = new Set();
+        const subscribe = listener => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        };
+        const Gate = clientExports(function Gate({children}) {
+          const show = React.useSyncExternalStore(
+            subscribe,
+            () => snapshot,
+            () => true,
+          );
+          return show ? children : null;
+        });
+        const App = () => (
+          <Gate>
+            <React.Suspense fallback={<i>loading</i>}>
+              <section>
+                <p>{'static-text' + FILL}</p>
+              </section>
+            </React.Suspense>
+          </Gate>
+        );
+        const {main, html} = await renderWithTee(<App />);
+        expect(html).toContain('static-text');
+        const missing = jest.fn();
+        const {container, errors} = await hydrate(main, html, {
+          onMissingHTML: missing,
+        });
+        // The client's snapshot hides the children, and React removes the
+        // dehydrated boundary.
+        expect(container.textContent).toBe('');
+        snapshot = true;
+        await act(() => listeners.forEach(listener => listener()));
+        expect(missing).not.toHaveBeenCalled();
+        expect(container.innerHTML).toBe(
+          '<section><p>static-text' + FILL + '</p></section>',
+        );
+        expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+      });
+    });
+
+    describe('nesting that the HTML parser rewrites', () => {
+      beforeEach(() => {
+        // React warns about invalid nesting in development.
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+      });
+
+      const cases = {
+        'a block in a paragraph': () => (
+          <section>
+            <p>
+              <div>{'block' + FILL}</div>
+            </p>
+          </section>
+        ),
+        'a block deep in a paragraph': () => (
+          <section>
+            <p>
+              <span>
+                <ul>
+                  <li>{'item' + FILL}</li>
+                </ul>
+              </span>
+            </p>
+          </section>
+        ),
+        'a heading in a heading': () => (
+          <section>
+            <h2>
+              <h3>{'heading' + FILL}</h3>
+            </h2>
+          </section>
+        ),
+        'a link in a link': () => (
+          <section>
+            <a href="/1">
+              {'outer' + FILL}
+              <a href="/2">inner</a>
+            </a>
+          </section>
+        ),
+        'a row in a table': () => (
+          <section>
+            <table>
+              <tr>
+                <td>{'cell' + FILL}</td>
+              </tr>
+            </table>
+          </section>
+        ),
+        'a cell in a body': () => (
+          <section>
+            <table>
+              <tbody>
+                <td>{'cell' + FILL}</td>
+              </tbody>
+            </table>
+          </section>
+        ),
+        'text in a table': () => (
+          <section>
+            <table>
+              <tbody>
+                <tr>
+                  {'text' + FILL}
+                  <td>cell</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        ),
+        'a row outside a table': () => (
+          <section>
+            <div>
+              <tr>
+                <td>{'cell' + FILL}</td>
+              </tr>
+            </div>
+          </section>
+        ),
+      };
+
+      Object.keys(cases).forEach(name =>
+        it(
+          'keeps ' + name + ' in the payload, as without the option',
+          async () => {
+            const App = cases[name];
+            const on = await renderWithTee(<App />);
+            const off = await renderWithTee(<App />, {htmlFirst: false});
+            expect(on.main).not.toContain('$J');
+            expect(on.html).toBe(off.html);
+            const missing = jest.fn();
+            const hydratedOn = await hydrate(on.main, on.html, {
+              onMissingHTML: missing,
+            });
+            const hydratedOff = await hydrate(off.main, off.html);
+            expect(missing).not.toHaveBeenCalled();
+            expect(hydratedOn.errors).toEqual(hydratedOff.errors);
+            expect(hydratedOn.container.innerHTML).toBe(
+              hydratedOff.container.innerHTML,
+            );
+          },
+        ),
+      );
+
+      it('still stubs valid nesting', async () => {
+        const App = () => (
+          <section>
+            <p>
+              <a href="/1">{'link' + FILL}</a>
+            </p>
+            <table>
+              <caption>caption</caption>
+              <thead>
+                <tr>
+                  <th>head</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <p>{'cell' + FILL}</p>
+                    <a href="/2">second</a>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <h2>
+              <span>{'heading' + FILL}</span>
+            </h2>
+          </section>
+        );
+        const {main, html} = await renderWithTee(<App />);
+        expect(main).toContain('$J');
+        expect(main).not.toContain('cell');
+        const {errors} = await hydrate(main, html);
+        expect(errors).toEqual([]);
+      });
+    });
+
+    describe('prerender and resume', () => {
+      const hang = new Promise(() => {});
+      let dynamicDone;
+
+      // A server component that is the hole of the prerender: it never
+      // finishes there, and in the resume it is done.
+      async function Dynamic() {
+        await dynamicDone;
+        return <p>dynamic-text</p>;
+      }
+
+      function makeApp(shape) {
+        const Counter = clientExports(function Counter() {
+          const [n, setN] = React.useState(0);
+          return <button onClick={() => setN(n + 1)}>n:{n}</button>;
+        });
+        const table = (
+          <table>
+            <tbody>
+              <tr>
+                <td>{'static-table' + FILL}</td>
+              </tr>
+            </tbody>
+          </table>
+        );
+        const dynamic = (
+          <React.Suspense fallback={<i>loading-dynamic</i>}>
+            <Dynamic />
+          </React.Suspense>
+        );
+        return function App() {
+          // On the path the resume replays, <main> holds the hole. The
+          // section holds a client component and no hole, so it is off it.
+          return shape === 'on-path' ? (
+            <main>
+              <Counter />
+              {table}
+              {dynamic}
+            </main>
+          ) : (
+            <main>
+              <section>
+                <Counter />
+                {table}
+              </section>
+              {dynamic}
+            </main>
+          );
+        };
+      }
+
+      // The prerender halts at the hole, then a second Flight render (the
+      // one whose bytes the browser gets) is read by Fizz's resume.
+      async function prerenderAndResume(shape) {
+        const App = makeApp(shape);
+        const flightController = new AbortController();
+        const prerenderController = new AbortController();
+        dynamicDone = hang;
+        const prerendered = await serverAct(async () => {
+          const t = startTee(<App />, {
+            signal: flightController.signal,
+            onError() {},
+          });
+          const pending = ReactDOMFizzStatic.prerender(t.element, {
+            signal: prerenderController.signal,
+            onError() {},
+          });
+          await macrotasks(1);
+          prerenderController.abort();
+          const result = await pending;
+          flightController.abort();
+          await t.browser;
+          return result;
+        });
+        expect(prerendered.postponed).not.toBe(null);
+        const prelude = await readAll(prerendered.prelude);
+
+        dynamicDone = Promise.resolve();
+        return serverAct(async () => {
+          const t = startTee(<App />);
+          const resumed = await ReactDOMFizzServer.resume(
+            t.element,
+            JSON.parse(JSON.stringify(prerendered.postponed)),
+            {onError() {}},
+          );
+          const resumeChunks = [];
+          const reader = resumed.getReader();
+          const reading = (async () => {
+            while (true) {
+              const {done, value} = await reader.read();
+              if (done) {
+                return;
+              }
+              resumeChunks.push(decoder.decode(value));
+            }
+          })();
+          await resumed.allReady;
+          t.settle.resolve();
+          await reading;
+          return {main: await t.browser, chunks: [prelude, ...resumeChunks]};
+        });
+      }
+
+      ['off-path', 'on-path'].forEach(shape => {
+        it(
+          'leaves static content in the prelude out of the payload (' +
+            shape +
+            ')',
+          async () => {
+            const {main, chunks} = await prerenderAndResume(shape);
+            expect(chunks.join('')).toContain('static-table');
+            // Neither inline nor as a late row.
+            expect(main).not.toContain('static-table');
+            const onMissingHTML = jest.fn();
+            const {container, errors} = await hydrateStream(
+              main,
+              chunks,
+              chunks.length,
+              onMissingHTML,
+            );
+            expect(onMissingHTML).not.toHaveBeenCalled();
+            expect(errors).toEqual([]);
+            expect(visibleText(container)).toContain('static-table');
+            expect(visibleText(container)).toContain('dynamic-text');
+          },
+        );
+      });
     });
   });
 });

@@ -101,6 +101,9 @@ export type FlightTeeRow = {...};
 // enableFlightHTMLFirst: shared by the render that stubbed the elements and the
 // reader that renders them to HTML.
 export type StubbedRowsEntry = {
+  // The id of the payload (`:P`), which names the markers the HTML has for the
+  // stubs, see pushStubbedRowMarker.
+  requestId: number,
   // The reader's copies of the stubbed elements, by row id.
   rows: Map<number, mixed>,
   // Ids of the rows the reader actually rendered. The HTML for the others was

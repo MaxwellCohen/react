@@ -30,7 +30,7 @@ type ServerConsumerManifest = {
 import type {Readable} from 'stream';
 import type {FlightTee} from 'shared/ReactFlightTee';
 
-import {AsyncLocalStorage} from 'async_hooks';
+import {AsyncLocalStorage, AsyncResource} from 'async_hooks';
 
 import {
   createResponse,
@@ -204,8 +204,13 @@ function createTee(
 // module preinits are dispatched there. A tee can be read once; any other
 // reader reads the bytes.
 function createFromTee<T>(tee: FlightTee): Thenable<T> {
-  const snapshot = AsyncLocalStorage.snapshot();
-  return createFromTeeImpl(tee, task => snapshot(task));
+  if (typeof AsyncLocalStorage.snapshot === 'function') {
+    const snapshot = AsyncLocalStorage.snapshot();
+    return createFromTeeImpl(tee, task => snapshot(task));
+  }
+  // Where snapshot() isn't available, a bound resource captures the context.
+  const runInReaderContext = AsyncResource.bind((task: () => void) => task());
+  return createFromTeeImpl(tee, runInReaderContext);
 }
 
 export {createFromNodeStream, createTee, createFromTee};

@@ -77,6 +77,7 @@ import {
   pushStartInstance,
   pushEndInstance,
   pushSegmentFinale,
+  pushStubbedRowMarker,
   getChildFormatContext,
   getSuspenseFallbackFormatContext,
   getSuspenseContentFormatContext,
@@ -178,6 +179,7 @@ import {
   REACT_ACTIVITY_TYPE,
   REACT_OPTIMISTIC_KEY,
   REACT_RECOVERABLE_TYPE,
+  REACT_STUBBED_RENDERED_TYPE,
 } from 'shared/ReactSymbols';
 import ReactSharedInternals from 'shared/ReactSharedInternals';
 import {
@@ -189,6 +191,7 @@ import {
   enableViewTransitionParentEnterExit,
   enableFizzBlockingRender,
   enableCPUSuspense,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
 
 import assign from 'shared/assign';
@@ -3302,6 +3305,43 @@ function resumeNode(
   }
 }
 
+// enableFlightHTMLFirst: a resume skips what the prelude already has. Flight
+// stubs in it (lazy nodes branded by the Flight client) are in the HTML, so
+// count them as rendered, or the server would send their rows again. Walks host
+// elements, Fragments and arrays; never props of components or boundaries.
+function countStubsAsRendered(children: mixed): void {
+  if (typeof children !== 'object' || children === null) {
+    return;
+  }
+  if (isArray(children)) {
+    for (let i = 0; i < children.length; i++) {
+      countStubsAsRendered(children[i]);
+    }
+    return;
+  }
+  const node: any = children;
+  switch (node.$$typeof) {
+    case REACT_LAZY_TYPE: {
+      const payload = node._payload;
+      if (
+        typeof payload === 'object' &&
+        payload !== null &&
+        payload.$$typeof === REACT_STUBBED_RENDERED_TYPE
+      ) {
+        payload.entry.rendered.add(payload.id);
+      }
+      return;
+    }
+    case REACT_ELEMENT_TYPE: {
+      const type = node.type;
+      if (typeof type === 'string' || type === REACT_FRAGMENT_TYPE) {
+        countStubsAsRendered(node.props.children);
+      }
+      return;
+    }
+  }
+}
+
 function replayElement(
   request: Request,
   task: ReplayTask,
@@ -3422,6 +3462,9 @@ function replayElement(
   }
   // We didn't find any matching nodes. We assume that this element was already
   // rendered in the prelude and skip it.
+  if (enableFlightHTMLFirst) {
+    countStubsAsRendered(task.node);
+  }
 }
 
 function validateIterable(
@@ -3665,6 +3708,23 @@ function retryNode(request: Request, task: Task): void {
         if (request.aborted) {
           // eslint-disable-next-line no-throw-literal
           throw null;
+        }
+        if (enableFlightHTMLFirst && task.replay === null) {
+          // A Flight stub: mark where its DOM starts. A replay skips what the
+          // prelude has, along with its marker.
+          const payload = lazyNode._payload as any;
+          if (
+            typeof payload === 'object' &&
+            payload !== null &&
+            payload.$$typeof === REACT_STUBBED_RENDERED_TYPE
+          ) {
+            pushStubbedRowMarker(
+              (task.blockedSegment as any).chunks,
+              payload.entry.requestId.toString(16) +
+                ':' +
+                payload.id.toString(16),
+            );
+          }
         }
         // Now we render the resolved node
         renderNodeDestructive(request, task, resolvedNode, childIndex);
@@ -3937,7 +3997,11 @@ function replayFragment(
     // We finished rendering this node, so now we can consume this
     // slot. This must happen after in case we rerender this task.
     replayNodes.splice(j, 1);
-    break;
+    return;
+  }
+  // Not on the path: the prelude has it.
+  if (enableFlightHTMLFirst) {
+    countStubsAsRendered(children);
   }
 }
 

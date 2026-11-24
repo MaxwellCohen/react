@@ -4594,11 +4594,264 @@ export function instanceMatchesStaticElement(
     twinDocument = staticTwinDocument =
       instance.ownerDocument.implementation.createHTMLDocument('');
   }
-  const matches = matchStaticElement(instance, type, props, twinDocument);
+  // Static content the server changed is patched in place, like a normal
+  // update would, so the nodes that didn't change are kept.
+  const matches =
+    matchStaticElement(instance, type, props, twinDocument) ||
+    patchStaticElement(instance, type, props, twinDocument);
   if (matches) {
     matchedStaticProps.set(instance, props);
   }
   return matches;
+}
+
+function hasOnlyStaticProps(props: Props): boolean {
+  for (const propKey in props) {
+    const value = (props as any)[propKey];
+    if (propKey === 'children' || value == null) {
+      continue;
+    }
+    const t = typeof value;
+    if (t === 'string' || t === 'number' || t === 'boolean') {
+      continue;
+    }
+    if (
+      t === 'object' &&
+      (propKey === 'style' || propKey === 'dangerouslySetInnerHTML')
+    ) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// The children of a static element as a flat list: a string for each run of
+// adjacent text, or a host element. Returns null for anything else (an
+// unresolved lazy, a component), which makes the caller give up.
+function flattenStaticChildren(
+  children: mixed,
+  out: Array<string | Object>,
+): null | Array<string | Object> {
+  if (children == null || typeof children === 'boolean') {
+    return out;
+  }
+  if (
+    typeof children === 'string' ||
+    typeof children === 'number' ||
+    typeof children === 'bigint'
+  ) {
+    const text = '' + (children as any);
+    const last = out.length - 1;
+    if (last >= 0 && typeof out[last] === 'string') {
+      out[last] = (out[last] as any) + text;
+    } else {
+      out.push(text);
+    }
+    return out;
+  }
+  if (isArray(children)) {
+    for (let i = 0; i < children.length; i++) {
+      if (flattenStaticChildren(children[i], out) === null) {
+        return null;
+      }
+    }
+    return out;
+  }
+  if (typeof children === 'object') {
+    const child: any = children;
+    if (child.$$typeof === REACT_LAZY_TYPE) {
+      // Suspends like the matcher if it hasn't loaded.
+      const init = child._init;
+      return flattenStaticChildren(init(child._payload), out);
+    }
+    if (
+      child.$$typeof === REACT_ELEMENT_TYPE &&
+      typeof child.type === 'string' &&
+      hasOnlyStaticProps(child.props)
+    ) {
+      out.push(child);
+      return out;
+    }
+  }
+  return null;
+}
+
+function createStaticNode(
+  ownerDocument: Document,
+  item: string | Object,
+): Node {
+  if (typeof item === 'string') {
+    return ownerDocument.createTextNode(item);
+  }
+  const element: any = item;
+  const node: any = ownerDocument.createElement(element.type);
+  setInitialProperties(node, element.type, element.props);
+  const props = element.props;
+  const c = props.children;
+  // setInitialProperties already set text children and inner HTML.
+  if (
+    props.dangerouslySetInnerHTML == null &&
+    typeof c !== 'string' &&
+    typeof c !== 'number' &&
+    typeof c !== 'bigint'
+  ) {
+    const children = flattenStaticChildren(c, []);
+    if (children !== null) {
+      for (let i = 0; i < children.length; i++) {
+        node.appendChild(createStaticNode(ownerDocument, children[i]));
+      }
+    }
+  }
+  return node;
+}
+
+// Makes `instance` render `props`, keeping the nodes that already match.
+// Returns false (and leaves the rest to a client render) if it can't.
+function canPatchStatic(props: Props): boolean {
+  if (!hasOnlyStaticProps(props)) {
+    return false;
+  }
+  if (props.dangerouslySetInnerHTML != null) {
+    return true;
+  }
+  const children = flattenStaticChildren(props.children, []);
+  if (children === null) {
+    return false;
+  }
+  for (let i = 0; i < children.length; i++) {
+    const child: any = children[i];
+    if (typeof child !== 'string' && !canPatchStatic(child.props)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Checks the whole subtree first, so the DOM is either fully patched or left
+// alone.
+function patchStaticElement(
+  instance: Element,
+  type: string,
+  props: Props,
+  twinDocument: Document,
+): boolean {
+  if (!canPatchStatic(props)) {
+    return false;
+  }
+  return patchCheckedStaticElement(instance, type, props, twinDocument);
+}
+
+function patchCheckedStaticElement(
+  instance: Element,
+  type: string,
+  props: Props,
+  twinDocument: Document,
+): boolean {
+  const twin: any = twinDocument.createElementNS(
+    instance.namespaceURI as any,
+    type,
+  );
+  try {
+    setInitialProperties(twin, type, props);
+  } catch (x) {
+    return false;
+  }
+  // Attributes.
+  const current = instance.attributes;
+  for (let i = current.length - 1; i >= 0; i--) {
+    const name = current[i].name;
+    if (!twin.hasAttribute(name)) {
+      instance.removeAttribute(name);
+    }
+  }
+  const wanted = twin.attributes;
+  for (let i = 0; i < wanted.length; i++) {
+    const name = wanted[i].name;
+    if (name === 'style') {
+      if ((instance as any).style.cssText !== twin.style.cssText) {
+        instance.setAttribute('style', wanted[i].value);
+      }
+    } else if (instance.getAttribute(name) !== wanted[i].value) {
+      instance.setAttribute(name, wanted[i].value);
+    }
+  }
+  if (props.dangerouslySetInnerHTML != null) {
+    if (instance.innerHTML !== twin.innerHTML) {
+      instance.innerHTML = twin.innerHTML;
+    }
+    return true;
+  }
+  const children = flattenStaticChildren(props.children, []);
+  if (children === null) {
+    return false;
+  }
+  const ownerDocument = instance.ownerDocument;
+  let node = instance.firstChild;
+  for (let i = 0; i < children.length; i++) {
+    const item = children[i];
+    if (typeof item === 'string') {
+      // One run of text: the text nodes and separators at the cursor.
+      let text = '';
+      const start = node;
+      let end = node;
+      while (
+        end != null &&
+        (end.nodeType === TEXT_NODE ||
+          (end.nodeType === COMMENT_NODE && (end as any).data === ' '))
+      ) {
+        if (end.nodeType === TEXT_NODE) {
+          text += (end as any).nodeValue;
+        }
+        end = end.nextSibling;
+      }
+      if (text !== item || start === end) {
+        while (node !== end && node != null) {
+          const next: any = node.nextSibling;
+          instance.removeChild(node);
+          node = next;
+        }
+        instance.insertBefore(ownerDocument.createTextNode(item), end);
+      }
+      node = end;
+      continue;
+    }
+    const element: any = item;
+    if (
+      node != null &&
+      node.nodeType === ELEMENT_NODE &&
+      node.nodeName.toLowerCase() === element.type.toLowerCase() &&
+      (matchStaticElement(
+        node as any,
+        element.type,
+        element.props,
+        twinDocument,
+      ) ||
+        patchCheckedStaticElement(
+          node as any,
+          element.type,
+          element.props,
+          twinDocument,
+        ))
+    ) {
+      node = node.nextSibling;
+      continue;
+    }
+    const replacement = createStaticNode(ownerDocument, element);
+    if (node != null && node.nodeType === ELEMENT_NODE) {
+      const next: any = node.nextSibling;
+      instance.replaceChild(replacement, node);
+      node = next;
+    } else {
+      instance.insertBefore(replacement, node);
+    }
+  }
+  while (node != null) {
+    const next: any = node.nextSibling;
+    instance.removeChild(node);
+    node = next;
+  }
+  return true;
 }
 
 const matchedStaticProps: WeakMap<Instance, Props> = new WeakMap();
