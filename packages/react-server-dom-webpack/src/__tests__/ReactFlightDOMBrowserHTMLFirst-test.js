@@ -86,6 +86,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
+  // The server stubs an element only when it has 8 host nodes, or when it takes
+  // 512 bytes or more in the payload. A fixture adds this to be stubbed.
+  const FILL =
+    ' filler text so this element is big enough to be stubbed'.repeat(10);
+
   async function readAll(stream) {
     const reader = stream.getReader();
     let result = '';
@@ -427,7 +432,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       await null;
       return (
         <section>
-          <p>late-static</p>
+          <p data-fill={FILL}>late-static</p>
         </section>
       );
     }
@@ -487,7 +492,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     }
 
     function render() {
-      const App = () => <article>{'important '.repeat(10)}</article>;
+      const App = () => <article>{'important '.repeat(60)}</article>;
       return ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
         htmlFirst: true,
       });
@@ -962,7 +967,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // A route tree like Next.js sends: segment data in objects and a Map.
     const model = {
       tree: {
-        data: {rsc: <h1>layout-heading</h1>},
+        data: {rsc: <h1 data-fill={FILL}>layout-heading</h1>},
         slots: new Map([['children', {data: {rsc: <Page />}}]]),
       },
     };
@@ -1020,7 +1025,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       page: (
         <React.Fragment key="c">
           <main>
-            <h1>fragment-heading</h1>
+            <h1 data-fill={FILL}>fragment-heading</h1>
             <Counter />
           </main>
         </React.Fragment>
@@ -1061,7 +1066,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           <hr />
-          <p>
+          <p data-fill={FILL}>
             line-one
             <br />
             line-two
@@ -1091,7 +1096,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           {React.createElement('x:y', null, 'namespaced')}
-          <p>plain</p>
+          <p data-fill={FILL}>plain</p>
         </main>
       );
     }
@@ -1106,6 +1111,41 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('namespaced');
   });
 
+  it('leaves a small element with few host nodes in the payload', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <p>{'medium-sentence that is not big'}</p>
+          <pre>{'long-block'.repeat(60)}</pre>
+          <ul>
+            <li>one</li>
+            <li>two</li>
+            <li>three</li>
+            <li>four</li>
+          </ul>
+        </main>
+      );
+    }
+    const {main, rows} = await flight(<App />);
+    // The <p> has two nodes and few bytes, the <pre> has two nodes but a large
+    // text, and the <ul> nine nodes.
+    expect(main).toContain('medium-sentence');
+    expect(main).not.toMatch(/\$J[0-9a-f]+:p"/);
+    expect(main).toMatch(/\$J[0-9a-f]+:pre"/);
+    expect(main).toMatch(/\$J[0-9a-f]+:ul"/);
+    const html = await ssr({main, rows});
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelectorAll('li').length).toBe(4);
+    expect(container.querySelector('pre').textContent).toBe(
+      'long-block'.repeat(60),
+    );
+  });
+
   it('adopts a stubbed element that has no inline style', async () => {
     const Counter = clientExports(function Counter() {
       return <button>count</button>;
@@ -1115,7 +1155,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           <math>
-            <mi>x</mi>
+            <mi data-fill={FILL}>x</mi>
             <mo>+</mo>
           </math>
         </main>
@@ -1134,7 +1174,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('restores stubbed content from the adopted DOM when it mounts again', async () => {
     function App() {
       return (
-        <main className="page" data-kind="static">
+        <main className="page" data-kind="static" data-fill={FILL}>
           <h1>restore-heading</h1>
           <p>restore-text</p>
         </main>
@@ -1174,7 +1214,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('restores from the adopted DOM in another decode of the same payload', async () => {
     function App() {
       return (
-        <main className="page">
+        <main className="page" data-fill={FILL}>
           <h1>shared-heading</h1>
           <p>shared-text</p>
         </main>
@@ -1429,7 +1469,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <Tabs>
-        <article className="panel">
+        <article className="panel" data-fill={FILL}>
           <h2>server-panel</h2>
         </article>
       </Tabs>
@@ -1451,7 +1491,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const article = container.querySelector('article');
       expect(article).not.toBe(adopted);
       expect(article.outerHTML).toBe(
-        '<article class="panel"><h2>server-panel</h2></article>',
+        '<article class="panel" data-fill="' +
+          FILL +
+          '"><h2>server-panel</h2></article>',
       );
     }
     expect(missing).not.toHaveBeenCalled();
@@ -1470,7 +1512,17 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <Sortable
-        items={[<li key="x">x</li>, <li key="y">y</li>, <li key="z">z</li>]}
+        items={[
+          <li key="x" data-fill={FILL}>
+            x
+          </li>,
+          <li key="y" data-fill={FILL}>
+            y
+          </li>,
+          <li key="z" data-fill={FILL}>
+            z
+          </li>,
+        ]}
       />
     );
     const f = await flight(<App />);
@@ -1494,9 +1546,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <List>
-        <li key="x">x</li>
-        <li key="y">y</li>
-        <li key="z">z</li>
+        <li key="x" data-fill={FILL}>
+          x
+        </li>
+        <li key="y" data-fill={FILL}>
+          y
+        </li>
+        <li key="z" data-fill={FILL}>
+          z
+        </li>
       </List>
     );
     const f = await flight(<App />);
@@ -1522,7 +1580,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <Panel>
-        <p>modal-body</p>
+        <p data-fill={FILL}>modal-body</p>
       </Panel>
     );
     const f = await flight(<App />);
@@ -1598,9 +1656,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const Panel = createPanel();
       const App = () => (
         <main>
-          <article>{'page-content '.repeat(10)}</article>
+          <article>{'page-content '.repeat(50)}</article>
           <Panel>
-            <p>modal-body</p>
+            <p data-fill={FILL}>modal-body</p>
           </Panel>
         </main>
       );
@@ -1619,7 +1677,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           `with the modal's row=${byteLength(main)} (+${lateBytes})`,
       );
       // One row. In DEV it comes with its debug info.
-      expect(lateBytes).toBeLessThan(__DEV__ ? 400 : 80);
+      expect(lateBytes).toBeLessThan(FILL.length + (__DEV__ ? 400 : 80));
 
       const missing = jest.fn();
       const {container, errors} = await hydrate(main, html, {
@@ -1629,14 +1687,14 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(container.textContent).not.toContain('modal-body');
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside').innerHTML).toBe(
-        '<p>modal-body</p>',
+        '<p data-fill="' + FILL + '">modal-body</p>',
       );
       // Closing and opening it again doesn't need the server either.
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside')).toBe(null);
       await act(() => container.querySelector('button').click());
       expect(container.querySelector('aside').innerHTML).toBe(
-        '<p>modal-body</p>',
+        '<p data-fill="' + FILL + '">modal-body</p>',
       );
       expect(missing).not.toHaveBeenCalled();
       expect(errors).toEqual([]);
@@ -1651,7 +1709,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const App = () => (
         <div>
           <ClientOnly>
-            <p>client-only-content</p>
+            <p data-fill={FILL}>client-only-content</p>
           </ClientOnly>
         </div>
       );
@@ -1661,7 +1719,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const {container, errors} = await hydrate(main, html, {
         onMissingHTML: missing,
       });
-      expect(container.innerHTML).toBe('<div><p>client-only-content</p></div>');
+      expect(container.innerHTML).toBe(
+        '<div><p data-fill="' + FILL + '">client-only-content</p></div>',
+      );
       expect(missing).not.toHaveBeenCalled();
       expect(errors).toEqual([]);
     });
@@ -1679,8 +1739,8 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       const App = () => (
         <Tabs>
-          <article key="a">{'panel-A '.repeat(10)}</article>
-          <article key="b">{'panel-B '.repeat(10)}</article>
+          <article key="a">{'panel-A '.repeat(70)}</article>
+          <article key="b">{'panel-B '.repeat(70)}</article>
         </Tabs>
       );
       const {main, html} = await flightAndSsr(<App />);
@@ -1697,11 +1757,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       for (let i = 0; i < 2; i++) {
         await act(() => tabB.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-B '.repeat(10),
+          'panel-B '.repeat(70),
         );
         await act(() => tabA.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-A '.repeat(10),
+          'panel-A '.repeat(70),
         );
       }
       expect(missing).not.toHaveBeenCalled();
@@ -1721,8 +1781,8 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       const App = () => (
         <Tabs>
-          <article>{'panel-A '.repeat(10)}</article>
-          <article>{'panel-B '.repeat(10)}</article>
+          <article>{'panel-A '.repeat(70)}</article>
+          <article>{'panel-B '.repeat(70)}</article>
         </Tabs>
       );
       const {main, html} = await flightAndSsr(<App />);
@@ -1739,11 +1799,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       for (let i = 0; i < 2; i++) {
         await act(() => tabB.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-B '.repeat(10),
+          'panel-B '.repeat(70),
         );
         await act(() => tabA.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-A '.repeat(10),
+          'panel-A '.repeat(70),
         );
       }
       expect(missing).not.toHaveBeenCalled();
@@ -1757,11 +1817,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       async function Slow() {
         await new Promise(resolve => setTimeout(resolve, 10));
-        return <section>{'streamed-content '.repeat(10)}</section>;
+        return <section>{'streamed-content '.repeat(40)}</section>;
       }
       const App = () => (
         <main>
-          <article>{'page-content '.repeat(10)}</article>
+          <article>{'page-content '.repeat(50)}</article>
           <Counter />
           <React.Suspense fallback="loading">
             <Slow />
@@ -1790,7 +1850,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const Panel = createPanel();
       const main = await flightOnly(
         <Panel>
-          <p>modal-body</p>
+          <p data-fill={FILL}>modal-body</p>
         </Panel>,
       );
       expect(main).toContain('$J');
@@ -1811,7 +1871,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           ReactServerDOMServer.renderToReadableStream(
             <main>
               <Panel>
-                <p>modal-body</p>
+                <p data-fill={FILL}>modal-body</p>
               </Panel>
               <React.Suspense fallback="loading">
                 <Never />
@@ -1851,7 +1911,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
     const App = () => (
       <Panel>
-        <section>modal-body</section>
+        <section data-fill={FILL}>modal-body</section>
       </Panel>
     );
     const f = await flight(<App />);
@@ -1872,13 +1932,15 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return <i>c</i>;
     });
     function Item({label}) {
-      return <li>{label}</li>;
+      return <li data-fill={FILL}>{label}</li>;
     }
     const App = () => (
       <ul>
         <Client />
         {['a', 'b'].map(l => (
-          <li key={l}>item-{l}</li>
+          <li key={l} data-fill={FILL}>
+            item-{l}
+          </li>
         ))}
         <Item key="srv" label="from-server-component" />
       </ul>
@@ -1927,7 +1989,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <div>
         <ClientOnly>
-          <p>client-only-content</p>
+          <p data-fill={FILL}>client-only-content</p>
         </ClientOnly>
       </div>
     );
@@ -1949,7 +2011,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   });
 
   it('fails the SSR consumer when an stubbed row is missing', async () => {
-    const App = () => <article>{'important '.repeat(10)}</article>;
+    const App = () => <article>{'important '.repeat(60)}</article>;
     const f = await flight(<App />);
     expect(f.rows.size).toBe(1);
     const response = consume(f.main, new Map());
@@ -1984,7 +2046,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <table>
           <tbody>
             <tr>
-              <td>server-row-text</td>
+              <td>{'server-row-text' + FILL}</td>
             </tr>
           </tbody>
         </table>
@@ -1993,16 +2055,16 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     const App = () => (
       <main>
         <Client fallback={<i>client-prop-text</i>}>
-          <p>client-child-text</p>
+          <p data-fill={FILL}>client-child-text</p>
           <ServerTable />
         </Client>
         <section>
           <Client />
-          <h2>host-child-text</h2>
+          <h2 data-fill={FILL}>host-child-text</h2>
         </section>
         <React.Suspense fallback={<p>suspense-fallback-text</p>}>
           <ServerTable />
-          <h3>suspense-content-text</h3>
+          <h3 data-fill={FILL}>suspense-content-text</h3>
         </React.Suspense>
         <ServerTable />
       </main>
@@ -2210,7 +2272,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         await delay(ms);
         return (
           <section id={label}>
-            <p>{label + '-text'}</p>
+            <p data-fill={FILL}>{label + '-text'}</p>
             {children}
           </section>
         );
@@ -2218,7 +2280,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       return function App() {
         return (
           <main>
-            <h1>shell-text</h1>
+            <h1 data-fill={FILL}>shell-text</h1>
             <Counter />
             <React.Suspense fallback={<i>loading-outer</i>}>
               <Late ms={10} label="outer">
@@ -2319,19 +2381,19 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       async function Article() {
         await delay(5);
-        return <article>{'static-sibling '.repeat(3)}</article>;
+        return <article>{'static-sibling '.repeat(40)}</article>;
       }
       const content = (
         <>
           <Article />
-          <p>static-p</p>
+          <p data-fill={FILL}>static-p</p>
           <Fragile />
         </>
       );
       function App() {
         return (
           <main>
-            <h1>shell-text</h1>
+            <h1 data-fill={FILL}>shell-text</h1>
             {withSuspense ? (
               <React.Suspense fallback={<i>loading</i>}>
                 {content}
@@ -2370,7 +2432,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const h1 = container.querySelector('h1');
       await renderFullPayload(root, <App />);
       expect(visibleText(container)).toBe(
-        'shell-text' + 'static-sibling '.repeat(3) + 'static-pclient-ok',
+        'shell-text' + 'static-sibling '.repeat(40) + 'static-pclient-ok',
       );
       // The full payload has real elements where the stubs were. Where a stub
       // adopted DOM (outside of the boundary) it is what they would render, so
@@ -2463,7 +2525,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
             <Counter />
             <React.Suspense fallback={<i>errored-fallback</i>}>
               <Boom />
-              <section>errored-static-block</section>
+              <section data-fill={FILL}>errored-static-block</section>
             </React.Suspense>
             <React.Suspense fallback={<i>loading</i>}>
               <Dynamic />
@@ -2474,7 +2536,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       if (shape === 'sibling') {
         return () => (
           <main>
-            <h1>sibling-static</h1>
+            <h1 data-fill={FILL}>sibling-static</h1>
             <Counter />
             <React.Suspense fallback={<i>loading</i>}>
               <Dynamic />
@@ -2637,25 +2699,30 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
 
     const withoutMarkers = html => html.replace(/<!--J[0-9a-z.]+-->/g, '');
 
-    it('marks each stub in the HTML without changing the text around it', async () => {
+    it('marks each stub in a boundary in the HTML without changing the text around it', async () => {
       const Client = clientExports(function Client() {
         return <i>client</i>;
       });
       const App = () => (
         <div>
           <Client />
-          {'before'}
-          <p>stub-1</p>
-          {'after'}
-          {'adjacent'}
-          <p>stub-2</p>
-          <p>stub-3</p>
-          {'end'}
+          <p data-fill={FILL}>outside</p>
+          <React.Suspense fallback={null}>
+            {'before'}
+            <p data-fill={FILL}>stub-1</p>
+            {'after'}
+            {'adjacent'}
+            <p data-fill={FILL}>stub-2</p>
+            <p data-fill={FILL}>stub-3</p>
+            {'end'}
+          </React.Suspense>
         </div>
       );
       const on = await flightAndHTML(<App />);
       const off = await flightAndHTML(<App />, false);
+      // The stub outside of the boundary has none: React cannot discard it.
       expect(on.html.match(/<!--J[0-9a-z]+\.[0-9a-z]+-->/g).length).toBe(3);
+      expect(on.html).not.toMatch(/<!--J[0-9a-z.]+--><p>outside/);
       expect(withoutMarkers(on.html)).toBe(off.html);
       expect(on.main).not.toContain('stub-1');
       const missing = jest.fn();
@@ -2695,9 +2762,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           const App = () => (
             <Provider>
               <React.Suspense fallback={<i>loading</i>}>
-                <p>static-a</p>
+                <p data-fill={FILL}>static-a</p>
                 <Reader />
-                <p>static-b</p>
+                <p data-fill={FILL}>static-b</p>
               </React.Suspense>
             </Provider>
           );
@@ -2745,7 +2812,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <Gate>
           <React.Suspense fallback={<i>loading</i>}>
             <section>
-              <p>ten-static</p>
+              <p data-fill={FILL}>ten-static</p>
             </section>
           </React.Suspense>
         </Gate>
@@ -2761,7 +2828,9 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       snapshot = true;
       await act(() => listeners.forEach(l => l()));
       expect(missing).not.toHaveBeenCalled();
-      expect(container.innerHTML).toBe('<section><p>ten-static</p></section>');
+      expect(container.innerHTML).toBe(
+        '<section><p data-fill="' + FILL + '">ten-static</p></section>',
+      );
     });
   });
 

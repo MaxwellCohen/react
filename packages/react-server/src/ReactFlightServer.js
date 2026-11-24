@@ -4645,6 +4645,78 @@ function isStaticHostElement(cache: WeakMap<any, number>, node: any): number {
   return nestingBits(type) | (childBits & ~nestingShields(type));
 }
 
+// A stub costs the browser a component that adopts the DOM. For a small
+// element, such as a <span> around a label, that is a bad trade: a page with
+// thousands of them hydrates slower than it does with the elements, and can
+// even get larger. So an element needs MIN_STUB_NODES host nodes (elements and
+// text) to be stubbed, unless it takes BIG_STUB_WEIGHT bytes in the payload:
+// the payload of a large element, such as a long script or a block of inner
+// HTML, is worth a component whatever its nodes. staticWeight and staticNodes
+// stop counting at the limit, so they cost nothing for a large tree. They
+// return what is left of the budget.
+const BIG_STUB_WEIGHT = 512;
+const MIN_STUB_NODES = 8;
+
+function staticWeight(node: any, budget: number): number {
+  if (typeof node === 'string') {
+    return budget - node.length;
+  }
+  if (node === null || typeof node !== 'object') {
+    return budget - 1;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length && budget > 0; i++) {
+      budget = staticWeight(node[i], budget);
+    }
+    return budget;
+  }
+  // ["$","tag",null,{...}]
+  budget -= 16 + node.type.length;
+  const props = node.props;
+  for (const k in props) {
+    if (budget <= 0) {
+      break;
+    }
+    const value: mixed = props[k];
+    if (k === 'children') {
+      budget = staticWeight(value, budget);
+    } else if (typeof value === 'string') {
+      budget -= k.length + 6 + value.length;
+    } else if (value != null && typeof value === 'object') {
+      const object: {[key: string]: mixed} = value as any;
+      budget -= k.length + 5;
+      for (const j in object) {
+        const v = object[j];
+        budget -= j.length + 6 + (typeof v === 'string' ? v.length : 4);
+      }
+    } else {
+      budget -= k.length + 8;
+    }
+  }
+  return budget;
+}
+
+function staticNodes(node: any, budget: number): number {
+  if (typeof node === 'string') {
+    return node === '' ? budget : budget - 1;
+  }
+  if (typeof node === 'number') {
+    return budget - 1;
+  }
+  if (node === null || typeof node !== 'object') {
+    return budget;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length && budget > 0; i++) {
+      budget = staticNodes(node[i], budget);
+    }
+    return budget;
+  }
+  // ["$","tag",null,{...}]
+  budget--;
+  return budget > 0 ? staticNodes(node.props.children, budget) : budget;
+}
+
 function tryStubHostElement(
   request: Request,
   task: Task,
@@ -4665,6 +4737,12 @@ function tryStubHostElement(
   }
   const bits = isStaticHostNode(cache, element, hostParentTag);
   if (bits === NOT_STATIC || (hostForbidden & bits) !== 0) {
+    return null;
+  }
+  if (
+    staticNodes(element, MIN_STUB_NODES) > 0 &&
+    staticWeight(element, BIG_STUB_WEIGHT) > 0
+  ) {
     return null;
   }
   // The stub keeps the key of the element (including the keys of the Server
