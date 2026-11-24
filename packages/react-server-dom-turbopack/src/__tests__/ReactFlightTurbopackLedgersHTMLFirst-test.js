@@ -83,9 +83,11 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
     return React.use(read()).page;
   }
 
-  // The server stubs an element only when it takes about 48 bytes or more in
-  // the payload. A fixture appends this to its text to be stubbed.
-  const FILL = ' filler text so this element is big enough to be stubbed';
+  // The server stubs an element only when it has 8 host nodes, or when it takes
+  // 512 bytes or more in the payload. A fixture appends this to its text to be
+  // stubbed.
+  const FILL =
+    ' filler text so this element is big enough to be stubbed'.repeat(10);
 
   // Renders `createModel()` once. Returns the bytes, the model decoded from
   // them, and with `ssr` the HTML and the model that Fizz read from the tee.
