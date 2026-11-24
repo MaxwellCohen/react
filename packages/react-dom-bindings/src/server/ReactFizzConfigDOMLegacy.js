@@ -156,6 +156,7 @@ export {
   makeId,
   pushStartInstance,
   pushEndInstance,
+  pushStubbedRowMarker,
   pushFormStateMarkerIsMatching,
   pushFormStateMarkerIsNotMatching,
   writeStartSegment,

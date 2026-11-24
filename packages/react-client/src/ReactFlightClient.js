@@ -94,6 +94,7 @@ import {
 
 import {
   REACT_LAZY_TYPE,
+  REACT_STUBBED_RENDERED_TYPE,
   REACT_ELEMENT_TYPE,
   ASYNC_ITERATOR,
   REACT_FRAGMENT_TYPE,
@@ -3121,11 +3122,14 @@ function StaticStub(
   // again later (a framework re-rendering a cached payload, e.g. on back
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
-  const [slot, setSlot] = React.useState(() => ({
-    saved: props.saved,
-    mode: hydrating !== false ? ADOPT : modeWithoutHTML(props.saved),
-    generation: 0,
-  }));
+  const [slot, setSlot] = React.useState(() => {
+    indexStubbedMarkers();
+    return {
+      saved: props.saved,
+      mode: hydrating !== false ? ADOPT : modeWithoutHTML(props.saved),
+      generation: 0,
+    };
+  });
   // React reuses this fiber for a different stub when unkeyed siblings swap
   // places (tabs that render one of their children). Start over for that
   // stub, on a new node (the key), so the old node keeps its own content.
@@ -3161,7 +3165,66 @@ function StaticStub(
 StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
 
 function modeWithoutHTML(saved: StubbedNodeHolder): number {
-  return saved.node !== null || saved.html !== null ? RESTORE : RECOVER;
+  return saved.node !== null ||
+    saved.html !== null ||
+    takeStubbedMarkerNode(saved)
+    ? RESTORE
+    : RECOVER;
+}
+
+// The server writes <!--J<payload id>:<row id>--> right before the DOM of every
+// stub. React can throw that DOM away before the stub adopts it: it
+// client-renders a boundary that did not hydrate yet (the old DOM is deleted
+// when that commits), or removes a dehydrated boundary and shows it again
+// later. The stub then rebuilds from the DOM the marker leads to, instead of
+// asking for the content again. The comments are indexed once, by the time the
+// first stub renders or the stream ends, before React discards anything. A
+// stub drops its entry when it adopts the DOM, so the index holds only DOM no
+// stub has used yet, even when it is detached.
+let stubbedMarkers: null | Map<string, Element> = null;
+
+function indexStubbedMarkers(): Map<string, Element> {
+  let index = stubbedMarkers;
+  if (index === null) {
+    index = stubbedMarkers = new Map();
+    if (canUseDOM) {
+      const walker: any = document.createTreeWalker(
+        document,
+        128, // NodeFilter.SHOW_COMMENT
+      );
+      let comment: any;
+      while ((comment = walker.nextNode()) !== null) {
+        const data: string = comment.data;
+        const node = comment.nextSibling;
+        if (data.charCodeAt(0) === 74 /* "J" */ && node !== null) {
+          const key = data.slice(1);
+          const ref = stubbedNodeHolders.get(key);
+          const holder = ref !== undefined ? ref.deref() : undefined;
+          if (
+            node.nodeType === 1 &&
+            (holder === undefined ||
+              (holder.node === null && holder.html === null))
+          ) {
+            index.set(key, node);
+          }
+        }
+      }
+    }
+  }
+  return index;
+}
+
+// Takes what the stub's DOM had from the marker into `saved`, as when it is
+// detached, and says whether the marker led to it.
+function takeStubbedMarkerNode(saved: StubbedNodeHolder): boolean {
+  const index = indexStubbedMarkers();
+  const node = index.get(saved.key);
+  if (node === undefined) {
+    return false;
+  }
+  rememberStubbedNode(saved, node);
+  snapshotStubbedNode(saved);
+  return true;
 }
 
 const ADOPT = 0;
@@ -3173,6 +3236,9 @@ const EMPTY_HTML = {__html: ''};
 // or hidden by an Activity) the holder keeps its attributes and HTML instead,
 // so the detached DOM can be collected.
 type StubbedNodeHolder = {
+  // The id of the marker the server wrote before the DOM, see
+  // indexStubbedMarkers.
+  key: string,
   node: null | Element,
   display: null | string,
   attributes: null | Array<string>,
@@ -3203,6 +3269,9 @@ function rememberStubbedNode(
     return;
   }
   saved.node = node;
+  if (stubbedMarkers !== null) {
+    stubbedMarkers.delete(saved.key);
+  }
   if (saved.html !== null) {
     // The ref of a node that was hidden by an Activity is attached again when
     // it is shown. React restores `display` from the style prop then, and the
@@ -3349,6 +3418,9 @@ function recoverStubbedContent(
 function noop(): void {}
 
 function endStubbedRows(response: Response): void {
+  if (response._stubbedRequestId !== 0) {
+    indexStubbedMarkers();
+  }
   const end = response._stubbedEnd;
   if (end !== null) {
     end.resolve();
@@ -3373,6 +3445,7 @@ function getLateStubbedRow(response: Response, id: number): null | React$Node {
 // browser once the HTML render is done. A lazy node costs far less than a
 // component render per row.
 type StubbedRenderedPayload = {
+  $$typeof: symbol,
   entry: StubbedRowsEntry,
   id: number,
 };
@@ -3386,7 +3459,11 @@ function createStubbedRenderedElement(
   entry: StubbedRowsEntry,
   id: number,
 ): any {
-  const payload: StubbedRenderedPayload = {entry, id};
+  const payload: StubbedRenderedPayload = {
+    $$typeof: REACT_STUBBED_RENDERED_TYPE,
+    entry,
+    id,
+  };
   return {
     $$typeof: REACT_LAZY_TYPE,
     _payload: payload,
@@ -3427,13 +3504,13 @@ function getStubbedNodeHolder(
     typeof WeakRef !== 'function' ||
     stubbedNodeHolderCleanup === null
   ) {
-    return {node: null, display: null, attributes: null, html: null};
+    return {key: '', node: null, display: null, attributes: null, html: null};
   }
-  const key = requestId + ':' + id;
+  const key = requestId.toString(16) + ':' + id.toString(16);
   const ref = stubbedNodeHolders.get(key);
   let holder = ref !== undefined ? ref.deref() : undefined;
   if (holder === undefined) {
-    holder = {node: null, display: null, attributes: null, html: null};
+    holder = {key, node: null, display: null, attributes: null, html: null};
     // $FlowFixMe[cannot-resolve-name]
     stubbedNodeHolders.set(key, new WeakRef(holder));
     stubbedNodeHolderCleanup.register(holder, key);
@@ -6603,8 +6680,8 @@ export function processWireBinary(
   }
   const response = unwrapWeakResponse(weakResponse);
   incrementChunkDebugInfo(streamState, bytes.byteLength);
-  // The bytes are a view of the server's value, so copy them, as reading them
-  // from a stream would. The copy also owns its whole buffer.
+  // The server's destination still has to write these bytes, so copy them, as
+  // reading them from a stream would. The copy also owns its whole buffer.
   const copy = bytes.slice();
   if (tag === 98 /* "b" */) {
     resolveBuffer(response, id, copy, streamState);

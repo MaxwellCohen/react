@@ -1198,6 +1198,18 @@ export function pushTextInstance(
   return true;
 }
 
+const startStubbedRowMarker = stringToPrecomputedChunk('<!--J');
+const endStubbedRowMarker = stringToPrecomputedChunk('-->');
+
+// enableFlightHTMLFirst: written right before the DOM of a Flight stub, so that
+// the browser can find that DOM when React discards it before the stub adopts it.
+export function pushStubbedRowMarker(
+  target: Array<Chunk | PrecomputedChunk>,
+  id: string,
+): void {
+  target.push(startStubbedRowMarker, stringToChunk(id), endStubbedRowMarker);
+}
+
 // Called when Fizz is done with a Segment. Currently the only purpose is to conditionally
 // emit a text separator when we don't know for sure it is safe to omit
 export function pushSegmentFinale(
