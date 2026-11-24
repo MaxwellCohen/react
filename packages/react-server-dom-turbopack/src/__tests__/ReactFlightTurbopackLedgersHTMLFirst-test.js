@@ -31,6 +31,12 @@ let serverAct;
 // SSR claims the stubbed rows of a render by reading its bytes, and the
 // browser decodes the same bytes without them. Each test reads the Ledger
 // totals from both.
+// The server stubs an element only when it has 8 host nodes, or when it takes
+// 512 bytes or more in the payload. A fixture adds this to be stubbed.
+const FILL = ' filler text so this element is big enough to be stubbed'.repeat(
+  10,
+);
+
 describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
   beforeEach(() => {
     jest.resetModules();
@@ -158,7 +164,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
     function Card({tag}) {
       ReactServer.addToLedger(Tags, tag);
       return (
-        <article>
+        <article data-fill={FILL}>
           <h2>card {tag}</h2>
           <p>static body of {tag}</p>
         </article>
@@ -168,7 +174,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       await new Promise(resolve => setTimeout(resolve, 10));
       ReactServer.addToLedger(Tags, 'late');
       ReactServer.addToLedger(Dynamic, true);
-      return <footer>late static</footer>;
+      return <footer data-fill={FILL}>late static</footer>;
     }
     function Page() {
       return (
@@ -234,7 +240,7 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       const getCard = ReactServer.cache(() => {
         ReactServer.addToLedger(Tags, 'cached');
         return (
-          <article>
+          <article data-fill={FILL}>
             <p>cached static</p>
           </article>
         );
@@ -248,7 +254,9 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       const first = ReactServer.captureLedgers(<First />, [Tags]);
       const second = ReactServer.captureLedgers(<Second />, [Tags]);
       const bare = ReactServer.captureLedgers(
-        <aside key="bare">bare static</aside>,
+        <aside key="bare" data-fill={FILL}>
+          bare static
+        </aside>,
         [Tags],
       );
       return {
@@ -293,7 +301,11 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
       }
       function Parent() {
         ReactServer.addToLedger(Tags, 'beside');
-        const el = <p key="p">static</p>;
+        const el = (
+          <p key="p" data-fill={FILL}>
+            static
+          </p>
+        );
         const captured = ReactServer.captureLedgers(<Child el={el} />, [Tags]);
         return {
           page: (
@@ -327,9 +339,9 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
         ReactServer.addToLedger(Tags, 'page');
         return (
           <main>
-            <h1>shown static</h1>
+            <h1 data-fill={FILL}>shown static</h1>
             <Hidden>
-              <p>hidden static</p>
+              <p data-fill={FILL}>hidden static</p>
             </Hidden>
           </main>
         );
