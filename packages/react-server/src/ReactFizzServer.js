@@ -74,6 +74,7 @@ import {
   writeCompletedSegmentInstruction,
   writeHoistablesForBoundary,
   pushTextInstance,
+  pushStubMarker,
   pushStartInstance,
   pushEndInstance,
   pushSegmentFinale,
@@ -190,7 +191,10 @@ import {
   enableCPUSuspense,
   enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
-import {markStubbedRendered} from 'shared/ReactFlightHTMLFirstRegistry';
+import {
+  markStubbedRendered,
+  getStubbedRenderedMarker,
+} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import assign from 'shared/assign';
 import noop from 'shared/noop';
@@ -3430,15 +3434,17 @@ function markStubsInPrelude(node: any, type: any): void {
   ) {
     return;
   }
-  if (isArray(node)) {
+  if (node === null || typeof node !== 'object') {
+    return;
+  }
+  const $$typeof = node.$$typeof;
+  if ($$typeof === REACT_LAZY_TYPE) {
+    markStubbedRendered(node);
+  } else if ($$typeof === REACT_ELEMENT_TYPE) {
+    markStubsInPrelude(node.props.children, node.type);
+  } else if (isArray(node)) {
     for (let i = 0; i < node.length; i++) {
       markStubsInPrelude(node[i], type);
-    }
-  } else if (node !== null && typeof node === 'object') {
-    if (node.$$typeof === REACT_LAZY_TYPE) {
-      markStubbedRendered(node);
-    } else if (node.$$typeof === REACT_ELEMENT_TYPE) {
-      markStubsInPrelude(node.props.children, node.type);
     }
   }
 }
@@ -3684,6 +3690,14 @@ function retryNode(request: Request, task: Task): void {
         if (request.aborted) {
           // eslint-disable-next-line no-throw-literal
           throw null;
+        }
+        if (enableFlightHTMLFirst) {
+          const segment = task.blockedSegment;
+          const marker =
+            segment === null ? null : getStubbedRenderedMarker(lazyNode);
+          if (segment !== null && marker !== null) {
+            pushStubMarker(segment.chunks, marker, request.renderState);
+          }
         }
         // Now we render the resolved node
         renderNodeDestructive(request, task, resolvedNode, childIndex);

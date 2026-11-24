@@ -21,6 +21,7 @@ import type {
 import {
   createRenderState as createRenderStateImpl,
   pushTextInstance as pushTextInstanceImpl,
+  pushStubMarker as pushStubMarkerImpl,
   pushSegmentFinale as pushSegmentFinaleImpl,
   pushStartActivityBoundary as pushStartActivityBoundaryImpl,
   pushEndActivityBoundary as pushEndActivityBoundaryImpl,
@@ -221,6 +222,17 @@ export function pushTextInstance(
   } else {
     return pushTextInstanceImpl(target, text, renderState, textEmbedded);
   }
+}
+
+export function pushStubMarker(
+  target: Array<Chunk | PrecomputedChunk>,
+  marker: string,
+  renderState: RenderState,
+): void {
+  if (renderState.generateStaticMarkup) {
+    return;
+  }
+  pushStubMarkerImpl(target, marker, renderState);
 }
 
 export function pushSegmentFinale(

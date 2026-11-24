@@ -2579,4 +2579,156 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(button.textContent).toBe('n:1');
     });
   });
+
+  describe('server DOM that React discarded before a stub adopted it', () => {
+    // The framework's setup: the stream goes to SSR and the browser alike.
+    async function flightAndHTML(element, htmlFirst = true) {
+      let main;
+      let html;
+      await serverAct(async () => {
+        const [forSsr, forBrowser] =
+          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+            htmlFirst,
+          }).tee();
+        const browser = readAll(forBrowser);
+        const response = ReactServerDOMClient.createFromReadableStream(forSsr);
+        const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
+          <Shell response={response} />,
+        );
+        await htmlStream.allReady;
+        html = await readAll(htmlStream);
+        main = await browser;
+      });
+      return {main, html};
+    }
+
+    const withoutMarkers = html => html.replace(/<!--J[0-9a-z.]+-->/g, '');
+
+    it('marks each stub in the HTML without changing the text around it', async () => {
+      const Client = clientExports(function Client() {
+        return <i>client</i>;
+      });
+      const App = () => (
+        <div>
+          <Client />
+          {'before'}
+          <p>stub-1</p>
+          {'after'}
+          {'adjacent'}
+          <p>stub-2</p>
+          <p>stub-3</p>
+          {'end'}
+        </div>
+      );
+      const on = await flightAndHTML(<App />);
+      const off = await flightAndHTML(<App />, false);
+      expect(on.html.match(/<!--J[0-9a-z]+\.[0-9a-z]+-->/g).length).toBe(3);
+      expect(withoutMarkers(on.html)).toBe(off.html);
+      expect(on.main).not.toContain('stub-1');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(on.main, on.html, {
+        onMissingHTML: missing,
+      });
+      const p = container.querySelector('p');
+      expect(container.innerHTML).toBe(on.html);
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+      expect(container.querySelector('p')).toBe(p);
+    });
+
+    [true, false].forEach(provide =>
+      it(
+        'rebuilds a stub whose boundary React client-renders before it hydrates (onMissingHTML ' +
+          (provide ? 'provided' : 'not provided') +
+          ')',
+        async () => {
+          let onServer = true;
+          let setV;
+          let gateResolve;
+          const gate = new Promise(r => (gateResolve = r));
+          const Ctx = React.createContext(0);
+          const Provider = clientExports(function Provider({children}) {
+            const [v, sv] = React.useState(0);
+            setV = sv;
+            return <Ctx.Provider value={v}>{children}</Ctx.Provider>;
+          });
+          const Reader = clientExports(function Reader() {
+            const v = React.useContext(Ctx);
+            if (!onServer) {
+              use(gate);
+            }
+            return <b>v:{v}</b>;
+          });
+          const App = () => (
+            <Provider>
+              <React.Suspense fallback={<i>loading</i>}>
+                <p>static-a</p>
+                <Reader />
+                <p>static-b</p>
+              </React.Suspense>
+            </Provider>
+          );
+          const {main, html} = await flightAndHTML(<App />);
+          expect(main).not.toContain('static-a');
+          onServer = false;
+          Ctx._currentRenderer = null;
+          Ctx._currentRenderer2 = null;
+          const missing = jest.fn();
+          const {container} = await hydrate(
+            main,
+            html,
+            provide ? {onMissingHTML: missing} : undefined,
+          );
+          // The context changes before the dehydrated boundary hydrates, so
+          // React renders it on the client and throws the server DOM away.
+          await act(() => setV(1));
+          await act(async () => {
+            gateResolve();
+          });
+          expect(missing).not.toHaveBeenCalled();
+          expect(container.textContent).toContain('static-a');
+          expect(container.textContent).toContain('static-b');
+          expect(container.textContent).toContain('v:1');
+        },
+      ),
+    );
+
+    it('rebuilds a stub from DOM that React already removed', async () => {
+      let snapshot = false;
+      const listeners = new Set();
+      const subscribe = l => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      };
+      const Gate = clientExports(function Gate({children}) {
+        const show = React.useSyncExternalStore(
+          subscribe,
+          () => snapshot,
+          () => true,
+        );
+        return show ? children : null;
+      });
+      const App = () => (
+        <Gate>
+          <React.Suspense fallback={<i>loading</i>}>
+            <section>
+              <p>ten-static</p>
+            </section>
+          </React.Suspense>
+        </Gate>
+      );
+      const {main, html} = await flightAndHTML(<App />);
+      expect(html).toContain('ten-static');
+      expect(main).not.toContain('ten-static');
+      const missing = jest.fn();
+      const {container} = await hydrate(main, html, {onMissingHTML: missing});
+      // The server snapshot shows the boundary, the client's does not: it
+      // is removed from the document.
+      expect(container.textContent).toBe('');
+      snapshot = true;
+      await act(() => listeners.forEach(l => l()));
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.innerHTML).toBe('<section><p>ten-static</p></section>');
+    });
+  });
 });

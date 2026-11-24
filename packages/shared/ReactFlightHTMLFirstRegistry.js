@@ -141,6 +141,7 @@ export function releaseStubbedRowsWhenCollected(
 // render per row.
 export type StubbedRenderedPayload = {
   entry: StubbedRowsEntry,
+  requestId: number,
   id: number,
   model: any,
 };
@@ -159,4 +160,21 @@ export function markStubbedRendered(node: any): void {
     const payload: StubbedRenderedPayload = node._payload;
     payload.entry.rendered.add(payload.id);
   }
+}
+
+// Fizz writes this as a comment before the DOM of a stub it rendered, so that
+// a browser that has to render the stub without DOM to adopt (React discarded
+// it) can still find it. It names the payload and the row, like the key of the
+// node the browser keeps for the stub, and is null for any other lazy.
+export function getStubbedRenderedMarker(node: any): null | string {
+  if (node._init === initStubbedRendered) {
+    const payload: StubbedRenderedPayload = node._payload;
+    return getStubbedRowMarker(payload.requestId, payload.id);
+  }
+  return null;
+}
+
+// Base 36: the marker is written once per stub.
+export function getStubbedRowMarker(requestId: number, id: number): string {
+  return requestId.toString(36) + '.' + id.toString(36);
 }
