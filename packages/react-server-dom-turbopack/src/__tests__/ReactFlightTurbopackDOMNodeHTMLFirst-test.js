@@ -37,7 +37,11 @@ describe('ReactFlightTurbopackDOMNode HTML-first Flight', () => {
     return ReactServer.createElement(
       'section',
       null,
-      ReactServer.createElement('h1', null, 'static-heading'),
+      ReactServer.createElement(
+        'h1',
+        null,
+        'static-heading' + ' filler'.repeat(80),
+      ),
     );
   }
 

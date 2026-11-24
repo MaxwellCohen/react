@@ -355,6 +355,20 @@ const POSTPONED = 5;
 
 type Root = null;
 
+// enableFlightHTMLFirst: whether a task renders inside an Activity boundary.
+// It is a context, so that the tasks that continue the render after a
+// suspension have it too.
+const ActivityMarkerContext: ReactContext<boolean> = {
+  $$typeof: REACT_CONTEXT_TYPE,
+  _currentValue: false,
+  _currentValue2: false,
+  _threadCount: 0,
+  Provider: null as any,
+  Consumer: null as any,
+  _currentRenderer: null,
+  _currentRenderer2: null,
+};
+
 type Segment = {
   status: 0 | 1 | 2 | 3 | 4 | 5,
   parentFlushed: boolean, // typically a segment will be flushed by its parent, except if its parent was already flushed
@@ -3047,9 +3061,15 @@ function renderActivity(
       // A visible Activity boundary has its children rendered inside the boundary.
       const prevKeyPath = task.keyPath;
       task.keyPath = keyPath;
+      if (enableFlightHTMLFirst) {
+        task.context = pushProvider(ActivityMarkerContext, true);
+      }
       // We use the non-destructive form because if something suspends, we still
       // need to pop back up and finish the end comment.
       renderNode(request, task, props.children, -1);
+      if (enableFlightHTMLFirst) {
+        task.context = popProvider(ActivityMarkerContext);
+      }
       task.keyPath = prevKeyPath;
       pushEndActivityBoundary(segment.chunks, request.renderState);
       segment.lastPushedText = false;
@@ -3691,8 +3711,14 @@ function retryNode(request: Request, task: Task): void {
         }
         if (enableFlightHTMLFirst) {
           const segment = task.blockedSegment;
+          // React can only discard DOM that is in a boundary, which it hydrates
+          // on its own, so a stub outside of them has no marker.
           const marker =
-            segment === null ? null : getStubbedRenderedMarker(lazyNode);
+            segment === null ||
+            (task.blockedBoundary === null &&
+              !readContext(ActivityMarkerContext))
+              ? null
+              : getStubbedRenderedMarker(lazyNode);
           if (segment !== null && marker !== null) {
             pushStubMarker(segment.chunks, marker, request.renderState);
           }

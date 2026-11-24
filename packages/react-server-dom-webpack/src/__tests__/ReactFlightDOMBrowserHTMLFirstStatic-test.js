@@ -76,6 +76,11 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
+  // The server stubs an element only when it has 8 host nodes, or when it takes
+  // 512 bytes or more in the payload. A fixture adds this to be stubbed.
+  const FILL =
+    ' filler text so this element is big enough to be stubbed'.repeat(10);
+
   async function readAll(stream) {
     const reader = stream.getReader();
     let result = '';
@@ -390,7 +395,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
       <ul>
         {['a', 'b', 'c'].map(l => (
           <li key={l} className="item">
-            {l}
+            {l + FILL}
           </li>
         ))}
       </ul>
@@ -398,11 +403,11 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     const Mixed = () => (
       <ul>
         <li key="a" className="item">
-          a
+          {'a' + FILL}
         </li>
         <Counter key="c" label="clicks" />
         <li key="b" className="item">
-          b
+          {'b' + FILL}
         </li>
       </ul>
     );
@@ -490,6 +495,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
       <tr className="r">
         <td>
           {name} <b>x</b>
+          {FILL}
         </td>
       </tr>
     );
@@ -510,7 +516,9 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     expect(stubbed.rows.size).toBe(2);
     expect(Array.from(stubbed.rows.values())[0]).toContain('"a"');
     const html = await ssr(stubbed);
-    expect(html).toContain('<tr class="r"><td>a<!-- --> <b>x</b></td></tr>');
+    expect(html).toContain(
+      '<tr class="r"><td>a<!-- --> <b>x</b>' + FILL + '</td></tr>',
+    );
   });
 
   // @gate enableTaint
