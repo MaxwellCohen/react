@@ -1,7 +1,7 @@
 {
   "size": "full",
   "n": 1,
-  "builds": "/private/tmp/claude-501/-Users-maxcohen-code-react-ecosystem/e0fa4f61-4102-4506-8761-2c5e9d43bcfc/scratchpad/builds-fin",
+  "builds": "<builds>",
   "variants": [
     "off",
     "all"
