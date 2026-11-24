@@ -596,6 +596,104 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(html).toContain('first');
   });
 
+  it('makes the payload id when the tee is created, not during the render', async () => {
+    // Next.js treats randomness read during a Cache Components render as sync
+    // IO, which ends the staged render early and keeps the response open.
+    const Counter = clientExports(function Counter({label}) {
+      const [n, setN] = React.useState(0);
+      return (
+        <button onClick={() => setN(n + 1)}>
+          {label}:{n}
+        </button>
+      );
+    });
+    function App() {
+      return (
+        <main>
+          <Counter label="clicks" />
+          <table className="data">
+            <tbody>
+              {Array.from({length: 20}, (_, i) => (
+                <tr key={i}>
+                  <td>{'name-' + i}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </main>
+      );
+    }
+    const tee = ReactServerDOMEdgeClient.createTee(createTeeManifest());
+    const realRandom = Math.random;
+    const cryptoObject = globalThis.crypto;
+    const hadOwnGetRandomValues = Object.prototype.hasOwnProperty.call(
+      cryptoObject,
+      'getRandomValues',
+    );
+    const realGetRandomValues = cryptoObject.getRandomValues;
+    let main, html;
+    try {
+      Math.random = () => {
+        throw new Error('Math.random during the render');
+      };
+      Object.defineProperty(cryptoObject, 'getRandomValues', {
+        configurable: true,
+        writable: true,
+        value: () => {
+          throw new Error('crypto.getRandomValues during the render');
+        },
+      });
+      let htmlDone;
+      const htmlFirst = new Promise((resolve, reject) => {
+        htmlDone = {resolve, reject};
+      });
+      ({main, html} = await serverAct(async () => {
+        const stream = ReactServerDOMServer.renderToReadableStream(
+          <App />,
+          webpackMap,
+          {htmlFirst, tee},
+        );
+        const browser = readAll(stream);
+        let response = null;
+        function TeeRoot() {
+          if (response === null) {
+            response = ReactServerDOMEdgeClient.createFromTee(tee);
+          }
+          return <Shell response={response} />;
+        }
+        const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
+          <TeeRoot />,
+        );
+        await htmlStream.allReady;
+        htmlDone.resolve();
+        return {main: await browser, html: await readAll(htmlStream)};
+      }));
+    } finally {
+      Math.random = realRandom;
+      if (hadOwnGetRandomValues) {
+        cryptoObject.getRandomValues = realGetRandomValues;
+      } else {
+        delete cryptoObject.getRandomValues;
+      }
+    }
+    expect(main).toMatch(/^:P[0-9a-f]+$/m);
+    expect(main).toContain('$J');
+    expect(main).not.toContain('name-19');
+    expect(html).toContain('name-19');
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    container.innerHTML = html;
+    const table = container.querySelector('table');
+    const response = consume(main);
+    await response;
+    await act(() => {
+      ReactDOMClient.hydrateRoot(container, <Shell response={response} />);
+    });
+    expect(container.querySelector('table')).toBe(table);
+    expect(container.querySelectorAll('tr').length).toBe(20);
+  });
+
   it('stubs nothing without a tee', async () => {
     const element = sharedAppElement(5);
     // Rendered from one call site, so debug info can't differ in the stack.
