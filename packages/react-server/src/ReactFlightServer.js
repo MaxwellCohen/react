@@ -1007,7 +1007,7 @@ function stubForTee(
   htmlFirstDone: Thenable<mixed>,
 ): void {
   const entry: StubbedRowsEntry = {
-    requestId: randomStubbedRequestId(),
+    requestId: tee._requestId,
     rows: new Map(),
     rendered: new Set(),
   };
@@ -6450,25 +6450,6 @@ function emitHintChunk<Code: HintCode>(
   const row = ':H' + code + json + '\n';
   request.completedHintChunks.push(stringToChunk(row));
   teeWireRow(request, row);
-}
-
-// enableFlightHTMLFirst: identifies the payload, so that the stubs of every
-// decode of it in the browser share the node that hydration adopted. It must
-// not repeat across servers or restarts, or a browser would mix up the nodes
-// of two payloads. Non-zero, at most 2^53 - 1.
-function randomStubbedRequestId(): number {
-  // $FlowFixMe[cannot-resolve-name]
-  const crypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
-  let high, low;
-  if (crypto != null && typeof crypto.getRandomValues === 'function') {
-    const words = crypto.getRandomValues(new Uint32Array(2));
-    high = words[0] & 0x1fffff;
-    low = words[1];
-  } else {
-    high = Math.floor(Math.random() * 0x200000);
-    low = Math.floor(Math.random() * 0x100000000);
-  }
-  return high * 0x100000000 + low || 1;
 }
 
 function emitStubbedRowsRequestIdChunk(
