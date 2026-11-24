@@ -3080,14 +3080,11 @@ function StaticStub(
   // again later (a framework re-rendering a cached payload, e.g. on back
   // navigation), it takes the content from that node instead of asking for
   // the full payload. Only a stub that never had DOM has to recover.
-  const [slot, setSlot] = React.useState(() => {
-    indexStubbedMarkers();
-    return {
-      saved: props.saved,
-      mode: hydrating !== false ? ADOPT : modeWithoutHTML(props.saved),
-      generation: 0,
-    };
-  });
+  const [slot, setSlot] = React.useState(() => ({
+    saved: props.saved,
+    mode: hydrating !== false ? ADOPT : modeWithoutHTML(props.saved),
+    generation: 0,
+  }));
   // React reuses this fiber for a different stub when unkeyed siblings swap
   // places (tabs that render one of their children). Start over for that
   // stub, on a new node (the key), so the old node keeps its own content.
@@ -3135,10 +3132,12 @@ function modeWithoutHTML(saved: StubbedNodeHolder): number {
 // client-renders a boundary that did not hydrate yet (the old DOM is deleted
 // when that commits), or removes a dehydrated boundary and shows it again
 // later. The stub then rebuilds from the DOM the marker leads to, instead of
-// asking for the content again. The comments are indexed once, by the time the
-// first stub renders or the stream ends, before React discards anything. A
-// stub drops its entry when it adopts the DOM, so the index holds only DOM no
-// stub has used yet, even when it is detached.
+// asking for the content again. The comments are indexed once, when the first
+// stub finds no DOM to adopt (React has not discarded it yet then) or when the
+// stream ends, whichever comes first: the walk is a pass over the document, so
+// it stays off the path of a stub that adopts. An entry stays while its stub
+// uses the DOM (a stub that has a node ignores it) and goes when the stub lets
+// go of the node, so a detached node is not held by the index.
 let stubbedMarkers: null | Map<string, Element> = null;
 
 function indexStubbedMarkers(): Map<string, Element> {
@@ -3154,17 +3153,12 @@ function indexStubbedMarkers(): Map<string, Element> {
       while ((comment = walker.nextNode()) !== null) {
         const data: string = comment.data;
         const node = comment.nextSibling;
-        if (data.charCodeAt(0) === 74 /* "J" */ && node !== null) {
-          const key = data.slice(1);
-          const ref = stubbedNodeHolders.get(key);
-          const holder = ref !== undefined ? ref.deref() : undefined;
-          if (
-            node.nodeType === 1 &&
-            (holder === undefined ||
-              (holder.node === null && holder.html === null))
-          ) {
-            index.set(key, node);
-          }
+        if (
+          data.charCodeAt(0) === 74 /* "J" */ &&
+          node !== null &&
+          node.nodeType === 1
+        ) {
+          index.set(data, node);
         }
       }
     }
@@ -3176,7 +3170,7 @@ function indexStubbedMarkers(): Map<string, Element> {
 // detached, and says whether the marker led to it.
 function takeStubbedMarkerNode(saved: StubbedNodeHolder): boolean {
   const index = indexStubbedMarkers();
-  const node = index.get(saved.key);
+  const node = index.get('J' + saved.key);
   if (node === undefined) {
     return false;
   }
@@ -3216,6 +3210,10 @@ function snapshotStubbedNode(saved: StubbedNodeHolder): void {
   saved.attributes = attributes;
   saved.html = node.innerHTML;
   saved.node = null;
+  if (stubbedMarkers !== null) {
+    // The index holds only DOM that no stub has used, not a detached node.
+    stubbedMarkers.delete('J' + saved.key);
+  }
 }
 
 function rememberStubbedNode(
@@ -3227,9 +3225,6 @@ function rememberStubbedNode(
     return;
   }
   saved.node = node;
-  if (stubbedMarkers !== null) {
-    stubbedMarkers.delete(saved.key);
-  }
   if (saved.html !== null) {
     // The ref of a node that was hidden by an Activity is attached again when
     // it is shown. React restores `display` from the style prop then, and the
