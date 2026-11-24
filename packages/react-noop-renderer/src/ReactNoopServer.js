@@ -250,6 +250,27 @@ const ReactNoopServer = ReactFizzServer({
     destination.stack.pop();
     return true;
   },
+  supportsDeclarativePatching(): boolean {
+    return false;
+  },
+  writeStartPendingDeclarativeBoundary(): boolean {
+    return true;
+  },
+  writeEndPendingDeclarativeBoundary(): boolean {
+    return true;
+  },
+  writeDeclarativeClientRenderedBoundary(): boolean {
+    return true;
+  },
+  writeDeclarativePatchSentinel(): boolean {
+    return true;
+  },
+  writeStartDeclarativePatch(): boolean {
+    return true;
+  },
+  writeEndDeclarativePatch(): boolean {
+    return true;
+  },
   writeEndClientRenderedSuspenseBoundary(destination: Destination): boolean {
     destination.stack.pop();
     return true;

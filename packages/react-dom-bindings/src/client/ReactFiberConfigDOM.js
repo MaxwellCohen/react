@@ -132,6 +132,7 @@ import {
   enableViewTransition,
   enableHydrationChangeEvent,
   enableProfilerTimer,
+  enableFizzDeclarativePatching,
 } from 'shared/ReactFeatureFlags';
 import {
   HostComponent,
@@ -231,6 +232,8 @@ type HostNodeWithFragmentHandles = (Instance | TextInstance) & {
 declare class ActivityInterface extends Comment {}
 declare class SuspenseInterface extends Comment {
   _reactRetry: void | (() => void);
+  // enableFizzDeclarativePatching: the <template data-rcr> an errored boundary was signalled with.
+  _reactError: void | HTMLElement;
 }
 
 export type ActivityInstance = ActivityInterface;
@@ -4309,19 +4312,138 @@ export function canHydrateSuspenseInstance(
   return null;
 }
 
-export function isSuspenseInstancePending(instance: SuspenseInstance): boolean {
+const PROCESSING_INSTRUCTION_NODE = 7;
+
+// Declarative patching leaves `<!--$?--><?start name="B:n">fallback<?end><!--/$-->`. In
+// browsers with support the markers are ProcessingInstruction nodes. Elsewhere they parse
+// as bogus comments with data `?start name="B:n"`.
+function isDeclarativePendingMarker(node: ?Node): boolean {
+  if (node == null) {
+    return false;
+  }
+  if (node.nodeType === PROCESSING_INSTRUCTION_NODE) {
+    return (node as any).target === 'start';
+  }
   return (
-    instance.data === SUSPENSE_PENDING_START_DATA ||
-    instance.data === SUSPENSE_QUEUED_START_DATA
+    node.nodeType === COMMENT_NODE &&
+    (node as any as Comment).data.startsWith('?start')
+  );
+}
+
+// There is no script to flip `$?` to `$` when `<template for>` patches a boundary, so we
+// detect it: the start marker is only present while the boundary is still pending. The
+// comment node itself is never replaced, so it is safe to flip it here, which is what
+// the $RC runtime would have done.
+// The server signals an errored declarative boundary with <template data-rcr id="E:<name>">
+// (see writeDeclarativeClientRenderedBoundary). The name is on the pending range marker,
+// also after $RP() swapped a processing instruction for a comment.
+function getDeclarativeBoundaryName(marker: Node): null | string {
+  const match = /name="([^"]*)"/.exec((marker as any as CharacterData).data);
+  if (match !== null && match[1] !== '') {
+    return match[1];
+  }
+  return null;
+}
+
+function findDeclarativeErrorMarker(
+  instance: SuspenseInstance,
+): null | HTMLElement {
+  const marker = instance.nextSibling;
+  if (marker == null || !isDeclarativePendingMarker(marker)) {
+    return null;
+  }
+  const name = getDeclarativeBoundaryName(marker);
+  if (name === null) {
+    return null;
+  }
+  return instance.ownerDocument.getElementById('E:' + name);
+}
+
+// The $RP runtime is set up for this boundary: the marker is a comment, which the
+// parser does not patch, so the boundary is only revealed by $RV, and $RP flips it
+// when it errors. Like with $RC and $RX, there is nothing to detect here.
+function isPatchedByDeclarativeRuntime(marker: ?Node): boolean {
+  return (
+    marker != null &&
+    marker.nodeType === COMMENT_NODE &&
+    isDeclarativePendingMarker(marker) &&
+    typeof (window as any).$RP === 'function'
+  );
+}
+
+// True when the start marker is gone, which is how a <template for> patch is detected.
+function isDeclarativelyPatched(instance: SuspenseInstance): boolean {
+  const next = instance.nextSibling;
+  return !(
+    next == null || // The parser hasn't reached the next chunk yet.
+    isDeclarativePendingMarker(next) ||
+    // Script-patched boundaries keep a <template id> as the first node while pending.
+    (next.nodeType === ELEMENT_NODE &&
+      next.nodeName === 'TEMPLATE' &&
+      (next as any as HTMLElement).hasAttribute('id'))
+  );
+}
+
+// The state the boundary is in, taking declarative patches into account. This has no
+// side effects: nothing but the registration path below changes the comment's data.
+function getDeclarativeBoundaryData(instance: SuspenseInstance): string {
+  if (
+    !enableFizzDeclarativePatching ||
+    instance.data !== SUSPENSE_PENDING_START_DATA
+  ) {
+    return instance.data;
+  }
+  if (isPatchedByDeclarativeRuntime(instance.nextSibling)) {
+    return instance.data;
+  }
+  if (findDeclarativeErrorMarker(instance) !== null) {
+    return SUSPENSE_FALLBACK_START_DATA;
+  }
+  if (isDeclarativelyPatched(instance)) {
+    return SUSPENSE_START_DATA;
+  }
+  return instance.data;
+}
+
+// There is no script to flip `$?` to `$` when `<template for>` patches a boundary. The
+// start marker is only present while the boundary is still pending, so the observer
+// (and registration) notices it going away and does what $RC would have done. The
+// comment node itself is never replaced, so it is safe to flip it here.
+function syncDeclarativelyPatchedBoundary(instance: SuspenseInstance): void {
+  if (!enableFizzDeclarativePatching) {
+    return;
+  }
+  if (
+    instance.data !== SUSPENSE_PENDING_START_DATA ||
+    isPatchedByDeclarativeRuntime(instance.nextSibling)
+  ) {
+    return;
+  }
+  const errorMarker = findDeclarativeErrorMarker(instance);
+  if (errorMarker !== null) {
+    instance._reactError = errorMarker;
+    instance.data = SUSPENSE_FALLBACK_START_DATA;
+    return;
+  }
+  if (isDeclarativelyPatched(instance)) {
+    instance.data = SUSPENSE_START_DATA;
+  }
+}
+
+export function isSuspenseInstancePending(instance: SuspenseInstance): boolean {
+  const data = getDeclarativeBoundaryData(instance);
+  return (
+    data === SUSPENSE_PENDING_START_DATA || data === SUSPENSE_QUEUED_START_DATA
   );
 }
 
 export function isSuspenseInstanceFallback(
   instance: SuspenseInstance,
 ): boolean {
+  const data = getDeclarativeBoundaryData(instance);
   return (
-    instance.data === SUSPENSE_FALLBACK_START_DATA ||
-    (instance.data === SUSPENSE_PENDING_START_DATA &&
+    data === SUSPENSE_FALLBACK_START_DATA ||
+    (data === SUSPENSE_PENDING_START_DATA &&
       instance.ownerDocument.readyState !== DOCUMENT_READY_STATE_LOADING)
   );
 }
@@ -4334,9 +4456,17 @@ export function getSuspenseInstanceFallbackErrorDetails(
   stack?: string,
   componentStack?: string,
 } {
-  const dataset =
-    instance.nextSibling &&
-    (instance.nextSibling as any as HTMLElement).dataset;
+  let errorSource: ?Node = instance.nextSibling;
+  if (enableFizzDeclarativePatching) {
+    const errorMarker =
+      instance._reactError !== undefined
+        ? instance._reactError
+        : findDeclarativeErrorMarker(instance);
+    if (errorMarker !== null) {
+      errorSource = errorMarker;
+    }
+  }
+  const dataset = errorSource && (errorSource as any as HTMLElement).dataset;
   let digest, message, stack, componentStack;
   if (dataset) {
     digest = dataset.dgst;
@@ -4366,6 +4496,7 @@ export function registerSuspenseInstanceRetry(
   callback: () => void,
 ) {
   const ownerDocument = instance.ownerDocument;
+  syncDeclarativelyPatchedBoundary(instance);
   if (instance.data === SUSPENSE_QUEUED_START_DATA) {
     // The Fizz runtime has already queued this boundary for reveal. We wait for it
     // to be revealed and then retries.
@@ -4385,13 +4516,129 @@ export function registerSuspenseInstanceRetry(
     // We're still in pending status and the document is still loading so we attach
     // a listener to the document load even and expose the retry on the instance for
     // the Fizz runtime to trigger if it ends up resolving this boundary
+    let unwatch: null | (() => void) = null;
     const listener = () => {
+      if (unwatch !== null) {
+        unwatch();
+        unwatch = null;
+      }
       callback();
       ownerDocument.removeEventListener('DOMContentLoaded', listener);
     };
     ownerDocument.addEventListener('DOMContentLoaded', listener);
     instance._reactRetry = listener;
+    if (enableFizzDeclarativePatching) {
+      // Native / no-script <template for> patches never call _reactRetry, so watch
+      // for the marker disappearing instead of waiting for DOMContentLoaded. Where
+      // $RP is set up it calls _reactRetry itself, and there is nothing to watch.
+      unwatch = watchDeclarativeBoundary(instance, listener);
+    }
   }
+}
+
+// One MutationObserver per document watches every pending declarative boundary. An
+// observer per boundary gets a record (and a callback) for every mutation of the
+// parent they share and of the body the patches stream into, which is quadratic.
+type DeclarativeBoundaryWatcher = {
+  observer: MutationObserver,
+  observed: Set<Node>,
+  // What to call when a boundary's <?start> marker is removed (it was patched)...
+  byMarker: Map<Node, () => void>,
+  // ...or when its <template data-rcr id="E:<name>"> is added (it errored).
+  byName: Map<string, () => void>,
+};
+const declarativeBoundaryWatchers: WeakMap<
+  Document,
+  DeclarativeBoundaryWatcher,
+> = new WeakMap();
+
+function watchDeclarativeBoundary(
+  instance: SuspenseInstance,
+  listener: () => void,
+): null | (() => void) {
+  const ownerDocument = instance.ownerDocument;
+  const parentNode = instance.parentNode;
+  const marker = instance.nextSibling;
+  if (
+    parentNode == null ||
+    marker == null ||
+    !isDeclarativePendingMarker(marker) ||
+    isPatchedByDeclarativeRuntime(marker) ||
+    typeof MutationObserver !== 'function'
+  ) {
+    return null;
+  }
+  let watcher = declarativeBoundaryWatchers.get(ownerDocument);
+  if (watcher === undefined) {
+    const byMarker: Map<Node, () => void> = new Map();
+    const byName: Map<string, () => void> = new Map();
+    const observer = new MutationObserver(records => {
+      for (let i = 0; i < records.length; i++) {
+        const removed = records[i].removedNodes;
+        for (let j = 0; j < removed.length; j++) {
+          const notify = byMarker.get(removed[j]);
+          if (notify !== undefined) {
+            notify();
+          }
+        }
+        const added = records[i].addedNodes;
+        for (let j = 0; j < added.length; j++) {
+          const node = added[j];
+          if (node.nodeType === ELEMENT_NODE && node.nodeName === 'TEMPLATE') {
+            const id = (node as any as HTMLElement).id;
+            if (id.startsWith('E:')) {
+              const notify = byName.get(id.slice(2));
+              if (notify !== undefined) {
+                notify();
+              }
+            }
+          }
+        }
+      }
+    });
+    watcher = {observer, observed: new Set(), byMarker, byName};
+    declarativeBoundaryWatchers.set(ownerDocument, watcher);
+  }
+  const currentWatcher = watcher;
+  const name = getDeclarativeBoundaryName(marker);
+  const notify = () => {
+    if (
+      !isDeclarativePendingMarker(instance.nextSibling) ||
+      findDeclarativeErrorMarker(instance) !== null
+    ) {
+      syncDeclarativelyPatchedBoundary(instance);
+      listener();
+    }
+  };
+  currentWatcher.byMarker.set(marker, notify);
+  if (name !== null) {
+    currentWatcher.byName.set(name, notify);
+  }
+  if (!currentWatcher.observed.has(parentNode)) {
+    currentWatcher.observed.add(parentNode);
+    currentWatcher.observer.observe(parentNode, {childList: true});
+  }
+  // The error marker is written where the parser is, which is the body level
+  // and not necessarily the boundary's own parent.
+  const body = ownerDocument.body;
+  if (body !== null && !currentWatcher.observed.has(body)) {
+    currentWatcher.observed.add(body);
+    currentWatcher.observer.observe(body, {childList: true});
+  }
+  return () => {
+    if (currentWatcher.byMarker.get(marker) !== notify) {
+      // A later registration for the same boundary took over.
+      return;
+    }
+    currentWatcher.byMarker.delete(marker);
+    if (name !== null) {
+      currentWatcher.byName.delete(name);
+    }
+    if (currentWatcher.byMarker.size === 0) {
+      currentWatcher.observer.disconnect();
+      currentWatcher.observed.clear();
+    }
+  };
 }
 
 export function canHydrateFormStateMarker(
@@ -4425,11 +4672,38 @@ export function isFormStateMarkerMatching(
   return markerInstance.data === FORM_STATE_IS_MATCHING;
 }
 
+// A declarative patch carries its late styles and render-blocking stylesheets inline,
+// so unlike the script path they can sit in the middle of a boundary's body instead of
+// being hoisted to <head>. They are resources owned by the hoisting logic and never a
+// host instance that a component rendered, so hydration has to step over them.
+function isInlineStyleResource(element: Element): boolean {
+  switch (element.nodeName) {
+    case 'LINK':
+      return (
+        element.getAttribute('rel') === 'stylesheet' &&
+        element.hasAttribute('data-precedence')
+      );
+    case 'STYLE':
+      return element.hasAttribute('data-precedence');
+    default:
+      return false;
+  }
+}
+
 function getNextHydratable(node: ?Node) {
   // Skip non-hydratable nodes.
   for (; node != null; node = (node as any as Node).nextSibling) {
     const nodeType = node.nodeType;
-    if (nodeType === ELEMENT_NODE || nodeType === TEXT_NODE) {
+    if (nodeType === ELEMENT_NODE) {
+      if (
+        enableFizzDeclarativePatching &&
+        isInlineStyleResource(node as any as Element)
+      ) {
+        continue;
+      }
+      break;
+    }
+    if (nodeType === TEXT_NODE) {
       break;
     }
     if (nodeType === COMMENT_NODE) {

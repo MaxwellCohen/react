@@ -59,6 +59,8 @@ type Options = {
   importMap?: ImportMap,
   onHeaders?: (headers: Headers) => void,
   maxHeadersLength?: number,
+  // Experimental (enableFizzDeclarativePatching)
+  unstable_declarativePatching?: boolean,
 };
 
 type StaticResult = {
@@ -122,6 +124,7 @@ function prerender(
         options ? options.importMap : undefined,
         onHeadersImpl,
         options ? options.maxHeadersLength : undefined,
+        options ? options.unstable_declarativePatching : undefined,
       ),
       createRootFormatContext(options ? options.namespaceURI : undefined),
       options ? options.progressiveChunkSize : undefined,

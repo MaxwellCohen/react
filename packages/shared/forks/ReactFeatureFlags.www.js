@@ -87,6 +87,7 @@ export const enableLegacyHidden: boolean = true;
 export const disableTextareaChildren = __EXPERIMENTAL__;
 
 export const enableFizzExternalRuntime: boolean = true;
+export const enableFizzDeclarativePatching: boolean = false;
 
 export const passChildrenWhenCloningPersistedNodes: boolean = false;
 
