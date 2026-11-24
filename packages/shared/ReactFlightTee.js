@@ -92,6 +92,9 @@ export type FlightTee = {
   // Stands for an element's own fields when decoding them, keyed by their
   // slot in the wire tuple: props ('3'), owner ('4') and debug stack ('5').
   +_elementFields: Object,
+  // Names the payload (`:P`). Made here, where the framework creates the tee, so the
+  // server's render never has to ask for randomness.
+  +_requestId: number,
   ...
 };
 
