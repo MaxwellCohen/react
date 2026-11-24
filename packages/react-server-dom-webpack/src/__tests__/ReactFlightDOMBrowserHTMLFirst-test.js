@@ -3043,6 +3043,44 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
     });
 
+    describe('markers', () => {
+      const markers = html => html.match(/<!--J[0-9a-f]+:[0-9a-f]+-->/g) || [];
+
+      it('are written only for stubs React can discard before it adopts them', async () => {
+        const Counter = clientExports(function Counter() {
+          return <button>count</button>;
+        });
+        // A Client Component that shows its children in an Activity boundary.
+        const Show = clientExports(function Show({children}) {
+          return <React.Activity mode="visible">{children}</React.Activity>;
+        });
+        const App = () => (
+          <main>
+            <Counter />
+            <p>{'outside' + FILL}</p>
+            <React.Suspense fallback={<i>loading</i>}>
+              <p>{'in-suspense' + FILL}</p>
+            </React.Suspense>
+            <Show>
+              <div>
+                <p>{'in-activity' + FILL}</p>
+              </div>
+            </Show>
+          </main>
+        );
+        const {main, html} = await renderWithTee(<App />);
+        expect(main.match(/\$J[0-9a-f]+:/g).length).toBe(3);
+        const found = markers(html);
+        expect(found.length).toBe(2);
+        const after = marker =>
+          html.slice(html.indexOf(marker) + marker.length);
+        expect(after(found[0]).startsWith('<p>in-suspense')).toBe(true);
+        expect(after(found[1]).startsWith('<p>in-activity')).toBe(true);
+        expect(html).toContain('<p>outside');
+        expect(html).not.toMatch(/<!--J[0-9a-f]+:[0-9a-f]+--><p>outside/);
+      });
+    });
+
     describe('nesting that the HTML parser rewrites', () => {
       beforeEach(() => {
         // React warns about invalid nesting in development.
