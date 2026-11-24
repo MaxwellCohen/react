@@ -188,7 +188,9 @@ import {
   enableViewTransitionParentEnterExit,
   enableFizzBlockingRender,
   enableCPUSuspense,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
+import {markStubbedRendered} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import assign from 'shared/assign';
 import noop from 'shared/noop';
@@ -3412,6 +3414,33 @@ function replayElement(
   }
   // We didn't find any matching nodes. We assume that this element was already
   // rendered in the prelude and skip it.
+  if (enableFlightHTMLFirst) {
+    markStubsInPrelude(props.children, type);
+  }
+}
+
+// enableFlightHTMLFirst: the stubs of a Flight response that sit in host
+// position below an element the prelude contains are in the prelude's HTML. Not
+// the props of a Client Component: they may never render.
+function markStubsInPrelude(node: any, type: any): void {
+  if (
+    typeof type !== 'string' &&
+    type !== REACT_FRAGMENT_TYPE &&
+    type !== REACT_SUSPENSE_TYPE
+  ) {
+    return;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      markStubsInPrelude(node[i], type);
+    }
+  } else if (node !== null && typeof node === 'object') {
+    if (node.$$typeof === REACT_LAZY_TYPE) {
+      markStubbedRendered(node);
+    } else if (node.$$typeof === REACT_ELEMENT_TYPE) {
+      markStubsInPrelude(node.props.children, node.type);
+    }
+  }
 }
 
 function validateIterable(

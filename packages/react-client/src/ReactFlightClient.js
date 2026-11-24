@@ -52,9 +52,13 @@ import {
 import {
   claimStubbedRowsRegistry,
   releaseStubbedRowsRegistry,
+  initStubbedRendered,
 } from 'shared/ReactFlightHTMLFirstRegistry';
 import {canUseDOM} from 'shared/ExecutionEnvironment';
-import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
+import type {
+  StubbedRowsEntry,
+  StubbedRenderedPayload,
+} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import {
   resolveClientReference,
@@ -3073,23 +3077,6 @@ function getLateStubbedRow(response: Response, id: number): null | React$Node {
     return null;
   }
   return createLazyChunkWrapper(chunk, 0) as any;
-}
-
-// Rendered in place of the stub by the consumer that claimed the rows (the one
-// that renders HTML), in the slot StaticStub takes in the browser. It is a lazy
-// node: Fizz resolves it only when it renders that position, which records
-// that the HTML contains this row. The server sends the rows that were never
-// rendered to the browser once this consumer settles. A lazy node costs far
-// less than a component render per row.
-type StubbedRenderedPayload = {
-  entry: StubbedRowsEntry,
-  id: number,
-  model: any,
-};
-
-function initStubbedRendered(payload: StubbedRenderedPayload): any {
-  payload.entry.rendered.add(payload.id);
-  return payload.model;
 }
 
 function createStubbedRenderedElement(

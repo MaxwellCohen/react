@@ -2424,4 +2424,159 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       }
     });
   });
+
+  describe('PPR prerender and resume', () => {
+    let prerendering;
+    let hole;
+
+    function makeApp(shape) {
+      const Counter = clientExports(function Counter() {
+        const [n, setN] = React.useState(0);
+        return <button onClick={() => setN(n + 1)}>n:{n}</button>;
+      });
+      const Dynamic = clientExports(function Dynamic() {
+        if (prerendering) {
+          use(hole);
+        }
+        return <p>dynamic-content</p>;
+      });
+      const big = (
+        <table className="data">
+          <tbody>
+            {Array.from({length: 20}, (_, i) => (
+              <tr key={i}>
+                <td>{'static-row-' + i}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+      if (shape === 'sibling') {
+        return () => (
+          <main>
+            <h1>sibling-static</h1>
+            <Counter />
+            <React.Suspense fallback={<i>loading</i>}>
+              <Dynamic />
+            </React.Suspense>
+          </main>
+        );
+      }
+      return () => (
+        <main>
+          <section>
+            <Counter />
+            {big}
+          </section>
+          <React.Suspense fallback={<i>loading</i>}>
+            <Dynamic />
+          </React.Suspense>
+        </main>
+      );
+    }
+
+    // Flight renders the page and SSR claims its stubbed rows, once for the
+    // prerender and once more for the resume. Returns the browser's payload.
+    async function flightAndFizz(App, renderHTML) {
+      let main;
+      let result;
+      await serverAct(async () => {
+        const [forSsr, forBrowser] =
+          ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+            htmlFirst: true,
+          }).tee();
+        const browser = readAll(forBrowser);
+        const response = ReactServerDOMClient.createFromReadableStream(forSsr);
+        result = await renderHTML(<Shell response={response} />);
+        main = await browser;
+      });
+      return {main, result};
+    }
+
+    async function prerenderAndResume(shape) {
+      const App = makeApp(shape);
+      const ReactDOMFizzStatic = require('react-dom/static.browser');
+      hole = new Promise(() => {});
+      prerendering = true;
+      const controller = new AbortController();
+      const first = await flightAndFizz(App, async element => {
+        const pending = ReactDOMFizzStatic.prerender(element, {
+          signal: controller.signal,
+          onError() {},
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        controller.abort();
+        return pending;
+      });
+      const {prelude, postponed} = first.result;
+      expect(postponed).not.toBe(null);
+      const preludeHTML = await readAll(prelude);
+      expect(preludeHTML).toContain('loading');
+      expect(preludeHTML).not.toContain('dynamic-content');
+
+      prerendering = false;
+      const second = await flightAndFizz(App, async element =>
+        ReactDOMFizzServer.resume(
+          element,
+          JSON.parse(JSON.stringify(postponed)),
+          {
+            onError() {},
+          },
+        ),
+      );
+      const resumeHTML = await readAll(second.result);
+      return {preludeHTML, resumeHTML, main: second.main};
+    }
+
+    async function hydrateResumed({preludeHTML, resumeHTML, main}) {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const temp = document.createElement('div');
+      temp.innerHTML = preludeHTML + resumeHTML;
+      await act(async () => {
+        await insertNodesAndExecuteScripts(temp, container, null);
+        jest.runAllTimers();
+      });
+      const missing = jest.fn();
+      const errors = [];
+      const response = consume(main, undefined, {onMissingHTML: missing});
+      await response;
+      await act(() => {
+        ReactDOMClient.hydrateRoot(container, <Shell response={response} />, {
+          onUncaughtError: e => errors.push('uncaught: ' + e.message),
+          onCaughtError: e => errors.push('caught: ' + e.message),
+          onRecoverableError: e => errors.push('recoverable: ' + e.message),
+        });
+      });
+      return {container, missing, errors};
+    }
+
+    it('keeps static content of the prelude out of the resume payload (sibling of the hole)', async () => {
+      const out = await prerenderAndResume('sibling');
+      expect(out.preludeHTML).toContain('sibling-static');
+      expect(out.main).not.toContain('sibling-static');
+      const {container, missing, errors} = await hydrateResumed(out);
+      expect(errors).toEqual([]);
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('sibling-static');
+      expect(container.textContent).toContain('dynamic-content');
+      const button = container.querySelector('button');
+      await act(() => button.click());
+      expect(button.textContent).toBe('n:1');
+    });
+
+    it('keeps static content of the prelude out of the resume payload (section off the replay path)', async () => {
+      const out = await prerenderAndResume('section');
+      expect(out.preludeHTML).toContain('static-row-19');
+      expect(out.main).not.toContain('static-row-19');
+      const {container, missing, errors} = await hydrateResumed(out);
+      expect(errors).toEqual([]);
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.querySelectorAll('tr').length).toBe(20);
+      expect(container.textContent).toContain('dynamic-content');
+      const button = container.querySelector('button');
+      await act(() => button.click());
+      expect(button.textContent).toBe('n:1');
+    });
+  });
 });

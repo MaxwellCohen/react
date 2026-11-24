@@ -133,3 +133,30 @@ export function releaseStubbedRowsWhenCollected(
     releaseWhenCollected.register(owner, requestId);
   }
 }
+
+// Rendered in place of a stub by the consumer that claimed the rows (the one
+// that renders HTML), in the slot StaticStub takes in the browser. It is a lazy
+// node: Fizz resolves it only when it renders that position, which records
+// that the HTML contains this row. A lazy node costs far less than a component
+// render per row.
+export type StubbedRenderedPayload = {
+  entry: StubbedRowsEntry,
+  id: number,
+  model: any,
+};
+
+export function initStubbedRendered(payload: StubbedRenderedPayload): any {
+  payload.entry.rendered.add(payload.id);
+  return payload.model;
+}
+
+// Fizz skips an element that the prelude of a resumed render already contains,
+// without resolving what is inside it. The stubs among its host-position
+// children are in that HTML all the same, so Fizz calls this for each lazy it
+// finds there. It never initializes a lazy that is not one of ours.
+export function markStubbedRendered(node: any): void {
+  if (node._init === initStubbedRendered) {
+    const payload: StubbedRenderedPayload = node._payload;
+    payload.entry.rendered.add(payload.id);
+  }
+}
