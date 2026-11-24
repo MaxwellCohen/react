@@ -1198,6 +1198,19 @@ export function pushTextInstance(
   return true;
 }
 
+const startStubMarker = stringToPrecomputedChunk('<!--J');
+const endStubMarker = stringToPrecomputedChunk('-->');
+
+// enableFlightHTMLFirst: names the stub whose DOM follows. The marker is
+// made of letters, digits and a dot, so it needs no escaping.
+export function pushStubMarker(
+  target: Array<Chunk | PrecomputedChunk>,
+  marker: string,
+  renderState: RenderState,
+): void {
+  target.push(startStubMarker, stringToChunk(marker), endStubMarker);
+}
+
 // Called when Fizz is done with a Segment. Currently the only purpose is to conditionally
 // emit a text separator when we don't know for sure it is safe to omit
 export function pushSegmentFinale(

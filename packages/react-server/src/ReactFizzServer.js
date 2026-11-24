@@ -74,6 +74,7 @@ import {
   writeCompletedSegmentInstruction,
   writeHoistablesForBoundary,
   pushTextInstance,
+  pushStubMarker,
   pushStartInstance,
   pushEndInstance,
   pushSegmentFinale,
@@ -188,7 +189,12 @@ import {
   enableViewTransitionParentEnterExit,
   enableFizzBlockingRender,
   enableCPUSuspense,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
+import {
+  markStubbedRendered,
+  getStubbedRenderedMarker,
+} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import assign from 'shared/assign';
 import noop from 'shared/noop';
@@ -3412,6 +3418,33 @@ function replayElement(
   }
   // We didn't find any matching nodes. We assume that this element was already
   // rendered in the prelude and skip it.
+  if (enableFlightHTMLFirst) {
+    markStubsInPrelude(props.children, type);
+  }
+}
+
+// enableFlightHTMLFirst: the stubs of a Flight response that sit in host
+// position below an element the prelude contains are in the prelude's HTML. Not
+// the props of a Client Component: they may never render. Not a Suspense
+// boundary either: one that errored is client rendered, so the prelude only has
+// its fallback.
+function markStubsInPrelude(node: any, type: any): void {
+  if (typeof type !== 'string' && type !== REACT_FRAGMENT_TYPE) {
+    return;
+  }
+  if (node === null || typeof node !== 'object') {
+    return;
+  }
+  const $$typeof = node.$$typeof;
+  if ($$typeof === REACT_LAZY_TYPE) {
+    markStubbedRendered(node);
+  } else if ($$typeof === REACT_ELEMENT_TYPE) {
+    markStubsInPrelude(node.props.children, node.type);
+  } else if (isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      markStubsInPrelude(node[i], type);
+    }
+  }
 }
 
 function validateIterable(
@@ -3655,6 +3688,14 @@ function retryNode(request: Request, task: Task): void {
         if (request.aborted) {
           // eslint-disable-next-line no-throw-literal
           throw null;
+        }
+        if (enableFlightHTMLFirst) {
+          const segment = task.blockedSegment;
+          const marker =
+            segment === null ? null : getStubbedRenderedMarker(lazyNode);
+          if (segment !== null && marker !== null) {
+            pushStubMarker(segment.chunks, marker, request.renderState);
+          }
         }
         // Now we render the resolved node
         renderNodeDestructive(request, task, resolvedNode, childIndex);

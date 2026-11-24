@@ -2424,4 +2424,587 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       }
     });
   });
+
+  describe('PPR prerender and resume', () => {
+    let prerendering;
+    let hole;
+
+    function makeApp(shape) {
+      const Counter = clientExports(function Counter() {
+        const [n, setN] = React.useState(0);
+        return <button onClick={() => setN(n + 1)}>n:{n}</button>;
+      });
+      const Dynamic = clientExports(function Dynamic() {
+        if (prerendering) {
+          use(hole);
+        }
+        return <p>dynamic-content</p>;
+      });
+      const big = (
+        <table className="data">
+          <tbody>
+            {Array.from({length: 20}, (_, i) => (
+              <tr key={i}>
+                <td>{'static-row-' + i}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+      if (shape === 'errored') {
+        const Boom = clientExports(function Boom() {
+          if (prerendering) {
+            throw new Error('boom');
+          }
+          return <b>boom-ok</b>;
+        });
+        return () => (
+          <main>
+            <Counter />
+            <React.Suspense fallback={<i>errored-fallback</i>}>
+              <Boom />
+              <section>errored-static-block</section>
+            </React.Suspense>
+            <React.Suspense fallback={<i>loading</i>}>
+              <Dynamic />
+            </React.Suspense>
+          </main>
+        );
+      }
+      if (shape === 'sibling') {
+        return () => (
+          <main>
+            <h1>sibling-static</h1>
+            <Counter />
+            <React.Suspense fallback={<i>loading</i>}>
+              <Dynamic />
+            </React.Suspense>
+          </main>
+        );
+      }
+      return () => (
+        <main>
+          <section>
+            <Counter />
+            {big}
+          </section>
+          <React.Suspense fallback={<i>loading</i>}>
+            <Dynamic />
+          </React.Suspense>
+        </main>
+      );
+    }
+
+    // Flight renders the page and SSR claims its stubbed rows, once for the
+    // prerender and once more for the resume. Returns the browser's payload.
+    async function flightAndFizz(App, renderHTML) {
+      let main;
+      let result;
+      await serverAct(async () => {
+        const [forSsr, forBrowser] =
+          ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+            htmlFirst: true,
+          }).tee();
+        const browser = readAll(forBrowser);
+        const response = ReactServerDOMClient.createFromReadableStream(forSsr);
+        result = await renderHTML(<Shell response={response} />);
+        main = await browser;
+      });
+      return {main, result};
+    }
+
+    async function prerenderAndResume(shape) {
+      const App = makeApp(shape);
+      const ReactDOMFizzStatic = require('react-dom/static.browser');
+      hole = new Promise(() => {});
+      prerendering = true;
+      const controller = new AbortController();
+      const first = await flightAndFizz(App, async element => {
+        const pending = ReactDOMFizzStatic.prerender(element, {
+          signal: controller.signal,
+          onError() {},
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        controller.abort();
+        return pending;
+      });
+      const {prelude, postponed} = first.result;
+      expect(postponed).not.toBe(null);
+      const preludeHTML = await readAll(prelude);
+      expect(preludeHTML).toContain('loading');
+      expect(preludeHTML).not.toContain('dynamic-content');
+
+      prerendering = false;
+      const second = await flightAndFizz(App, async element =>
+        ReactDOMFizzServer.resume(
+          element,
+          JSON.parse(JSON.stringify(postponed)),
+          {
+            onError() {},
+          },
+        ),
+      );
+      const resumeHTML = await readAll(second.result);
+      return {preludeHTML, resumeHTML, main: second.main};
+    }
+
+    async function hydrateResumed({preludeHTML, resumeHTML, main}) {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const temp = document.createElement('div');
+      temp.innerHTML = preludeHTML + resumeHTML;
+      await act(async () => {
+        await insertNodesAndExecuteScripts(temp, container, null);
+        jest.runAllTimers();
+      });
+      const missing = jest.fn();
+      const errors = [];
+      const response = consume(main, undefined, {onMissingHTML: missing});
+      await response;
+      await act(() => {
+        ReactDOMClient.hydrateRoot(container, <Shell response={response} />, {
+          onUncaughtError: e => errors.push('uncaught: ' + e.message),
+          onCaughtError: e => errors.push('caught: ' + e.message),
+          onRecoverableError: e => errors.push('recoverable: ' + e.message),
+        });
+      });
+      return {container, missing, errors};
+    }
+
+    it('keeps static content of the prelude out of the resume payload (sibling of the hole)', async () => {
+      const out = await prerenderAndResume('sibling');
+      expect(out.preludeHTML).toContain('sibling-static');
+      expect(out.main).not.toContain('sibling-static');
+      const {container, missing, errors} = await hydrateResumed(out);
+      expect(errors).toEqual([]);
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('sibling-static');
+      expect(container.textContent).toContain('dynamic-content');
+      const button = container.querySelector('button');
+      await act(() => button.click());
+      expect(button.textContent).toBe('n:1');
+    });
+
+    it('sends the static content of a boundary the prelude client rendered', async () => {
+      const out = await prerenderAndResume('errored');
+      expect(out.preludeHTML).toContain('errored-fallback');
+      expect(out.preludeHTML).not.toContain('errored-static-block');
+      // Its content is not in the prelude, so its row goes to the browser.
+      expect(out.main).toContain('errored-static-block');
+      const {container, missing} = await hydrateResumed(out);
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('errored-static-block');
+      expect(container.textContent).toContain('boom-ok');
+      expect(container.textContent).toContain('dynamic-content');
+    });
+
+    it('keeps static content of the prelude out of the resume payload (section off the replay path)', async () => {
+      const out = await prerenderAndResume('section');
+      expect(out.preludeHTML).toContain('static-row-19');
+      expect(out.main).not.toContain('static-row-19');
+      const {container, missing, errors} = await hydrateResumed(out);
+      expect(errors).toEqual([]);
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.querySelectorAll('tr').length).toBe(20);
+      expect(container.textContent).toContain('dynamic-content');
+      const button = container.querySelector('button');
+      await act(() => button.click());
+      expect(button.textContent).toBe('n:1');
+    });
+  });
+
+  describe('server DOM that React discarded before a stub adopted it', () => {
+    // The framework's setup: the stream goes to SSR and the browser alike.
+    async function flightAndHTML(element, htmlFirst = true) {
+      let main;
+      let html;
+      await serverAct(async () => {
+        const [forSsr, forBrowser] =
+          ReactServerDOMServer.renderToReadableStream(element, webpackMap, {
+            htmlFirst,
+          }).tee();
+        const browser = readAll(forBrowser);
+        const response = ReactServerDOMClient.createFromReadableStream(forSsr);
+        const htmlStream = await ReactDOMFizzServer.renderToReadableStream(
+          <Shell response={response} />,
+        );
+        await htmlStream.allReady;
+        html = await readAll(htmlStream);
+        main = await browser;
+      });
+      return {main, html};
+    }
+
+    const withoutMarkers = html => html.replace(/<!--J[0-9a-z.]+-->/g, '');
+
+    it('marks each stub in the HTML without changing the text around it', async () => {
+      const Client = clientExports(function Client() {
+        return <i>client</i>;
+      });
+      const App = () => (
+        <div>
+          <Client />
+          {'before'}
+          <p>stub-1</p>
+          {'after'}
+          {'adjacent'}
+          <p>stub-2</p>
+          <p>stub-3</p>
+          {'end'}
+        </div>
+      );
+      const on = await flightAndHTML(<App />);
+      const off = await flightAndHTML(<App />, false);
+      expect(on.html.match(/<!--J[0-9a-z]+\.[0-9a-z]+-->/g).length).toBe(3);
+      expect(withoutMarkers(on.html)).toBe(off.html);
+      expect(on.main).not.toContain('stub-1');
+      const missing = jest.fn();
+      const {container, errors} = await hydrate(on.main, on.html, {
+        onMissingHTML: missing,
+      });
+      const p = container.querySelector('p');
+      expect(container.innerHTML).toBe(on.html);
+      expect(missing).not.toHaveBeenCalled();
+      expect(errors).toEqual([]);
+      expect(container.querySelector('p')).toBe(p);
+    });
+
+    [true, false].forEach(provide =>
+      it(
+        'rebuilds a stub whose boundary React client-renders before it hydrates (onMissingHTML ' +
+          (provide ? 'provided' : 'not provided') +
+          ')',
+        async () => {
+          let onServer = true;
+          let setV;
+          let gateResolve;
+          const gate = new Promise(r => (gateResolve = r));
+          const Ctx = React.createContext(0);
+          const Provider = clientExports(function Provider({children}) {
+            const [v, sv] = React.useState(0);
+            setV = sv;
+            return <Ctx.Provider value={v}>{children}</Ctx.Provider>;
+          });
+          const Reader = clientExports(function Reader() {
+            const v = React.useContext(Ctx);
+            if (!onServer) {
+              use(gate);
+            }
+            return <b>v:{v}</b>;
+          });
+          const App = () => (
+            <Provider>
+              <React.Suspense fallback={<i>loading</i>}>
+                <p>static-a</p>
+                <Reader />
+                <p>static-b</p>
+              </React.Suspense>
+            </Provider>
+          );
+          const {main, html} = await flightAndHTML(<App />);
+          expect(main).not.toContain('static-a');
+          onServer = false;
+          Ctx._currentRenderer = null;
+          Ctx._currentRenderer2 = null;
+          const missing = jest.fn();
+          const {container} = await hydrate(
+            main,
+            html,
+            provide ? {onMissingHTML: missing} : undefined,
+          );
+          // The context changes before the dehydrated boundary hydrates, so
+          // React renders it on the client and throws the server DOM away.
+          await act(() => setV(1));
+          await act(async () => {
+            gateResolve();
+          });
+          expect(missing).not.toHaveBeenCalled();
+          expect(container.textContent).toContain('static-a');
+          expect(container.textContent).toContain('static-b');
+          expect(container.textContent).toContain('v:1');
+        },
+      ),
+    );
+
+    it('rebuilds a stub from DOM that React already removed', async () => {
+      let snapshot = false;
+      const listeners = new Set();
+      const subscribe = l => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      };
+      const Gate = clientExports(function Gate({children}) {
+        const show = React.useSyncExternalStore(
+          subscribe,
+          () => snapshot,
+          () => true,
+        );
+        return show ? children : null;
+      });
+      const App = () => (
+        <Gate>
+          <React.Suspense fallback={<i>loading</i>}>
+            <section>
+              <p>ten-static</p>
+            </section>
+          </React.Suspense>
+        </Gate>
+      );
+      const {main, html} = await flightAndHTML(<App />);
+      expect(html).toContain('ten-static');
+      expect(main).not.toContain('ten-static');
+      const missing = jest.fn();
+      const {container} = await hydrate(main, html, {onMissingHTML: missing});
+      // The server snapshot shows the boundary, the client's does not: it
+      // is removed from the document.
+      expect(container.textContent).toBe('');
+      snapshot = true;
+      await act(() => listeners.forEach(l => l()));
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.innerHTML).toBe('<section><p>ten-static</p></section>');
+    });
+  });
+
+  describe('nesting that the HTML parser rewrites', () => {
+    // The payload with HTML-first on and off, rendered from one call site so
+    // that debug info is the same.
+    async function payloads(App) {
+      const render = htmlFirst =>
+        serverAct(() =>
+          readAll(
+            ReactServerDOMServer.renderToReadableStream(<App />, webpackMap, {
+              htmlFirst,
+            }),
+          ),
+        );
+      const on = await render(true);
+      const off = await render(false);
+      // The model of the root. The other rows are debug info.
+      const root = text => text.match(/^0:[^D].*$/m)[0];
+      return {on: root(on), off: root(off)};
+    }
+
+    const invalid = {
+      'a block in a p': {
+        tag: 'div',
+        App: () => (
+          <section>
+            <p>
+              <div>x</div>
+            </p>
+          </section>
+        ),
+      },
+      'a block in an inline element in a p': {
+        tag: 'ul',
+        App: () => (
+          <section>
+            <p>
+              <span>
+                <ul>
+                  <li>x</li>
+                </ul>
+              </span>
+            </p>
+          </section>
+        ),
+      },
+      'a p in a p': {
+        tag: 'p',
+        App: () => (
+          <section>
+            <p>
+              a<p>b</p>
+            </p>
+          </section>
+        ),
+      },
+      'a table in a p': {
+        tag: 'table',
+        App: () => (
+          <section>
+            <p>
+              <table>
+                <tbody>
+                  <tr>
+                    <td>x</td>
+                  </tr>
+                </tbody>
+              </table>
+            </p>
+          </section>
+        ),
+      },
+      'an a in an a': {
+        tag: 'a',
+        App: () => (
+          <section>
+            <a href="/1">
+              a<span>{<a href="/2">b</a>}</span>
+            </a>
+          </section>
+        ),
+      },
+      'a tr in a table': {
+        tag: 'tr',
+        App: () => (
+          <section>
+            <table>
+              <tr>
+                <td>x</td>
+              </tr>
+            </table>
+          </section>
+        ),
+      },
+      'text in a table': {
+        tag: 'tr',
+        App: () => (
+          <section>
+            <table>
+              <tbody>
+                <tr>x</tr>
+              </tbody>
+            </table>
+          </section>
+        ),
+      },
+      'a div in a tr': {
+        tag: 'div',
+        App: () => (
+          <section>
+            <table>
+              <tbody>
+                <tr>
+                  <div>x</div>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        ),
+      },
+      'a td in a div': {
+        tag: 'td',
+        App: () => (
+          <section>
+            <div>
+              <td>x</td>
+            </div>
+          </section>
+        ),
+      },
+      'an li in an li': {
+        tag: 'li',
+        App: () => (
+          <section>
+            <ul>
+              <li>
+                a<li>b</li>
+              </li>
+            </ul>
+          </section>
+        ),
+      },
+      'a heading in a heading': {
+        tag: 'h2',
+        App: () => (
+          <section>
+            <h1>
+              a<h2>b</h2>
+            </h1>
+          </section>
+        ),
+      },
+      'an image element': {
+        tag: 'image',
+        App: () => (
+          <section>
+            <image />
+          </section>
+        ),
+      },
+    };
+    Object.keys(invalid).forEach(name => {
+      it('does not stub ' + name, async () => {
+        const {on} = await payloads(invalid[name].App);
+        // The element the parser rewrites is in the payload as it is.
+        expect(on).toContain('["$","' + invalid[name].tag + '"');
+      });
+    });
+
+    it('does not stub what the parent of a Client Component sibling would rewrite', async () => {
+      const Client = clientExports(function Client() {
+        return <i>client</i>;
+      });
+      const {on} = await payloads(() => (
+        <section>
+          <Client />
+          <p>
+            <div>block-in-p</div>
+          </p>
+          <table>
+            <tr>
+              <td>tr-in-table</td>
+            </tr>
+          </table>
+        </section>
+      ));
+      expect(on).toContain('["$","div"');
+      expect(on).toContain('["$","tr"');
+    });
+
+    it('still stubs valid nesting that looks alike', async () => {
+      const {on} = await payloads(() => (
+        <section>
+          <p>
+            <span>
+              <b>a</b>
+            </span>
+          </p>
+          <ul>
+            <li>
+              <ul>
+                <li>nested</li>
+              </ul>
+            </li>
+          </ul>
+          <table>
+            <thead>
+              <tr>
+                <th>h</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <p>in a cell</p>
+                  <a href="/1">
+                    <b>x</b>
+                  </a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <a href="/2">
+            <table>
+              <tbody>
+                <tr>
+                  <td>
+                    <a href="/3">in a cell in a link</a>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </a>
+          <dl>
+            <dt>t</dt>
+            <dd>d</dd>
+          </dl>
+        </section>
+      ));
+      expect(on).toContain('$J');
+      expect(on).not.toContain('nested');
+      expect(on).not.toContain('in a cell in a link');
+    });
+  });
 });

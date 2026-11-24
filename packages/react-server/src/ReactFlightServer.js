@@ -719,7 +719,7 @@ export type Request = {
   stubbedEnd: 0 | 1 | 2, // nothing yet, `:q` emitted, `:q` written
   stubbedTimeout: null | TimeoutID,
   // enableFlightHTMLFirst: memoized isStaticHostNode results.
-  staticHostCache: null | WeakMap<any, boolean>,
+  staticHostCache: null | WeakMap<any, number>,
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
   ledgers: null | RequestLedgers,
@@ -3606,6 +3606,8 @@ function resolveModelChildren(
   const isElementProps =
     trackHostPosition && (rendered as any) === elementProps;
   const childrenInHostPosition = elementChildrenInHostPosition;
+  const prevParentTag = hostParentTag;
+  const prevForbidden = hostForbidden;
   for (const key in rendered) {
     if (hasOwnProperty.call(rendered, key)) {
       if (trackHostPosition && isElementProps) {
@@ -3614,6 +3616,8 @@ function resolveModelChildren(
         // tree, e.g. {page, layout} or {tree: {data: {rsc}}}) keeps the
         // position it is in: the framework renders those elements in place.
         hostPosition = key === 'children' ? childrenInHostPosition : false;
+        hostParentTag = key === 'children' ? elementChildrenParentTag : null;
+        hostForbidden = key === 'children' ? elementChildrenForbidden : 0;
       }
       let resolvedValue;
       try {
@@ -3626,6 +3630,8 @@ function resolveModelChildren(
         );
       } finally {
         hostPosition = prevHostPosition;
+        hostParentTag = prevParentTag;
+        hostForbidden = prevForbidden;
       }
       if (key === __PROTO__) {
         // Match JSON's ordinary data-property semantics for this legacy key.
@@ -3652,6 +3658,8 @@ function resolveElementTuple(
 ): ReactJSONValue {
   const prevProps = elementProps;
   const prevChildrenInHostPosition = elementChildrenInHostPosition;
+  const prevChildrenParentTag = elementChildrenParentTag;
+  const prevChildrenForbidden = elementChildrenForbidden;
   const prevHostPosition = hostPosition;
   const resolved: Array<ReactJSONValue> = [];
   try {
@@ -3667,12 +3675,32 @@ function resolveElementTuple(
             rendered[1] === REACT_FRAGMENT_TYPE ||
             rendered[1] === REACT_SUSPENSE_TYPE ||
             isClientReference(rendered[1]));
+        // What the children of a host element are in (see isRewrittenChild).
+        // Fragments and Suspense don't have DOM of their own, anything else
+        // is unknown.
+        const type = rendered[1];
+        if (typeof type === 'string') {
+          elementChildrenParentTag = type;
+          elementChildrenForbidden =
+            (hostForbidden & ~nestingShields(type)) | nestingForbids(type);
+        } else if (
+          type === REACT_FRAGMENT_TYPE ||
+          type === REACT_SUSPENSE_TYPE
+        ) {
+          elementChildrenParentTag = hostParentTag;
+          elementChildrenForbidden = hostForbidden;
+        } else {
+          elementChildrenParentTag = null;
+          elementChildrenForbidden = 0;
+        }
       }
       resolved[i] = resolveModel(request, task, rendered, '' + i, rendered[i]);
     }
   } finally {
     elementProps = prevProps;
     elementChildrenInHostPosition = prevChildrenInHostPosition;
+    elementChildrenParentTag = prevChildrenParentTag;
+    elementChildrenForbidden = prevChildrenForbidden;
     hostPosition = prevHostPosition;
   }
   return resolved;
@@ -4347,6 +4375,8 @@ const nonStubbableTags = new Set([
   'track',
   'dialog',
   'details',
+  // The parser turns it into an <img>.
+  'image',
 ]);
 
 // Void elements can't take the stub's dangerouslySetInnerHTML, and a stub
@@ -4409,41 +4439,247 @@ function isStaticPropValue(value: any): boolean {
   return false;
 }
 
-function isStaticHostNode(cache: WeakMap<any, boolean>, node: any): boolean {
+// The HTML parser rewrites some nestings of valid element names: a block
+// closes the <p> it is in, an <a> in an <a> starts a new one, a <tr> under a
+// <table> gets a <tbody>. React hydrates what it rendered against what the
+// parser made of it and recovers from the difference. A stub adopts whatever
+// is there, so a subtree with such a nesting is not stubbed, and renders and
+// recovers like it does without HTML-first. (validateDOMNesting reports more.)
+//
+// For each element, isStaticHostNode computes which of these it contains, as
+// NEST_* bits: what a surrounding <p>, <a>, <li> or <dd> would not allow below
+// it. A scope element (a table cell, ...) keeps what is in it from reaching
+// further out.
+const NEST_P = 1;
+const NEST_A = 2;
+const NEST_LI = 4;
+const NEST_DD = 8;
+const NOT_STATIC = -1;
+
+const closesP = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'center',
+  'details',
+  'dialog',
+  'dir',
+  'div',
+  'dd',
+  'dl',
+  'dt',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hgroup',
+  'hr',
+  'li',
+  'listing',
+  'main',
+  'menu',
+  'nav',
+  'ol',
+  'p',
+  'plaintext',
+  'pre',
+  'search',
+  'section',
+  'summary',
+  'table',
+  'ul',
+  'xmp',
+]);
+
+const nestingScopes = new Set([
+  'applet',
+  'button',
+  'caption',
+  'html',
+  'marquee',
+  'object',
+  'table',
+  'td',
+  'template',
+  'th',
+]);
+
+function nestingBits(tag: string): number {
+  return (
+    (closesP.has(tag) ? NEST_P : 0) |
+    (tag === 'a' ? NEST_A : 0) |
+    (tag === 'li' ? NEST_LI : 0) |
+    (tag === 'dd' || tag === 'dt' ? NEST_DD : 0)
+  );
+}
+
+// What an open element with this tag does not allow below it.
+function nestingForbids(tag: string): number {
+  return (
+    (tag === 'p' ? NEST_P : 0) |
+    (tag === 'a' ? NEST_A : 0) |
+    (tag === 'li' ? NEST_LI : 0) |
+    (tag === 'dd' || tag === 'dt' ? NEST_DD : 0)
+  );
+}
+
+// What does not reach out of an element with this tag.
+function nestingShields(tag: string): number {
+  if (nestingScopes.has(tag)) {
+    return NEST_P | NEST_A | NEST_LI | NEST_DD;
+  }
+  return (
+    (tag === 'ul' || tag === 'ol' ? NEST_LI : 0) | (tag === 'dl' ? NEST_DD : 0)
+  );
+}
+
+function isHeadingTag(tag: string): boolean {
+  return (
+    tag.length === 2 &&
+    tag.charCodeAt(0) === 104 /* h */ &&
+    tag[1] >= '1' &&
+    tag[1] <= '6'
+  );
+}
+
+function isTableContent(tag: string): boolean {
+  return (
+    tag === 'table' ||
+    tag === 'thead' ||
+    tag === 'tbody' ||
+    tag === 'tfoot' ||
+    tag === 'tr' ||
+    tag === 'colgroup'
+  );
+}
+
+// Whether the parser moves or repairs a `tag` that is a direct child of
+// `parentTag`.
+function isRewrittenChild(parentTag: string, tag: string): boolean {
+  switch (parentTag) {
+    case 'table':
+      return !(
+        tag === 'caption' ||
+        tag === 'colgroup' ||
+        tag === 'thead' ||
+        tag === 'tbody' ||
+        tag === 'tfoot' ||
+        tag === 'style' ||
+        tag === 'script' ||
+        tag === 'template'
+      );
+    case 'thead':
+    case 'tbody':
+    case 'tfoot':
+      return !(
+        tag === 'tr' ||
+        tag === 'style' ||
+        tag === 'script' ||
+        tag === 'template'
+      );
+    case 'tr':
+      return !(
+        tag === 'td' ||
+        tag === 'th' ||
+        tag === 'style' ||
+        tag === 'script' ||
+        tag === 'template'
+      );
+    case 'colgroup':
+      return !(tag === 'col' || tag === 'template');
+  }
+  return (
+    (isHeadingTag(parentTag) && isHeadingTag(tag)) ||
+    // These are dropped outside of a table.
+    tag === 'caption' ||
+    tag === 'col' ||
+    tag === 'colgroup' ||
+    tag === 'tbody' ||
+    tag === 'td' ||
+    tag === 'tfoot' ||
+    tag === 'th' ||
+    tag === 'thead' ||
+    tag === 'tr'
+  );
+}
+
+// The parent of the element that is being resolved, and what its ancestors do
+// not allow below them. Unknown (null, 0) when the parent is not a host
+// element of this request, e.g. a Client Component.
+let hostParentTag: null | string = null;
+let hostForbidden = 0;
+let elementChildrenParentTag: null | string = null;
+let elementChildrenForbidden = 0;
+
+// The NEST_* bits of a node that React renders in place of a host element,
+// or NOT_STATIC if it is not static, or if the parser would rewrite it where
+// it is, as a child of a `parentTag` element.
+function isStaticHostNode(
+  cache: WeakMap<any, number>,
+  node: any,
+  parentTag: null | string,
+): number {
   if (node === null || node === undefined) {
-    return true;
+    return 0;
   }
   const t = typeof node;
   if (t === 'string' || t === 'number' || t === 'boolean') {
-    return true;
+    if (
+      parentTag !== null &&
+      isTableContent(parentTag) &&
+      (t === 'number' || (t === 'string' && /[^ \t\n\f\r]/.test(node)))
+    ) {
+      // Text in a table is moved out of it.
+      return NOT_STATIC;
+    }
+    return 0;
   }
   if (isArray(node)) {
+    let bits = 0;
     for (let i = 0; i < node.length; i++) {
-      if (!isStaticHostNode(cache, node[i])) {
-        return false;
+      const childBits = isStaticHostNode(cache, node[i], parentTag);
+      if (childBits === NOT_STATIC) {
+        return NOT_STATIC;
       }
+      bits |= childBits;
     }
-    return true;
+    return bits;
   }
   // $FlowFixMe[invalid-compare]
   if (t === 'object' && node.$$typeof === REACT_ELEMENT_TYPE) {
     // Each element is classified once per request, otherwise every ancestor of
     // a non-static element walks all of the static content below it again.
-    const cached = cache.get(node);
-    if (cached !== undefined) {
-      return cached;
+    let bits = cache.get(node);
+    if (bits === undefined) {
+      bits = isStaticHostElement(cache, node);
+      cache.set(node, bits);
     }
-    const result = isStaticHostElement(cache, node);
-    cache.set(node, result);
-    return result;
+    if (
+      bits !== NOT_STATIC &&
+      parentTag !== null &&
+      ((nestingForbids(parentTag) & bits) !== 0 ||
+        isRewrittenChild(parentTag, node.type))
+    ) {
+      return NOT_STATIC;
+    }
+    return bits;
   }
-  return false;
+  return NOT_STATIC;
 }
 
-function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
+function isStaticHostElement(cache: WeakMap<any, number>, node: any): number {
   const type = node.type;
   if (typeof type !== 'string') {
-    return false;
+    return NOT_STATIC;
   }
   const props = node.props;
   if (nonStubbableTags.has(type)) {
@@ -4452,7 +4688,7 @@ function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
       (type !== 'style' && type !== 'script') ||
       !isStubbableStyleOrScript(type, props)
     ) {
-      return false;
+      return NOT_STATIC;
     }
   }
   for (const k in props) {
@@ -4460,10 +4696,14 @@ function isStaticHostElement(cache: WeakMap<any, boolean>, node: any): boolean {
       continue;
     }
     if (k === 'ref' || !isStaticPropValue(props[k])) {
-      return false;
+      return NOT_STATIC;
     }
   }
-  return isStaticHostNode(cache, props.children);
+  const childBits = isStaticHostNode(cache, props.children, type);
+  if (childBits === NOT_STATIC) {
+    return NOT_STATIC;
+  }
+  return nestingBits(type) | (childBits & ~nestingShields(type));
 }
 
 function tryStubHostElement(
@@ -4480,9 +4720,12 @@ function tryStubHostElement(
     typeof element.type !== 'string' ||
     voidTags.has(element.type) ||
     // The stub is "$J<id>:<tag>[:<key>]", so the tag can't contain a colon.
-    element.type.indexOf(':') !== -1 ||
-    !isStaticHostNode(cache, element)
+    element.type.indexOf(':') !== -1
   ) {
+    return null;
+  }
+  const bits = isStaticHostNode(cache, element, hostParentTag);
+  if (bits === NOT_STATIC || (hostForbidden & bits) !== 0) {
     return null;
   }
   // The stub keeps the key of the element (including the keys of the Server

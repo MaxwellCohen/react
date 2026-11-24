@@ -160,6 +160,15 @@ export function pushTextInstance(
   return false;
 }
 
+export function pushStubMarker(
+  target: Array<Chunk | PrecomputedChunk>,
+  marker: string,
+  renderState: RenderState,
+): void {
+  // Markup doesn't have any instructions.
+  return;
+}
+
 export function pushSegmentFinale(
   target: Array<Chunk | PrecomputedChunk>,
   renderState: RenderState,
