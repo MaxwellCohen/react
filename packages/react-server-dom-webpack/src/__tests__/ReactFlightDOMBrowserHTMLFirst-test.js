@@ -38,6 +38,7 @@ let serverAct;
 let React;
 let ReactDOMClient;
 let ReactDOMFizzServer;
+let ReactDOMFizzStatic;
 let ReactServerDOMServer;
 let ReactServerDOMClient;
 let ReactServerDOMEdgeClient;
@@ -76,6 +77,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     React = require('react');
     ReactDOMClient = require('react-dom/client');
     ReactDOMFizzServer = require('react-dom/server.browser');
+    ReactDOMFizzStatic = require('react-dom/static.browser');
     jest.mock('react-server-dom-webpack/client', () =>
       require('react-server-dom-webpack/client.browser'),
     );
@@ -243,6 +245,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     return {
       settle,
       browser,
+      element: <TeeRoot />,
       text: () => text,
       ended: () => ended,
       renderHTML: fizzOptions =>
@@ -2873,6 +2876,135 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           withSuspense ? 'loading' : 'static-p',
         );
       }
+    });
+
+    describe('prerender and resume', () => {
+      const hang = new Promise(() => {});
+      let dynamicDone;
+
+      // A server component that is the hole of the prerender: it never
+      // finishes there, and in the resume it is done.
+      async function Dynamic() {
+        await dynamicDone;
+        return <p>dynamic-text</p>;
+      }
+
+      function makeApp(shape) {
+        const Counter = clientExports(function Counter() {
+          const [n, setN] = React.useState(0);
+          return <button onClick={() => setN(n + 1)}>n:{n}</button>;
+        });
+        const table = (
+          <table>
+            <tbody>
+              <tr>
+                <td>{'static-table' + FILL}</td>
+              </tr>
+            </tbody>
+          </table>
+        );
+        const dynamic = (
+          <React.Suspense fallback={<i>loading-dynamic</i>}>
+            <Dynamic />
+          </React.Suspense>
+        );
+        return function App() {
+          // On the path the resume replays, <main> holds the hole. The
+          // section holds a client component and no hole, so it is off it.
+          return shape === 'on-path' ? (
+            <main>
+              <Counter />
+              {table}
+              {dynamic}
+            </main>
+          ) : (
+            <main>
+              <section>
+                <Counter />
+                {table}
+              </section>
+              {dynamic}
+            </main>
+          );
+        };
+      }
+
+      // The prerender halts at the hole, then a second Flight render (the
+      // one whose bytes the browser gets) is read by Fizz's resume.
+      async function prerenderAndResume(shape) {
+        const App = makeApp(shape);
+        const flightController = new AbortController();
+        const prerenderController = new AbortController();
+        dynamicDone = hang;
+        const prerendered = await serverAct(async () => {
+          const t = startTee(<App />, {
+            signal: flightController.signal,
+            onError() {},
+          });
+          const pending = ReactDOMFizzStatic.prerender(t.element, {
+            signal: prerenderController.signal,
+            onError() {},
+          });
+          await macrotasks(1);
+          prerenderController.abort();
+          const result = await pending;
+          flightController.abort();
+          await t.browser;
+          return result;
+        });
+        expect(prerendered.postponed).not.toBe(null);
+        const prelude = await readAll(prerendered.prelude);
+
+        dynamicDone = Promise.resolve();
+        return serverAct(async () => {
+          const t = startTee(<App />);
+          const resumed = await ReactDOMFizzServer.resume(
+            t.element,
+            JSON.parse(JSON.stringify(prerendered.postponed)),
+            {onError() {}},
+          );
+          const resumeChunks = [];
+          const reader = resumed.getReader();
+          const reading = (async () => {
+            while (true) {
+              const {done, value} = await reader.read();
+              if (done) {
+                return;
+              }
+              resumeChunks.push(decoder.decode(value));
+            }
+          })();
+          await resumed.allReady;
+          t.settle.resolve();
+          await reading;
+          return {main: await t.browser, chunks: [prelude, ...resumeChunks]};
+        });
+      }
+
+      ['off-path', 'on-path'].forEach(shape => {
+        it(
+          'leaves static content in the prelude out of the payload (' +
+            shape +
+            ')',
+          async () => {
+            const {main, chunks} = await prerenderAndResume(shape);
+            expect(chunks.join('')).toContain('static-table');
+            // Neither inline nor as a late row.
+            expect(main).not.toContain('static-table');
+            const onMissingHTML = jest.fn();
+            const {container, errors} = await hydrateStream(
+              main,
+              chunks,
+              chunks.length,
+              onMissingHTML,
+            );
+            expect(onMissingHTML).not.toHaveBeenCalled();
+            expect(errors).toEqual([]);
+            expect(visibleText(container)).toContain('static-table');
+            expect(visibleText(container)).toContain('dynamic-text');
+          },
+        );
+      });
     });
   });
 });

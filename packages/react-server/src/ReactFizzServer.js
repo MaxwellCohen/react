@@ -178,6 +178,7 @@ import {
   REACT_ACTIVITY_TYPE,
   REACT_OPTIMISTIC_KEY,
   REACT_RECOVERABLE_TYPE,
+  REACT_STUBBED_RENDERED_TYPE,
 } from 'shared/ReactSymbols';
 import ReactSharedInternals from 'shared/ReactSharedInternals';
 import {
@@ -189,6 +190,7 @@ import {
   enableViewTransitionParentEnterExit,
   enableFizzBlockingRender,
   enableCPUSuspense,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
 
 import assign from 'shared/assign';
@@ -3302,6 +3304,42 @@ function resumeNode(
   }
 }
 
+// enableFlightHTMLFirst: a resume skips what the prelude already has. Flight
+// stubs in it (lazy nodes branded by the Flight client) are in the HTML, so
+// count them as rendered, or the server would send their rows again. Walks host
+// elements, Fragments and arrays; never props of components or boundaries.
+function countStubsAsRendered(node: any): void {
+  if (typeof node !== 'object' || node === null) {
+    return;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      countStubsAsRendered(node[i]);
+    }
+    return;
+  }
+  switch (node.$$typeof) {
+    case REACT_LAZY_TYPE: {
+      const payload = node._payload;
+      if (
+        typeof payload === 'object' &&
+        payload !== null &&
+        payload.$$typeof === REACT_STUBBED_RENDERED_TYPE
+      ) {
+        payload.entry.rendered.add(payload.id);
+      }
+      return;
+    }
+    case REACT_ELEMENT_TYPE: {
+      const type = node.type;
+      if (typeof type === 'string' || type === REACT_FRAGMENT_TYPE) {
+        countStubsAsRendered(node.props.children);
+      }
+      return;
+    }
+  }
+}
+
 function replayElement(
   request: Request,
   task: ReplayTask,
@@ -3422,6 +3460,9 @@ function replayElement(
   }
   // We didn't find any matching nodes. We assume that this element was already
   // rendered in the prelude and skip it.
+  if (enableFlightHTMLFirst) {
+    countStubsAsRendered(task.node);
+  }
 }
 
 function validateIterable(
@@ -3937,7 +3978,11 @@ function replayFragment(
     // We finished rendering this node, so now we can consume this
     // slot. This must happen after in case we rerender this task.
     replayNodes.splice(j, 1);
-    break;
+    return;
+  }
+  // Not on the path: the prelude has it.
+  if (enableFlightHTMLFirst) {
+    countStubsAsRendered(children);
   }
 }
 

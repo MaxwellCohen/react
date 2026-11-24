@@ -93,6 +93,7 @@ import {
 
 import {
   REACT_LAZY_TYPE,
+  REACT_STUBBED_RENDERED_TYPE,
   REACT_ELEMENT_TYPE,
   ASYNC_ITERATOR,
   REACT_FRAGMENT_TYPE,
@@ -3331,6 +3332,7 @@ function getLateStubbedRow(response: Response, id: number): null | React$Node {
 // browser once the HTML render is done. A lazy node costs far less than a
 // component render per row.
 type StubbedRenderedPayload = {
+  $$typeof: symbol,
   entry: StubbedRowsEntry,
   id: number,
 };
@@ -3344,7 +3346,11 @@ function createStubbedRenderedElement(
   entry: StubbedRowsEntry,
   id: number,
 ): any {
-  const payload: StubbedRenderedPayload = {entry, id};
+  const payload: StubbedRenderedPayload = {
+    $$typeof: REACT_STUBBED_RENDERED_TYPE,
+    entry,
+    id,
+  };
   return {
     $$typeof: REACT_LAZY_TYPE,
     _payload: payload,
