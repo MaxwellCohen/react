@@ -156,6 +156,8 @@ const ReactNoopServer = ReactFizzServer({
     target.push(POP);
   },
 
+  pushStubbedRowMarker(target: Array<Uint8Array>, id: string): void {},
+
   // This is a noop in ReactNoop
   pushSegmentFinale(
     target: Array<Uint8Array>,

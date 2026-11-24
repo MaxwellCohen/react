@@ -160,6 +160,13 @@ export function pushTextInstance(
   return false;
 }
 
+export function pushStubbedRowMarker(
+  target: Array<Chunk | PrecomputedChunk>,
+  id: string,
+): void {
+  // Markup is never hydrated.
+}
+
 export function pushSegmentFinale(
   target: Array<Chunk | PrecomputedChunk>,
   renderState: RenderState,

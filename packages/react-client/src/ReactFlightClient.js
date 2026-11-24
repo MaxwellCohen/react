@@ -93,6 +93,7 @@ import {
 
 import {
   REACT_LAZY_TYPE,
+  REACT_STUBBED_RENDERED_TYPE,
   REACT_ELEMENT_TYPE,
   ASYNC_ITERATOR,
   REACT_FRAGMENT_TYPE,
@@ -408,6 +409,8 @@ type Response = {
   // enableFlightHTMLFirst: see recoverStubbedContent.
   _onMissingHTML: null | (() => void),
   _stubbedRecovery: null | Promise<empty>,
+  // enableFlightHTMLFirst: see getStubbedNodeHolder.
+  _stubbedHolders: null | StubbedHolderGroup,
   _stringDecoder: StringDecoder,
   _closed: boolean,
   _closedReason: mixed,
@@ -3063,11 +3066,9 @@ export function decodeModelString(
 function StaticStub(
   props: {
     tag: string,
-    late: () => null | React$Node,
-    recover: () => Promise<mixed>,
+    response: Response,
+    id: number,
     saved: StubbedNodeHolder,
-    remember: (node: null | Element) => void,
-    restore: (node: null | Element) => void,
   },
   // The renderer that mounts a stub passes whether it is hydrating it (it
   // knows the type by its $$typeof), so that the stub needs no hook, effect or
@@ -3099,18 +3100,18 @@ function StaticStub(
   const mode = current.mode;
   if (mode === RECOVER) {
     // The server sends the rows that its HTML render did not reach after all.
-    const late = props.late();
+    const late = getLateStubbedRow(props.response, props.id);
     if (late !== null) {
       return late;
     }
     // Suspends until the stream ends, then (rendering again) forever.
-    React.use(props.recover());
+    React.use(recoverStubbedContent(props.response, props.tag));
   }
   return React.createElement(props.tag, {
     key: current.generation,
     suppressHydrationWarning: true,
     dangerouslySetInnerHTML: EMPTY_HTML,
-    ref: mode === RESTORE ? props.restore : props.remember,
+    ref: getStubbedRef(props.saved, mode === RESTORE),
   });
 }
 
@@ -3119,7 +3120,67 @@ function StaticStub(
 StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
 
 function modeWithoutHTML(saved: StubbedNodeHolder): number {
-  return saved.node !== null || saved.html !== null ? RESTORE : RECOVER;
+  return saved.node !== null ||
+    saved.html !== null ||
+    takeStubbedMarkerNode(saved)
+    ? RESTORE
+    : RECOVER;
+}
+
+// The server writes <!--J<payload id>:<row id>--> right before the DOM of every
+// stub. React can throw that DOM away before the stub adopts it: it
+// client-renders a boundary that did not hydrate yet (the old DOM is deleted
+// when that commits), or removes a dehydrated boundary and shows it again
+// later. The stub then rebuilds from the DOM the marker leads to, instead of
+// asking for the content again. The comments are indexed once, when the first
+// stub finds no DOM to adopt (React has not discarded it yet then) or when the
+// stream ends, whichever comes first: the walk is a pass over the document, so
+// it stays off the path of a stub that adopts. An entry stays while its stub
+// uses the DOM (a stub that has a node ignores it) and goes when the stub lets
+// go of the node, so a detached node is not held by the index.
+let stubbedMarkers: null | Map<string, Element> = null;
+
+function indexStubbedMarkers(): Map<string, Element> {
+  let index = stubbedMarkers;
+  if (index === null) {
+    index = stubbedMarkers = new Map();
+    if (canUseDOM) {
+      const walker: any = document.createTreeWalker(
+        document,
+        128, // NodeFilter.SHOW_COMMENT
+      );
+      let comment: any;
+      while ((comment = walker.nextNode()) !== null) {
+        const data: string = comment.data;
+        const node = comment.nextSibling;
+        if (
+          data.charCodeAt(0) === 74 /* "J" */ &&
+          node !== null &&
+          node.nodeType === 1
+        ) {
+          index.set(data, node);
+        }
+      }
+    }
+  }
+  return index;
+}
+
+// Takes what the stub's DOM had from the marker into `saved`, as when it is
+// detached, and says whether the marker led to it.
+function stubbedMarkerKey(saved: StubbedNodeHolder): string {
+  return 'J' + saved.requestId.toString(16) + ':' + saved.id.toString(16);
+}
+
+function takeStubbedMarkerNode(saved: StubbedNodeHolder): boolean {
+  const index = indexStubbedMarkers();
+  const node = index.get(stubbedMarkerKey(saved));
+  if (node === undefined) {
+    return false;
+  }
+  rememberStubbedNode(saved, node);
+  snapshotStubbedNode(saved);
+  return true;
 }
 
 const ADOPT = 0;
@@ -3131,11 +3192,39 @@ const EMPTY_HTML = {__html: ''};
 // or hidden by an Activity) the holder keeps its attributes and HTML instead,
 // so the detached DOM can be collected.
 type StubbedNodeHolder = {
+  // The group of the payload (it keeps the group alive), and the payload and
+  // row ids of the marker the server wrote before the DOM, see
+  // indexStubbedMarkers.
+  group: null | StubbedHolderGroup,
+  requestId: number,
+  id: number,
   node: null | Element,
   display: null | string,
   attributes: null | Array<string>,
   html: null | string,
+  // The ref callbacks of the stub, made when it first renders.
+  remember: null | ((node: null | Element) => void),
+  restore: null | ((node: null | Element) => void),
 };
+
+function getStubbedRef(
+  saved: StubbedNodeHolder,
+  restore: boolean,
+): (node: null | Element) => void {
+  let ref = restore ? saved.restore : saved.remember;
+  if (ref === null) {
+    ref = (restore ? restoreStubbedNode : rememberStubbedNode).bind(
+      null,
+      saved,
+    );
+    if (restore) {
+      saved.restore = ref;
+    } else {
+      saved.remember = ref;
+    }
+  }
+  return ref;
+}
 
 function snapshotStubbedNode(saved: StubbedNodeHolder): void {
   const node = saved.node;
@@ -3150,6 +3239,10 @@ function snapshotStubbedNode(saved: StubbedNodeHolder): void {
   saved.attributes = attributes;
   saved.html = node.innerHTML;
   saved.node = null;
+  if (stubbedMarkers !== null) {
+    // The index holds only DOM that no stub has used, not a detached node.
+    stubbedMarkers.delete(stubbedMarkerKey(saved));
+  }
 }
 
 function rememberStubbedNode(
@@ -3169,7 +3262,9 @@ function rememberStubbedNode(
   } else if (saved.display === null) {
     // Adopted while hydrating, so this is the server's inline display.
     // Not every element has an inline style (MathML in some environments).
-    const style = (node as any).style;
+    // Reading `style` makes the browser create the declaration object, which
+    // costs on every stub, so look at the attribute first.
+    const style = node.hasAttribute('style') ? (node as any).style : null;
     const inline = style == null ? '' : style.display;
     if (typeof inline === 'string' && inline !== '') {
       saved.display = inline;
@@ -3307,6 +3402,9 @@ function recoverStubbedContent(
 function noop(): void {}
 
 function endStubbedRows(response: Response): void {
+  if (response._stubbedRequestId !== 0) {
+    indexStubbedMarkers();
+  }
   const end = response._stubbedEnd;
   if (end !== null) {
     end.resolve();
@@ -3331,6 +3429,7 @@ function getLateStubbedRow(response: Response, id: number): null | React$Node {
 // browser once the HTML render is done. A lazy node costs far less than a
 // component render per row.
 type StubbedRenderedPayload = {
+  $$typeof: symbol,
   entry: StubbedRowsEntry,
   id: number,
 };
@@ -3344,7 +3443,11 @@ function createStubbedRenderedElement(
   entry: StubbedRowsEntry,
   id: number,
 ): any {
-  const payload: StubbedRenderedPayload = {entry, id};
+  const payload: StubbedRenderedPayload = {
+    $$typeof: REACT_STUBBED_RENDERED_TYPE,
+    entry,
+    id,
+  };
   return {
     $$typeof: REACT_LAZY_TYPE,
     _payload: payload,
@@ -3355,46 +3458,82 @@ function createStubbedRenderedElement(
 // A framework can decode the same payload more than once (Next.js decodes part
 // of the initial payload again for its client cache). The stubs of every
 // decode share the node that hydration adopted, keyed by the payload's `:P` id
-// and the row id. The map holds them weakly, so a node lives only as long as
-// some decoded payload still references its stub. The key is dropped once its
-// holder is collected, so the map does not grow with every payload.
-const stubbedNodeHolders: Map<string, any> = new Map();
+// and the row id. The holders of a payload live in one group, which the map
+// holds weakly, so the nodes live only as long as some decoded payload still
+// references one of its stubs. The key is dropped once its group is collected,
+// so the map does not grow with every payload.
+type StubbedHolderGroup = {
+  requestId: number,
+  holders: Map<number, StubbedNodeHolder>,
+};
 
-function dropStubbedNodeHolder(key: string): void {
-  const ref = stubbedNodeHolders.get(key);
+const stubbedHolderGroups: Map<number, any> = new Map();
+
+function dropStubbedHolderGroup(requestId: number): void {
+  const ref = stubbedHolderGroups.get(requestId);
   if (ref !== undefined && ref.deref() === undefined) {
-    stubbedNodeHolders.delete(key);
+    stubbedHolderGroups.delete(requestId);
   }
 }
 
-const stubbedNodeHolderCleanup: null | FinalizationRegistry<string> =
+const stubbedHolderCleanup: null | FinalizationRegistry<number> =
   // $FlowFixMe[cannot-resolve-name]
   typeof FinalizationRegistry === 'function'
     ? // $FlowFixMe[cannot-resolve-name]
-      new FinalizationRegistry(dropStubbedNodeHolder)
+      new FinalizationRegistry(dropStubbedHolderGroup)
     : null;
 
-function getStubbedNodeHolder(
+function createStubbedNodeHolder(
+  group: null | StubbedHolderGroup,
   requestId: number,
   id: number,
 ): StubbedNodeHolder {
+  return {
+    group,
+    requestId,
+    id,
+    node: null,
+    display: null,
+    attributes: null,
+    html: null,
+    remember: null,
+    restore: null,
+  };
+}
+
+function getStubbedNodeHolder(
+  response: Response,
+  id: number,
+): StubbedNodeHolder {
+  const requestId = response._stubbedRequestId;
   // Only a document adopts nodes; a server would only accumulate keys.
   if (
     requestId === 0 ||
     !canUseDOM ||
     typeof WeakRef !== 'function' ||
-    stubbedNodeHolderCleanup === null
+    stubbedHolderCleanup === null
   ) {
-    return {node: null, display: null, attributes: null, html: null};
+    return createStubbedNodeHolder(null, 0, id);
   }
-  const key = requestId + ':' + id;
-  const ref = stubbedNodeHolders.get(key);
-  let holder = ref !== undefined ? ref.deref() : undefined;
+  let group = response._stubbedHolders;
+  if (group === null || group.requestId !== requestId) {
+    const ref = stubbedHolderGroups.get(requestId);
+    const existing: void | StubbedHolderGroup =
+      ref !== undefined ? ref.deref() : undefined;
+    if (existing === undefined) {
+      group = {requestId, holders: new Map()};
+      // $FlowFixMe[cannot-resolve-name]
+      stubbedHolderGroups.set(requestId, new WeakRef(group));
+      stubbedHolderCleanup.register(group, requestId);
+    } else {
+      group = existing;
+    }
+    response._stubbedHolders = group;
+  }
+  let holder = group.holders.get(id);
   if (holder === undefined) {
-    holder = {node: null, display: null, attributes: null, html: null};
-    // $FlowFixMe[cannot-resolve-name]
-    stubbedNodeHolders.set(key, new WeakRef(holder));
-    stubbedNodeHolderCleanup.register(holder, key);
+    holder = createStubbedNodeHolder(group, requestId, id);
+    group.holders.set(id, holder);
   }
   return holder;
 }
@@ -3405,12 +3544,8 @@ function createStaticStubElement(
   tag: string,
   key: null | string,
 ): React$Element<any> {
-  const late = getLateStubbedRow.bind(null, response, id);
-  const recover = recoverStubbedContent.bind(null, response, tag);
-  const saved = getStubbedNodeHolder(response._stubbedRequestId, id);
-  const remember = rememberStubbedNode.bind(null, saved);
-  const restore = restoreStubbedNode.bind(null, saved);
-  const props: any = {tag, late, recover, saved, remember, restore};
+  const saved = getStubbedNodeHolder(response, id);
+  const props: any = {tag, response, id, saved};
   if (key !== null) {
     props.key = key;
   }
@@ -3828,6 +3963,7 @@ function ResponseInstance(
   this._stubbedEnd = null;
   this._onMissingHTML = null;
   this._stubbedRecovery = null;
+  this._stubbedHolders = null;
   // Preserve a leading U+FEFF instead of consuming it as an encoding signature.
   this._stringDecoder = createStringDecoder(true);
   this._closed = false;

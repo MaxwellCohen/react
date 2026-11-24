@@ -83,9 +83,11 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
-  // The server stubs an element only when it takes about 48 bytes or more in
-  // the payload. A fixture appends this to its text to be stubbed.
-  const FILL = ' filler text so this element is big enough to be stubbed';
+  // The server stubs an element only when it has 8 host nodes, or when it takes
+  // 512 bytes or more in the payload. A fixture appends this to its text to be
+  // stubbed.
+  const FILL =
+    ' filler text so this element is big enough to be stubbed'.repeat(10);
 
   async function readAll(stream) {
     const reader = stream.getReader();
@@ -431,7 +433,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
       <ul>
         {['a', 'b', 'c'].map(l => (
           <li key={l} className="item">
-            {l}
+            {l + FILL}
           </li>
         ))}
       </ul>
@@ -522,6 +524,7 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
       <tr className="r">
         <td>
           {name} <b>x</b>
+          {FILL}
         </td>
       </tr>
     );
@@ -541,7 +544,9 @@ describe('ReactFlightDOMBrowser html-first stubbing', () => {
     const stubbed = await flight(<App />, true);
     expect((stubbed.main.match(/\$J/g) || []).length).toBe(2);
     const html = stubbed.html;
-    expect(html).toContain('<tr class="r"><td>a<!-- --> <b>x</b></td></tr>');
+    expect(html).toContain(
+      '<tr class="r"><td>a<!-- --> <b>x</b>' + FILL + '</td></tr>',
+    );
   });
 
   // @gate enableTaint
