@@ -58,6 +58,7 @@ export const getViewTransitionFormatContext =
   $$$config.getViewTransitionFormatContext;
 export const makeId = $$$config.makeId;
 export const pushTextInstance = $$$config.pushTextInstance;
+export const pushStubMarker = $$$config.pushStubMarker;
 export const pushStartInstance = $$$config.pushStartInstance;
 export const pushEndInstance = $$$config.pushEndInstance;
 export const pushSegmentFinale = $$$config.pushSegmentFinale;

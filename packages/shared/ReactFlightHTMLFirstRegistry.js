@@ -133,3 +133,48 @@ export function releaseStubbedRowsWhenCollected(
     releaseWhenCollected.register(owner, requestId);
   }
 }
+
+// Rendered in place of a stub by the consumer that claimed the rows (the one
+// that renders HTML), in the slot StaticStub takes in the browser. It is a lazy
+// node: Fizz resolves it only when it renders that position, which records
+// that the HTML contains this row. A lazy node costs far less than a component
+// render per row.
+export type StubbedRenderedPayload = {
+  entry: StubbedRowsEntry,
+  requestId: number,
+  id: number,
+  model: any,
+};
+
+export function initStubbedRendered(payload: StubbedRenderedPayload): any {
+  payload.entry.rendered.add(payload.id);
+  return payload.model;
+}
+
+// Fizz skips an element that the prelude of a resumed render already contains,
+// without resolving what is inside it. The stubs among its host-position
+// children are in that HTML all the same, so Fizz calls this for each lazy it
+// finds there. It never initializes a lazy that is not one of ours.
+export function markStubbedRendered(node: any): void {
+  if (node._init === initStubbedRendered) {
+    const payload: StubbedRenderedPayload = node._payload;
+    payload.entry.rendered.add(payload.id);
+  }
+}
+
+// Fizz writes this as a comment before the DOM of a stub it rendered, so that
+// a browser that has to render the stub without DOM to adopt (React discarded
+// it) can still find it. It names the payload and the row, like the key of the
+// node the browser keeps for the stub, and is null for any other lazy.
+export function getStubbedRenderedMarker(node: any): null | string {
+  if (node._init === initStubbedRendered) {
+    const payload: StubbedRenderedPayload = node._payload;
+    return getStubbedRowMarker(payload.requestId, payload.id);
+  }
+  return null;
+}
+
+// Base 36: the marker is written once per stub.
+export function getStubbedRowMarker(requestId: number, id: number): string {
+  return requestId.toString(36) + '.' + id.toString(36);
+}

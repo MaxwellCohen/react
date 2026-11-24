@@ -186,6 +186,12 @@ const ReactNoopServer = ReactFizzServer({
     });
   },
 
+  pushStubMarker(
+    target: Array<Uint8Array>,
+    marker: string,
+    renderState: RenderState,
+  ): void {},
+
   pushStartActivityBoundary(
     target: Array<Uint8Array>,
     renderState: RenderState,
