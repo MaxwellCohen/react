@@ -4753,6 +4753,161 @@ function isStubbableStyleOrScript(type: string, props: any): boolean {
   );
 }
 
+// Nesting that an HTML parser rewrites (it closes a <p>, moves a table child,
+// ignores a nested <a>). The stub adopts the parsed DOM, so a subtree like this
+// stays in the payload, where React renders it as it does without the option.
+// A small table of what the parser does, not validateDOMNesting.
+const closesParagraph = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'center',
+  'details',
+  'dialog',
+  'dir',
+  'dd',
+  'div',
+  'dl',
+  'dt',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hgroup',
+  'hr',
+  'li',
+  'main',
+  'menu',
+  'nav',
+  'ol',
+  'p',
+  'pre',
+  'search',
+  'section',
+  'summary',
+  'table',
+  'ul',
+]);
+const headings = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+// What a table-structure element may hold. Other children (and text that is
+// not whitespace) are moved before the table, or get an element inserted.
+const tableChildren: Map<string, Set<string>> = new Map([
+  ['table', new Set(['caption', 'colgroup', 'thead', 'tbody', 'tfoot'])],
+  ['thead', new Set(['tr'])],
+  ['tbody', new Set(['tr'])],
+  ['tfoot', new Set(['tr'])],
+  ['tr', new Set(['td', 'th'])],
+  ['colgroup', new Set(['col'])],
+]);
+// Where the others may be: the parser drops them anywhere else.
+const onlyInTable = new Set([
+  'caption',
+  'colgroup',
+  'thead',
+  'tbody',
+  'tfoot',
+  'tr',
+  'td',
+  'th',
+  'col',
+]);
+// Parser scopes, which an open <p> or <a> doesn't reach into.
+const tableScopes = new Set(['table', 'td', 'th', 'caption']);
+
+// Finds nesting in `node`, a static subtree (copyStaticHostNode accepted it),
+// that the parser rewrites, and returns the element whose subtree it is: the
+// parser's <p>, <a>, or the parent that holds the wrong child. `parent` is the
+// element `node` is in (null for the root of the stub, whose own place is
+// unknown). An element that is already known to be one of those is returned too.
+function findParserNesting(
+  request: Request,
+  children: mixed,
+  parent: any,
+  paragraph: any,
+  anchor: any,
+): any {
+  if (typeof children === 'string' || typeof children === 'number') {
+    return parent !== null &&
+      tableChildren.has(parent.type) &&
+      (typeof children === 'number' || children.trim() !== '')
+      ? parent
+      : null;
+  }
+  if (isArray(children)) {
+    for (let i = 0; i < children.length; i++) {
+      const found = findParserNesting(
+        request,
+        children[i],
+        parent,
+        paragraph,
+        anchor,
+      );
+      if (found !== null) {
+        return found;
+      }
+    }
+    return null;
+  }
+  if (children === null || typeof children !== 'object') {
+    return null;
+  }
+  const node: any = children;
+  const tag: string = node.type;
+  if ((request.staticHostCache as any).get(node) === NOT_STATIC) {
+    return node;
+  }
+  if (paragraph !== null && closesParagraph.has(tag)) {
+    return paragraph;
+  }
+  if (anchor !== null && tag === 'a') {
+    return anchor;
+  }
+  if (parent !== null) {
+    const allowed = tableChildren.get(parent.type);
+    if (allowed !== undefined) {
+      if (!allowed.has(tag) && tag !== 'style' && tag !== 'script') {
+        return parent;
+      }
+    } else if (
+      onlyInTable.has(tag) ||
+      (headings.has(parent.type) && headings.has(tag))
+    ) {
+      return parent;
+    }
+  }
+  const scoped = tableScopes.has(tag);
+  return findParserNesting(
+    request,
+    node.props.children,
+    node,
+    scoped ? null : tag === 'p' ? node : paragraph,
+    scoped ? null : tag === 'a' ? node : anchor,
+  );
+}
+
+// Keeps the elements of `node` out of stubs, so that the part of the tree that
+// the parser rewrites is rendered by React and not adopted from the DOM.
+function markNotStatic(request: Request, children: mixed): void {
+  if (isArray(children)) {
+    for (let i = 0; i < children.length; i++) {
+      markNotStatic(request, children[i]);
+    }
+  } else if (children !== null && typeof children === 'object') {
+    const node: any = children;
+    (request.staticHostCache as any).set(node, NOT_STATIC);
+    markNotStatic(request, node.props.children);
+  }
+}
+
 // What copyStaticHostNode returns for a node that isn't static.
 const NOT_STATIC: {...} = {};
 
@@ -4985,6 +5140,11 @@ function tryStubHostElement(
   }
   const value = copyStaticHostNode(request, element);
   if (value === NOT_STATIC || staticWeight(value, MIN_STUB_WEIGHT) > 0) {
+    return null;
+  }
+  const rewritten = findParserNesting(request, element, null, null, null);
+  if (rewritten !== null) {
+    markNotStatic(request, rewritten);
     return null;
   }
   if (key === null) {

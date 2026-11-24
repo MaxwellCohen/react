@@ -2991,6 +2991,145 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
     });
 
+    describe('nesting that the HTML parser rewrites', () => {
+      beforeEach(() => {
+        // React warns about invalid nesting in development.
+        jest.spyOn(console, 'error').mockImplementation(() => {});
+      });
+
+      const cases = {
+        'a block in a paragraph': () => (
+          <section>
+            <p>
+              <div>{'block' + FILL}</div>
+            </p>
+          </section>
+        ),
+        'a block deep in a paragraph': () => (
+          <section>
+            <p>
+              <span>
+                <ul>
+                  <li>{'item' + FILL}</li>
+                </ul>
+              </span>
+            </p>
+          </section>
+        ),
+        'a heading in a heading': () => (
+          <section>
+            <h2>
+              <h3>{'heading' + FILL}</h3>
+            </h2>
+          </section>
+        ),
+        'a link in a link': () => (
+          <section>
+            <a href="/1">
+              {'outer' + FILL}
+              <a href="/2">inner</a>
+            </a>
+          </section>
+        ),
+        'a row in a table': () => (
+          <section>
+            <table>
+              <tr>
+                <td>{'cell' + FILL}</td>
+              </tr>
+            </table>
+          </section>
+        ),
+        'a cell in a body': () => (
+          <section>
+            <table>
+              <tbody>
+                <td>{'cell' + FILL}</td>
+              </tbody>
+            </table>
+          </section>
+        ),
+        'text in a table': () => (
+          <section>
+            <table>
+              <tbody>
+                <tr>
+                  {'text' + FILL}
+                  <td>cell</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        ),
+        'a row outside a table': () => (
+          <section>
+            <div>
+              <tr>
+                <td>{'cell' + FILL}</td>
+              </tr>
+            </div>
+          </section>
+        ),
+      };
+
+      Object.keys(cases).forEach(name =>
+        it(
+          'keeps ' + name + ' in the payload, as without the option',
+          async () => {
+            const App = cases[name];
+            const on = await renderWithTee(<App />);
+            const off = await renderWithTee(<App />, {htmlFirst: false});
+            expect(on.main).not.toContain('$J');
+            expect(on.html).toBe(off.html);
+            const missing = jest.fn();
+            const hydratedOn = await hydrate(on.main, on.html, {
+              onMissingHTML: missing,
+            });
+            const hydratedOff = await hydrate(off.main, off.html);
+            expect(missing).not.toHaveBeenCalled();
+            expect(hydratedOn.errors).toEqual(hydratedOff.errors);
+            expect(hydratedOn.container.innerHTML).toBe(
+              hydratedOff.container.innerHTML,
+            );
+          },
+        ),
+      );
+
+      it('still stubs valid nesting', async () => {
+        const App = () => (
+          <section>
+            <p>
+              <a href="/1">{'link' + FILL}</a>
+            </p>
+            <table>
+              <caption>caption</caption>
+              <thead>
+                <tr>
+                  <th>head</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <p>{'cell' + FILL}</p>
+                    <a href="/2">second</a>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <h2>
+              <span>{'heading' + FILL}</span>
+            </h2>
+          </section>
+        );
+        const {main, html} = await renderWithTee(<App />);
+        expect(main).toContain('$J');
+        expect(main).not.toContain('cell');
+        const {errors} = await hydrate(main, html);
+        expect(errors).toEqual([]);
+      });
+    });
+
     describe('prerender and resume', () => {
       const hang = new Promise(() => {});
       let dynamicDone;
