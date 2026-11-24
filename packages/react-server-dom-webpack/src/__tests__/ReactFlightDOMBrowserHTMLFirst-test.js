@@ -121,6 +121,12 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     });
   }
 
+  // The comments the server writes before the DOM of a stub, which a page
+  // without them (a minifier removed them) lacks.
+  function withoutMarkers(html) {
+    return html.replace(/<!--J[0-9a-f]+:[0-9a-f]+-->/g, '');
+  }
+
   function byteLength(text) {
     return encoder.encode(text).length;
   }
@@ -340,7 +346,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     // iterations) at 1000 rows, so these tests use fewer rows.
     const ROWS = 500;
     // Small page: SSR output must be identical with and without stubbing.
-    expect(await ssr(await renderApp(10, true))).toBe(
+    expect(withoutMarkers(await ssr(await renderApp(10, true)))).toBe(
       await ssr(await renderApp(10, false)),
     );
     const stubbed = await renderApp(ROWS, true);
@@ -925,7 +931,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       actual.querySelectorAll('[style]').forEach(node => {
         node.setAttribute('style', node.style.cssText);
       });
-      expect(actual.innerHTML.replace(/<!-- -->/g, '')).toBe(
+      expect(withoutMarkers(actual.innerHTML).replace(/<!-- -->/g, '')).toBe(
         expected.innerHTML,
       );
     });
@@ -2773,9 +2779,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(main).not.toContain('static-p');
       goToClient();
       const missing = jest.fn();
+      // Without the markers there is nothing to rebuild the content from.
       const {container, errors, root} = await hydrateStream(
         main,
-        chunks,
+        chunks.map(withoutMarkers),
         chunks.length,
         missing,
       );
@@ -2862,7 +2869,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         goToClient();
         const {container, errors} = await hydrateStream(
           main,
-          chunks,
+          chunks.map(withoutMarkers),
           chunks.length,
           undefined,
         );
@@ -2876,6 +2883,112 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           withSuspense ? 'loading' : 'static-p',
         );
       }
+    });
+
+    describe('server DOM that React discards before a stub adopts it', () => {
+      [true, false].forEach(provide =>
+        it(
+          'rebuilds a boundary that client-renders after a context update, with onMissingHTML ' +
+            (provide ? 'provided' : 'not provided'),
+          async () => {
+            let onServer = true;
+            let setValue;
+            let openGate;
+            const gate = new Promise(resolve => (openGate = resolve));
+            const Ctx = React.createContext(0);
+            const Provider = clientExports(function Provider({children}) {
+              const [value, setter] = React.useState(0);
+              setValue = setter;
+              return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+            });
+            const Reader = clientExports(function Reader() {
+              const value = React.useContext(Ctx);
+              if (!onServer) {
+                use(gate);
+              }
+              return <b>v:{value}</b>;
+            });
+            const App = () => (
+              <Provider>
+                <React.Suspense fallback={<i>loading</i>}>
+                  <p>{'static-a' + FILL}</p>
+                  <Reader />
+                  <p>{'static-b' + FILL}</p>
+                </React.Suspense>
+              </Provider>
+            );
+            const {main, html} = await renderWithTee(<App />);
+            expect(main).not.toContain('static-a');
+            expect(html).toContain('static-a');
+            onServer = false;
+            // The client renders with its own copy of the context.
+            Ctx._currentRenderer = null;
+            Ctx._currentRenderer2 = null;
+            const missing = jest.fn();
+            const {container, errors} = await hydrate(
+              main,
+              html,
+              provide ? {onMissingHTML: missing} : undefined,
+            );
+            // The context changes before the dehydrated boundary hydrates, so
+            // React client-renders it and the stubs render while the server
+            // DOM is still in the document.
+            await act(() => setValue(1));
+            await act(async () => {
+              openGate();
+            });
+            expect(missing).not.toHaveBeenCalled();
+            expect(visibleText(container)).toBe(
+              'static-a' + FILL + 'v:1static-b' + FILL,
+            );
+            expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual(
+              [],
+            );
+          },
+        ),
+      );
+
+      it('rebuilds stubs that show again after React removed their dehydrated boundary', async () => {
+        let snapshot = false;
+        const listeners = new Set();
+        const subscribe = listener => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        };
+        const Gate = clientExports(function Gate({children}) {
+          const show = React.useSyncExternalStore(
+            subscribe,
+            () => snapshot,
+            () => true,
+          );
+          return show ? children : null;
+        });
+        const App = () => (
+          <Gate>
+            <React.Suspense fallback={<i>loading</i>}>
+              <section>
+                <p>{'static-text' + FILL}</p>
+              </section>
+            </React.Suspense>
+          </Gate>
+        );
+        const {main, html} = await renderWithTee(<App />);
+        expect(html).toContain('static-text');
+        const missing = jest.fn();
+        const {container, errors} = await hydrate(main, html, {
+          onMissingHTML: missing,
+        });
+        // The client's snapshot hides the children, and React removes the
+        // dehydrated boundary.
+        expect(container.textContent).toBe('');
+        snapshot = true;
+        await act(() => listeners.forEach(listener => listener()));
+        expect(missing).not.toHaveBeenCalled();
+        expect(container.innerHTML).toBe(
+          '<section><p>static-text' + FILL + '</p></section>',
+        );
+        expect(errors.filter(e => !e.startsWith('recoverable'))).toEqual([]);
+      });
     });
 
     describe('prerender and resume', () => {

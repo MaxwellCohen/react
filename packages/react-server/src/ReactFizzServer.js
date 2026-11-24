@@ -77,6 +77,7 @@ import {
   pushStartInstance,
   pushEndInstance,
   pushSegmentFinale,
+  pushStubbedRowMarker,
   getChildFormatContext,
   getSuspenseFallbackFormatContext,
   getSuspenseContentFormatContext,
@@ -3308,16 +3309,17 @@ function resumeNode(
 // stubs in it (lazy nodes branded by the Flight client) are in the HTML, so
 // count them as rendered, or the server would send their rows again. Walks host
 // elements, Fragments and arrays; never props of components or boundaries.
-function countStubsAsRendered(node: any): void {
-  if (typeof node !== 'object' || node === null) {
+function countStubsAsRendered(children: mixed): void {
+  if (typeof children !== 'object' || children === null) {
     return;
   }
-  if (isArray(node)) {
-    for (let i = 0; i < node.length; i++) {
-      countStubsAsRendered(node[i]);
+  if (isArray(children)) {
+    for (let i = 0; i < children.length; i++) {
+      countStubsAsRendered(children[i]);
     }
     return;
   }
+  const node: any = children;
   switch (node.$$typeof) {
     case REACT_LAZY_TYPE: {
       const payload = node._payload;
@@ -3706,6 +3708,23 @@ function retryNode(request: Request, task: Task): void {
         if (request.aborted) {
           // eslint-disable-next-line no-throw-literal
           throw null;
+        }
+        if (enableFlightHTMLFirst && task.replay === null) {
+          // A Flight stub: mark where its DOM starts. A replay skips what the
+          // prelude has, along with its marker.
+          const payload = lazyNode._payload as any;
+          if (
+            typeof payload === 'object' &&
+            payload !== null &&
+            payload.$$typeof === REACT_STUBBED_RENDERED_TYPE
+          ) {
+            pushStubbedRowMarker(
+              (task.blockedSegment as any).chunks,
+              payload.entry.requestId.toString(16) +
+                ':' +
+                payload.id.toString(16),
+            );
+          }
         }
         // Now we render the resolved node
         renderNodeDestructive(request, task, resolvedNode, childIndex);

@@ -1006,11 +1006,15 @@ function stubForTee(
   teeDispatcher: FlightTeeDispatcher,
   htmlFirstDone: Thenable<mixed>,
 ): void {
-  const entry: StubbedRowsEntry = {rows: new Map(), rendered: new Set()};
+  const entry: StubbedRowsEntry = {
+    requestId: randomStubbedRequestId(),
+    rows: new Map(),
+    rendered: new Set(),
+  };
   request.onStubbedValue = (id: number, value: mixed) => {
     if (request.stubbedEntry === null) {
       // Hint rows flush before regular rows, so `:P` precedes the first stub.
-      emitStubbedRowsRequestIdChunk(request, randomStubbedRequestId());
+      emitStubbedRowsRequestIdChunk(request, entry.requestId);
       holdForLateStubbedRows(request, entry);
       teeDispatcher.h(tee, entry);
     }
