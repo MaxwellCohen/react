@@ -159,7 +159,8 @@ describe('ReactFlightTurbopackLedgers HTML-first Flight', () => {
     await wireClosed;
     return {
       wire,
-      html,
+      // Fizz writes <!--J…--> stub markers only when htmlFirst is on.
+      html: html === null ? null : html.replace(/<!--J[0-9a-z.:]+-->/g, ''),
       bytes: await fromBytes,
       tee: fromTee === null ? null : await fromTee,
     };
