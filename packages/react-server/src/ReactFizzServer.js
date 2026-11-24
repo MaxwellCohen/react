@@ -3425,13 +3425,11 @@ function replayElement(
 
 // enableFlightHTMLFirst: the stubs of a Flight response that sit in host
 // position below an element the prelude contains are in the prelude's HTML. Not
-// the props of a Client Component: they may never render.
+// the props of a Client Component: they may never render. Not a Suspense
+// boundary either: one that errored is client rendered, so the prelude only has
+// its fallback.
 function markStubsInPrelude(node: any, type: any): void {
-  if (
-    typeof type !== 'string' &&
-    type !== REACT_FRAGMENT_TYPE &&
-    type !== REACT_SUSPENSE_TYPE
-  ) {
+  if (typeof type !== 'string' && type !== REACT_FRAGMENT_TYPE) {
     return;
   }
   if (node === null || typeof node !== 'object') {

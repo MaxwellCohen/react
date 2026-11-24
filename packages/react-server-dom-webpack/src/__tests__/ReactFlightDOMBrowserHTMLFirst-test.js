@@ -2451,6 +2451,26 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
           </tbody>
         </table>
       );
+      if (shape === 'errored') {
+        const Boom = clientExports(function Boom() {
+          if (prerendering) {
+            throw new Error('boom');
+          }
+          return <b>boom-ok</b>;
+        });
+        return () => (
+          <main>
+            <Counter />
+            <React.Suspense fallback={<i>errored-fallback</i>}>
+              <Boom />
+              <section>errored-static-block</section>
+            </React.Suspense>
+            <React.Suspense fallback={<i>loading</i>}>
+              <Dynamic />
+            </React.Suspense>
+          </main>
+        );
+      }
       if (shape === 'sibling') {
         return () => (
           <main>
@@ -2563,6 +2583,19 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const button = container.querySelector('button');
       await act(() => button.click());
       expect(button.textContent).toBe('n:1');
+    });
+
+    it('sends the static content of a boundary the prelude client rendered', async () => {
+      const out = await prerenderAndResume('errored');
+      expect(out.preludeHTML).toContain('errored-fallback');
+      expect(out.preludeHTML).not.toContain('errored-static-block');
+      // Its content is not in the prelude, so its row goes to the browser.
+      expect(out.main).toContain('errored-static-block');
+      const {container, missing} = await hydrateResumed(out);
+      expect(missing).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('errored-static-block');
+      expect(container.textContent).toContain('boom-ok');
+      expect(container.textContent).toContain('dynamic-content');
     });
 
     it('keeps static content of the prelude out of the resume payload (section off the replay path)', async () => {
