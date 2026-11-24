@@ -5070,10 +5070,16 @@ function copyStaticHostElement(request: Request, node: any): mixed {
 // that adopts the DOM. For a tiny element, such as a <span> around a label,
 // that is a bad trade: a page with thousands of them hydrates slower than it
 // does with the elements, and can even get larger. So an element stays in the
-// payload unless it would take about this many bytes there. staticWeight
-// estimates that, and stops counting at the limit, so it costs nothing for a
-// large tree. It returns what is left of the budget.
+// payload unless it would take about MIN_STUB_WEIGHT bytes there. Below
+// BIG_STUB_WEIGHT bytes it also needs MIN_STUB_NODES host nodes,
+// because a component costs more than hydrating a handful of nodes. The
+// payload of a large element, such as a long script or a block of inner HTML,
+// is worth a component whatever its nodes. staticWeight and staticNodes
+// estimate that, and stop counting at the limit, so they cost nothing for a
+// large tree. They return what is left of the budget.
 const MIN_STUB_WEIGHT = 48;
+const BIG_STUB_WEIGHT = 512;
+const MIN_STUB_NODES = 8;
 
 function staticWeight(node: any, budget: number): number {
   if (typeof node === 'string') {
@@ -5114,6 +5120,27 @@ function staticWeight(node: any, budget: number): number {
   return budget;
 }
 
+function staticNodes(node: any, budget: number): number {
+  if (typeof node === 'string') {
+    return node === '' ? budget : budget - 1;
+  }
+  if (typeof node === 'number') {
+    return budget - 1;
+  }
+  if (node === null || typeof node !== 'object') {
+    return budget;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length && budget > 0; i++) {
+      budget = staticNodes(node[i], budget);
+    }
+    return budget;
+  }
+  // ["$","tag",null,{...}]
+  budget--;
+  return budget > 0 ? staticNodes(node.props.children, budget) : budget;
+}
+
 function tryStubHostElement(
   request: Request,
   task: Task,
@@ -5139,7 +5166,12 @@ function tryStubHostElement(
     return null;
   }
   const value = copyStaticHostNode(request, element);
-  if (value === NOT_STATIC || staticWeight(value, MIN_STUB_WEIGHT) > 0) {
+  if (
+    value === NOT_STATIC ||
+    staticWeight(value, MIN_STUB_WEIGHT) > 0 ||
+    (staticNodes(value, MIN_STUB_NODES) > 0 &&
+      staticWeight(value, BIG_STUB_WEIGHT) > 0)
+  ) {
     return null;
   }
   const rewritten = findParserNesting(request, element, null, null, null);

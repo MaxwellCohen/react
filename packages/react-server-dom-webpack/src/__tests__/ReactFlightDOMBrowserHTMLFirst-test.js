@@ -95,9 +95,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
-  // The server stubs an element only when it takes about 48 bytes or more in
-  // the payload. A fixture appends this to its text to be stubbed.
-  const FILL = ' filler text so this element is big enough to be stubbed';
+  // The server stubs an element only when it has 8 host nodes, or when it takes
+  // 512 bytes or more in the payload. A fixture appends this to its text to be
+  // stubbed.
+  const FILL =
+    ' filler text so this element is big enough to be stubbed'.repeat(10);
 
   async function readAll(stream) {
     const reader = stream.getReader();
@@ -565,7 +567,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       await null;
       return (
         <section>
-          <p>late-static</p>
+          <p data-fill={FILL}>late-static</p>
         </section>
       );
     }
@@ -729,7 +731,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       <main>
         <h1 className={v}>{'Title ' + v}</h1>
         <Counter />
-        <section>
+        <section data-fill={FILL}>
           <ul>
             <li>1</li>
             {v === 'b' ? <li>2</li> : null}
@@ -1126,7 +1128,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <main>
           <Counter />
           <hr />
-          <p>
+          <p data-fill={FILL}>
             line-one
             <br />
             line-two
@@ -1194,6 +1196,40 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     expect(container.textContent).toContain('long-sentence' + FILL);
   });
 
+  it('leaves a small element with few host nodes in the payload', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <p>{'medium-sentence that is over the minimum weight but not big'}</p>
+          <pre>{'long-block'.repeat(60)}</pre>
+          <ul>
+            <li>one</li>
+            <li>two</li>
+            <li>three</li>
+            <li>four</li>
+          </ul>
+        </main>
+      );
+    }
+    const {main, html} = await flight(<App />);
+    // The <p> has two nodes and under 512 bytes, the <pre> has two nodes but a
+    // large text, and the <ul> nine nodes.
+    expect(main).toContain('medium-sentence');
+    expect(main).not.toMatch(/\$J[0-9a-f]+:p"/);
+    expect(main).toMatch(/\$J[0-9a-f]+:pre"/);
+    expect(main).toMatch(/\$J[0-9a-f]+:ul"/);
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelectorAll('li').length).toBe(4);
+    expect(container.querySelector('pre').textContent).toBe(
+      'long-block'.repeat(60),
+    );
+  });
+
   it('stubs an element that is made of many tiny ones', async () => {
     const Counter = clientExports(function Counter() {
       return <button>count</button>;
@@ -1247,7 +1283,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('restores stubbed content from the adopted DOM when it mounts again', async () => {
     function App() {
       return (
-        <main className="page" data-kind="static">
+        <main className="page" data-kind="static" data-fill={FILL}>
           <h1>restore-heading</h1>
           <p>restore-text</p>
         </main>
@@ -1286,7 +1322,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('restores from the adopted DOM in another decode of the same payload', async () => {
     function App() {
       return (
-        <main className="page">
+        <main className="page" data-fill={FILL}>
           <h1>shared-heading</h1>
           <p>shared-text</p>
         </main>
@@ -1354,7 +1390,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     it('keeps the inline display of a stubbed element through hide and show', async () => {
       function App() {
         return (
-          <section style={{display: 'flex'}}>
+          <section style={{display: 'flex'}} data-fill={FILL}>
             <p>flex-child</p>
           </section>
         );
@@ -1394,7 +1430,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
   it('lets the detached node go and restores from a snapshot', async () => {
     function App() {
       return (
-        <main className="page">
+        <main className="page" data-fill={FILL}>
           <h1>snapshot-heading</h1>
         </main>
       );
@@ -1681,7 +1717,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const Panel = createPanel();
       const App = () => (
         <main>
-          <article>{'page-content '.repeat(10)}</article>
+          <article>{'page-content '.repeat(50)}</article>
           <Panel>
             <div>
               <p>{'modal-body' + FILL}</p>
@@ -1775,10 +1811,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const App = () => (
         <Tabs>
           <article key="a">
-            <p>{'panel-A '.repeat(10)}</p>
+            <p>{'panel-A '.repeat(70)}</p>
           </article>
           <article key="b">
-            <p>{'panel-B '.repeat(10)}</p>
+            <p>{'panel-B '.repeat(70)}</p>
           </article>
         </Tabs>
       );
@@ -1798,11 +1834,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       for (let i = 0; i < 2; i++) {
         await act(() => tabB.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-B '.repeat(10),
+          'panel-B '.repeat(70),
         );
         await act(() => tabA.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-A '.repeat(10),
+          'panel-A '.repeat(70),
         );
       }
       expect(missing).not.toHaveBeenCalled();
@@ -1823,10 +1859,10 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const App = () => (
         <Tabs>
           <article>
-            <p>{'panel-A '.repeat(10)}</p>
+            <p>{'panel-A '.repeat(70)}</p>
           </article>
           <article>
-            <p>{'panel-B '.repeat(10)}</p>
+            <p>{'panel-B '.repeat(70)}</p>
           </article>
         </Tabs>
       );
@@ -1846,11 +1882,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       for (let i = 0; i < 2; i++) {
         await act(() => tabB.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-B '.repeat(10),
+          'panel-B '.repeat(70),
         );
         await act(() => tabA.click());
         expect(container.querySelector('article').textContent).toBe(
-          'panel-A '.repeat(10),
+          'panel-A '.repeat(70),
         );
       }
       expect(missing).not.toHaveBeenCalled();
@@ -1864,11 +1900,11 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       async function Slow() {
         await new Promise(resolve => setTimeout(resolve, 10));
-        return <section>{'streamed-content '.repeat(10)}</section>;
+        return <section>{'streamed-content '.repeat(40)}</section>;
       }
       const App = () => (
         <main>
-          <article>{'page-content '.repeat(10)}</article>
+          <article>{'page-content '.repeat(50)}</article>
           <Counter />
           <React.Suspense fallback="loading">
             <Slow />
@@ -1949,7 +1985,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const Panel = createPanel();
       const App = () => (
         <main>
-          <article>{'page-content '.repeat(10)}</article>
+          <article>{'page-content '.repeat(50)}</article>
           <Panel>
             <div>
               <p>{'modal-body' + FILL}</p>
@@ -2126,16 +2162,22 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       }
       const App = () => (
         <main>
-          <p style={colorStyle()}>rendered-text</p>
+          <p style={colorStyle()} data-fill={FILL}>
+            rendered-text
+          </p>
           <Panel>
             <div>
-              <p style={colorStyle()}>closed-text</p>
+              <p style={colorStyle()} data-fill={FILL}>
+                closed-text
+              </p>
             </div>
           </Panel>
         </main>
       );
       const {main, html} = await renderWithTee(<App />);
-      expect(html).toContain('<p style="color:red">rendered-text</p>');
+      expect(html).toContain(
+        '<p style="color:red" data-fill="' + FILL + '">rendered-text</p>',
+      );
       expect(html).not.toContain('blue');
       expect(html).not.toContain('closed-text');
       // The closed panel's element was not rendered, so its row is late.
@@ -2175,7 +2217,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       const App = () => (
         <main>
           <h1>stub-heading</h1>
-          <p>stub-text</p>
+          <p data-fill={FILL}>stub-text</p>
         </main>
       );
       const {main} = await renderWithTee(<App />);
@@ -2391,7 +2433,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         <table>
           <tbody>
             <tr>
-              <td>server-row-text</td>
+              <td>{'server-row-text' + FILL}</td>
             </tr>
           </tbody>
         </table>
@@ -2541,12 +2583,22 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
         const chunks = [];
         const reader = htmlStream.getReader();
         const reading = (async () => {
+          // Fizz splits long text between writes. A chunk ends at a tag, so
+          // that each one parses on its own.
+          let pending = '';
           while (true) {
             const {done, value} = await reader.read();
             if (done) {
+              if (pending !== '') {
+                chunks.push(pending);
+              }
               return;
             }
-            chunks.push(decoder.decode(value));
+            pending += decoder.decode(value);
+            if (pending.endsWith('>')) {
+              chunks.push(pending);
+              pending = '';
+            }
           }
         })();
         await htmlStream.allReady;
@@ -2741,7 +2793,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       });
       async function Article() {
         await delay(5);
-        return <article>{'static-sibling '.repeat(3)}</article>;
+        return <article>{'static-sibling '.repeat(40)}</article>;
       }
       const content = (
         <>
@@ -2795,7 +2847,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(visibleText(container)).toBe(
         'shell-text' +
           FILL +
-          'static-sibling '.repeat(3) +
+          'static-sibling '.repeat(40) +
           'static-p' +
           FILL +
           'client-ok',
@@ -2838,7 +2890,7 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
       expect(container.querySelector('main').textContent).toBe(
         'shell-text' +
           FILL +
-          'static-sibling '.repeat(3) +
+          'static-sibling '.repeat(40) +
           'static-p' +
           FILL +
           'client-ok',
