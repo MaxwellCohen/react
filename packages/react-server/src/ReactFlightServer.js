@@ -4651,22 +4651,26 @@ function isStaticHostElement(cache: WeakMap<any, number>, node: any): number {
 // even get larger. So an element needs MIN_STUB_NODES host nodes (elements and
 // text) to be stubbed, unless it takes BIG_STUB_WEIGHT bytes in the payload:
 // the payload of a large element, such as a long script or a block of inner
-// HTML, is worth a component whatever its nodes. staticWeight and staticNodes
-// stop counting at the limit, so they cost nothing for a large tree. They
-// return what is left of the budget.
+// HTML, is worth a component whatever its nodes. So is one that is mostly
+// attributes, such as an <svg> path: DENSE_STUB_WEIGHT bytes of tags and props,
+// not counting more than MAX_TEXT_WEIGHT bytes of each text, which the HTML
+// has anyway. staticWeight and staticNodes stop counting at the limit, so they
+// cost nothing for a large tree. They return what is left of the budget.
 const BIG_STUB_WEIGHT = 512;
 const MIN_STUB_NODES = 8;
+const DENSE_STUB_WEIGHT = 80;
+const MAX_TEXT_WEIGHT = 8;
 
-function staticWeight(node: any, budget: number): number {
+function staticWeight(node: any, budget: number, textLimit: number): number {
   if (typeof node === 'string') {
-    return budget - node.length;
+    return budget - (node.length < textLimit ? node.length : textLimit);
   }
   if (node === null || typeof node !== 'object') {
     return budget - 1;
   }
   if (isArray(node)) {
     for (let i = 0; i < node.length && budget > 0; i++) {
-      budget = staticWeight(node[i], budget);
+      budget = staticWeight(node[i], budget, textLimit);
     }
     return budget;
   }
@@ -4679,7 +4683,7 @@ function staticWeight(node: any, budget: number): number {
     }
     const value: mixed = props[k];
     if (k === 'children') {
-      budget = staticWeight(value, budget);
+      budget = staticWeight(value, budget, textLimit);
     } else if (typeof value === 'string') {
       budget -= k.length + 6 + value.length;
     } else if (value != null && typeof value === 'object') {
@@ -4741,7 +4745,8 @@ function tryStubHostElement(
   }
   if (
     staticNodes(element, MIN_STUB_NODES) > 0 &&
-    staticWeight(element, BIG_STUB_WEIGHT) > 0
+    staticWeight(element, BIG_STUB_WEIGHT, Infinity) > 0 &&
+    staticWeight(element, DENSE_STUB_WEIGHT, MAX_TEXT_WEIGHT) > 0
   ) {
     return null;
   }
