@@ -1328,6 +1328,37 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     );
   });
 
+  it('stubs a small element that is mostly attributes', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <span
+            data-first="aaaaaaaaaaaaaaaaaaaa"
+            data-second="bbbbbbbbbbbbbbbbbbbb"
+            data-third="cccccccccccccccccccc">
+            x
+          </span>
+          <p>{'medium-sentence that is over the minimum weight but not big'}</p>
+        </main>
+      );
+    }
+    const {main, html} = await flight(<App />);
+    // The <span> has two nodes and under 512 bytes, but its attributes take 80
+    // bytes. The <p> has as many bytes, nearly all of them text.
+    expect(main).toMatch(/\$J[0-9a-f]+:span"/);
+    expect(main).not.toContain('data-first');
+    expect(main).toContain('medium-sentence');
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelector('span').getAttribute('data-third')).toBe(
+      'cccccccccccccccccccc',
+    );
+  });
+
   it('stubs an element that is made of many tiny ones', async () => {
     const Counter = clientExports(function Counter() {
       return <button>count</button>;
