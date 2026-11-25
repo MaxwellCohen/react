@@ -17,8 +17,16 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
+  enableFlightHTMLFirst,
   enableFlightLedgers,
 } from 'shared/ReactFeatureFlags';
+import {
+  allocateStubbedRowsRegistry,
+  canReleaseStubbedRowsWhenCollected,
+  releaseStubbedRowsRegistry,
+  releaseStubbedRowsWhenCollected,
+} from 'shared/ReactFlightHTMLFirstRegistry';
+import type {StubbedRowsEntry} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import {
   scheduleWork,
@@ -137,6 +145,7 @@ import {
   REACT_FRAGMENT_TYPE,
   REACT_LAZY_TYPE,
   REACT_MEMO_TYPE,
+  REACT_SUSPENSE_TYPE,
   ASYNC_ITERATOR,
   REACT_OPTIMISTIC_KEY,
   REACT_LEDGER_TOTAL_TYPE,
@@ -566,6 +575,7 @@ type Task = {
   keyPath: ReactKey, // parent server component keys
   implicitSlot: boolean, // true if the root server component of this sequence had a null key
   formatContext: FormatContext, // an approximate parent context from host components
+  hostPosition: boolean, // enableFlightHTMLFirst: the root of this task is in host position
   thenableState: ThenableState | null,
   unit: null | Unit,
   timed: boolean, // Profiling-only. Whether we need to track the completion time of this task.
@@ -636,6 +646,15 @@ const PRERENDER = 21;
 // emitTypedArrayChunk for why, and flushCompletedChunks for how it's read.
 const NEXT_TWO_CHUNKS_ARE_ATOMIC: symbol = Symbol();
 
+// enableFlightHTMLFirst: `true` uses the internal registry, an object
+// receives the stubbed rows (JSON) and/or live values instead.
+export type HTMLFirstOption =
+  | boolean
+  | {
+      onRow?: (id: number, json: string) => void,
+      onValue?: (id: number, value: mixed) => void,
+    };
+
 export type Request = {
   status: 10 | 11 | 12 | 13 | 14,
   type: 20 | 21,
@@ -670,6 +689,17 @@ export type Request = {
   writtenImportStringsSize: number,
   temporaryReferences: void | TemporaryReferenceSet,
   identifierPrefix: string,
+  onStubbedRow: null | ((id: number, json: string) => void),
+  onStubbedValue: null | ((id: number, value: mixed) => void),
+  // enableFlightHTMLFirst: internal registry id when no framework callbacks.
+  stubbedRequestId: number,
+  // enableFlightHTMLFirst: non-null while the stream is kept open for
+  // late rows (see settleStubbedRows). Counts as one pending chunk.
+  stubbedEntry: null | StubbedRowsEntry,
+  stubbedEnd: 0 | 1 | 2, // nothing yet, `:q` emitted, `:q` written
+  stubbedTimeout: null | TimeoutID,
+  // enableFlightHTMLFirst: memoized isStaticHostNode results.
+  staticHostCache: null | WeakMap<any, number>,
   identifierCount: number,
   taintCleanupQueue: Array<string | bigint>,
   ledgers: null | RequestLedgers,
@@ -748,6 +778,7 @@ function RequestInstance(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
+  htmlFirst: void | HTMLFirstOption,
 ) {
   if (
     ReactSharedInternals.A !== null &&
@@ -808,6 +839,50 @@ function RequestInstance(
   this.writtenImportStringsSize = 0;
   this.temporaryReferences = temporaryReferences;
   this.identifierPrefix = identifierPrefix || '';
+  // enableFlightHTMLFirst: stubbing is opt-in per request, so a stream
+  // that goes straight to the browser (navigation, refetch, action result) is
+  // never stubbed by accident. The framework opts in on the response that feeds
+  // SSR: `htmlFirst: true` collects rows in an internal registry keyed
+  // by a request id emitted in the stream (`:P…`), which the first in-process
+  // createFrom* claims. `{onRow, onValue}` (JSON row / live value) is the
+  // override for out-of-process or custom consumers.
+  this.stubbedRequestId = 0;
+  this.stubbedEntry = null;
+  this.stubbedEnd = 0;
+  this.stubbedTimeout = null;
+  this.onStubbedValue = null;
+  this.onStubbedRow = null;
+  if (enableFlightHTMLFirst && htmlFirst) {
+    if (htmlFirst === true) {
+      // Allocated on the first stubbed element, so a response with nothing to
+      // stub is byte-identical to one without the option. Hint rows flush
+      // before regular rows, so `:P` still precedes the first stub.
+      const request: Request = this;
+      let entry: null | StubbedRowsEntry = null;
+      this.onStubbedValue = (id: number, value: mixed) => {
+        let current = entry;
+        if (current === null) {
+          const registry = allocateStubbedRowsRegistry();
+          current = entry = registry.entry;
+          request.stubbedRequestId = registry.requestId;
+          releaseStubbedRowsWhenCollected(request, registry.requestId);
+          emitStubbedRowsRequestIdChunk(request, registry.requestId);
+          holdForLateStubbedRows(request, current);
+        }
+        current.rows.set(id, value);
+      };
+      this.onStubbedRow = noop;
+    } else {
+      const {onRow, onValue} = htmlFirst;
+      if (typeof onValue === 'function') {
+        this.onStubbedValue = onValue;
+        this.onStubbedRow = typeof onRow === 'function' ? onRow : noop;
+      } else if (typeof onRow === 'function') {
+        this.onStubbedRow = onRow;
+      }
+    }
+  }
+  this.staticHostCache = enableFlightHTMLFirst ? new WeakMap() : null;
   this.identifierCount = 1;
   this.taintCleanupQueue = cleanupQueue;
   this.ledgers = null;
@@ -882,6 +957,7 @@ function RequestInstance(
     null,
     null,
   );
+  rootTask.hostPosition = true;
   pingedTasks.push(rootTask);
 }
 
@@ -895,6 +971,7 @@ export function createRequest(
   environmentName: void | string | (() => string), // DEV-only
   filterStackFrame: void | ((url: string, functionName: string) => boolean), // DEV-only
   keepDebugAlive: boolean, // DEV-only
+  htmlFirst?: HTMLFirstOption,
 ): Request {
   if (__DEV__) {
     resetOwnerStackLimit();
@@ -914,6 +991,7 @@ export function createRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
+    htmlFirst,
   );
 }
 
@@ -948,6 +1026,7 @@ export function createPrerenderRequest(
     environmentName,
     filterStackFrame,
     keepDebugAlive,
+    undefined,
   );
 }
 
@@ -2554,6 +2633,23 @@ function renderAsyncFragment(
   return serializeAsyncIterable(request, task, children, asyncIterator);
 }
 
+// Host stubbing (see tryStubHostElement): > 0 while serializing a stubbed row.
+let stubbingDepth = 0;
+
+// Host stubbing is only safe for a static host element that React renders in
+// place and hydrates in place: output of a Server Component, children of a
+// host element or Suspense boundary, or `children` of a Client Component
+// (composition slots / layout providers). True while resolving such a
+// position. Cleared for every non-`children` prop (e.g. Suspense `fallback`,
+// a Tabs `panels` prop) and for non-composition wrappers (Activity, ...).
+// When a client later mounts a stubbed child without server DOM (modal,
+// ClientOnly), StaticStub recovers via onMissingHTML.
+let hostPosition = true;
+// The props object of the element tuple that is being resolved, and whether its
+// `children` are in host position.
+let elementProps: null | Object = null;
+let elementChildrenInHostPosition = false;
+
 function renderClientElement(
   request: Request,
   task: Task,
@@ -2584,7 +2680,9 @@ function renderClientElement(
       // So that we can refer to it directly.
       outlineComponentInfo(request, debugOwner);
     }
-    if (task.debugStack !== null) {
+    // Stubbed subtrees don't ship per-element debug stacks, they would be the
+    // bulk of what is left in the payload (the rows can't be dropped with it).
+    if (task.debugStack !== null && stubbingDepth === 0) {
       // Outline the debug stack so that we write to the completedDebugChunks instead.
       debugStack = filterStackTrace(
         request,
@@ -3300,6 +3398,7 @@ function createTaskWithID(
     keyPath,
     implicitSlot,
     formatContext: formatContext,
+    hostPosition: hostPosition,
     ping: () => pingTask(request, task),
     thenableState: null,
     unit,
@@ -3414,7 +3513,22 @@ function resolveModel(
     return rendered;
   }
 
+  return resolveModelChildren(request, task, rendered);
+}
+
+function resolveModelChildren(
+  request: Request,
+  task: Task,
+  rendered: any,
+): ReactJSONValue {
   if (isArray(rendered)) {
+    if (
+      enableFlightHTMLFirst &&
+      request.onStubbedRow !== null &&
+      rendered[0] === REACT_ELEMENT_TYPE
+    ) {
+      return resolveElementTuple(request, task, rendered);
+    }
     const resolved: Array<ReactJSONValue> = [];
     for (let i = 0; i < rendered.length; i++) {
       resolved[i] = resolveModel(request, task, rendered, '' + i, rendered[i]);
@@ -3425,15 +3539,39 @@ function resolveModel(
   // Use `{}` for fast properties; `__proto__` is handled below because simple
   // assignment would hit Object.prototype's setter instead of creating a key.
   const resolved: {[key: string]: ReactJSONValue} = {} as any;
+  const trackHostPosition =
+    enableFlightHTMLFirst && request.onStubbedRow !== null;
+  const prevHostPosition = hostPosition;
+  const isElementProps =
+    trackHostPosition && (rendered as any) === elementProps;
+  const childrenInHostPosition = elementChildrenInHostPosition;
+  const prevParentTag = hostParentTag;
+  const prevForbidden = hostForbidden;
   for (const key in rendered) {
     if (hasOwnProperty.call(rendered, key)) {
-      const resolvedValue = resolveModel(
-        request,
-        task,
-        rendered,
-        key,
-        rendered[key],
-      );
+      if (trackHostPosition && isElementProps) {
+        // Of an element's props, only `children` can stay in host position.
+        // Plain data around elements (a framework's element map or route
+        // tree, e.g. {page, layout} or {tree: {data: {rsc}}}) keeps the
+        // position it is in: the framework renders those elements in place.
+        hostPosition = key === 'children' ? childrenInHostPosition : false;
+        hostParentTag = key === 'children' ? elementChildrenParentTag : null;
+        hostForbidden = key === 'children' ? elementChildrenForbidden : 0;
+      }
+      let resolvedValue;
+      try {
+        resolvedValue = resolveModel(
+          request,
+          task,
+          rendered,
+          key,
+          rendered[key],
+        );
+      } finally {
+        hostPosition = prevHostPosition;
+        hostParentTag = prevParentTag;
+        hostForbidden = prevForbidden;
+      }
       if (key === __PROTO__) {
         // Match JSON's ordinary data-property semantics for this legacy key.
         Object.defineProperty(resolved, key, {
@@ -3446,6 +3584,63 @@ function resolveModel(
         resolved[key] = resolvedValue;
       }
     }
+  }
+  return resolved;
+}
+
+// Resolves an element tuple [$, type, key, props, ...]. Its props are resolved
+// with the host position rules (see hostPosition).
+function resolveElementTuple(
+  request: Request,
+  task: Task,
+  rendered: Array<any>,
+): ReactJSONValue {
+  const prevProps = elementProps;
+  const prevChildrenInHostPosition = elementChildrenInHostPosition;
+  const prevChildrenParentTag = elementChildrenParentTag;
+  const prevChildrenForbidden = elementChildrenForbidden;
+  const prevHostPosition = hostPosition;
+  const resolved: Array<ReactJSONValue> = [];
+  try {
+    for (let i = 0; i < rendered.length; i++) {
+      if (i === 3) {
+        elementProps = rendered[3];
+        // children of host tags, Fragments, Suspense, and Client Components
+        // stay in host position. Other props never do (see
+        // resolveModelChildren).
+        elementChildrenInHostPosition =
+          prevHostPosition &&
+          (typeof rendered[1] === 'string' ||
+            rendered[1] === REACT_FRAGMENT_TYPE ||
+            rendered[1] === REACT_SUSPENSE_TYPE ||
+            isClientReference(rendered[1]));
+        // What the children of a host element are in (see isRewrittenChild).
+        // Fragments and Suspense don't have DOM of their own, anything else
+        // is unknown.
+        const type = rendered[1];
+        if (typeof type === 'string') {
+          elementChildrenParentTag = type;
+          elementChildrenForbidden =
+            (hostForbidden & ~nestingShields(type)) | nestingForbids(type);
+        } else if (
+          type === REACT_FRAGMENT_TYPE ||
+          type === REACT_SUSPENSE_TYPE
+        ) {
+          elementChildrenParentTag = hostParentTag;
+          elementChildrenForbidden = hostForbidden;
+        } else {
+          elementChildrenParentTag = null;
+          elementChildrenForbidden = 0;
+        }
+      }
+      resolved[i] = resolveModel(request, task, rendered, '' + i, rendered[i]);
+    }
+  } finally {
+    elementProps = prevProps;
+    elementChildrenInHostPosition = prevChildrenInHostPosition;
+    elementChildrenParentTag = prevChildrenParentTag;
+    elementChildrenForbidden = prevChildrenForbidden;
+    hostPosition = prevHostPosition;
   }
   return resolved;
 }
@@ -4074,6 +4269,579 @@ function serializeImportString(request: Request, value: string): string {
 
 let modelRoot: null | ReactClientValue = false;
 
+// --- Host stubbing (prototype, enableFlightHTMLFirst) ---------------------
+// Host elements produced by Server Components whose whole subtree is static
+// (host elements, text, and primitive-only props; no client references,
+// Suspense, lazy, Promises or Server Components still to render) are not
+// serialized into the primary payload. We serialize the full element to JSON,
+// hand (id, json) to the request's onRow callback, and replace it with
+// the placeholder "$J<id>:<tag>". The framework gives the rows to the Flight
+// client that feeds SSR (the `htmlFirstRows` client option), so HTML contains the
+// content, while the main stream, which it can inline for the browser as is,
+// does not. A client without the row renders StaticStub and adopts the DOM
+// (see ReactFlightClient's "$J" handling).
+// While > 0 we are serializing a stubbed subtree, so nested hosts are inlined
+// in that same row instead of being stubbed again.
+
+// Tags that are not rendered in place by Fizz (hoistables / document-level),
+// have special hydration or form handling, or switch the format context.
+const nonStubbableTags = new Set([
+  'html',
+  'head',
+  'body',
+  'title',
+  'meta',
+  'link',
+  'style',
+  'script',
+  'base',
+  'noscript',
+  'template',
+  'svg',
+  'math',
+  'input',
+  'textarea',
+  'select',
+  'option',
+  'form',
+  'button',
+  'iframe',
+  'object',
+  'img',
+  'video',
+  'audio',
+  'source',
+  'track',
+  'dialog',
+  'details',
+  // The parser turns it into an <img>.
+  'image',
+]);
+
+// Void elements can't take the stub's dangerouslySetInnerHTML, and a stub
+// would be no smaller than they are. They are still static inside a stubbed
+// parent; they are just never stubbed on their own.
+const voidTags = new Set([
+  'area',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'source',
+  'track',
+  'wbr',
+]);
+
+// enableFlightHTMLFirst: Fizz renders these in place (not hoisted) unless
+// they are resources, and they carry no behavior the client must re-create:
+// <style> without precedence+href, and non-executable data-block scripts.
+function isStubbableStyleOrScript(type: string, props: any): boolean {
+  if (props.itemProp != null) {
+    return false;
+  }
+  if (type === 'style') {
+    return !(typeof props.precedence === 'string' && props.href != null);
+  }
+  return (
+    props.src == null &&
+    !props.async &&
+    (props.type === 'application/ld+json' || props.type === 'application/json')
+  );
+}
+
+function isStaticPropValue(value: any): boolean {
+  if (value === null || value === undefined) {
+    return true;
+  }
+  const t = typeof value;
+  if (t === 'string' || t === 'number' || t === 'boolean') {
+    return true;
+  }
+  // $FlowFixMe[incompatible-use]
+  // $FlowFixMe[prop-missing]
+  if (t === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    // style / dangerouslySetInnerHTML: one level of primitives.
+    // $FlowFixMe[incompatible-use]
+    for (const k in value) {
+      const v = value[k];
+      const vt = typeof v;
+      if (v != null && vt !== 'string' && vt !== 'number' && vt !== 'boolean') {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+// The HTML parser rewrites some nestings of valid element names: a block
+// closes the <p> it is in, an <a> in an <a> starts a new one, a <tr> under a
+// <table> gets a <tbody>. React hydrates what it rendered against what the
+// parser made of it and recovers from the difference. A stub adopts whatever
+// is there, so a subtree with such a nesting is not stubbed, and renders and
+// recovers like it does without HTML-first. (validateDOMNesting reports more.)
+//
+// For each element, isStaticHostNode computes which of these it contains, as
+// NEST_* bits: what a surrounding <p>, <a>, <li> or <dd> would not allow below
+// it. A scope element (a table cell, ...) keeps what is in it from reaching
+// further out.
+const NEST_P = 1;
+const NEST_A = 2;
+const NEST_LI = 4;
+const NEST_DD = 8;
+const NOT_STATIC = -1;
+
+const closesP = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'center',
+  'details',
+  'dialog',
+  'dir',
+  'div',
+  'dd',
+  'dl',
+  'dt',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hgroup',
+  'hr',
+  'li',
+  'listing',
+  'main',
+  'menu',
+  'nav',
+  'ol',
+  'p',
+  'plaintext',
+  'pre',
+  'search',
+  'section',
+  'summary',
+  'table',
+  'ul',
+  'xmp',
+]);
+
+const nestingScopes = new Set([
+  'applet',
+  'button',
+  'caption',
+  'html',
+  'marquee',
+  'object',
+  'table',
+  'td',
+  'template',
+  'th',
+]);
+
+function nestingBits(tag: string): number {
+  return (
+    (closesP.has(tag) ? NEST_P : 0) |
+    (tag === 'a' ? NEST_A : 0) |
+    (tag === 'li' ? NEST_LI : 0) |
+    (tag === 'dd' || tag === 'dt' ? NEST_DD : 0)
+  );
+}
+
+// What an open element with this tag does not allow below it.
+function nestingForbids(tag: string): number {
+  return (
+    (tag === 'p' ? NEST_P : 0) |
+    (tag === 'a' ? NEST_A : 0) |
+    (tag === 'li' ? NEST_LI : 0) |
+    (tag === 'dd' || tag === 'dt' ? NEST_DD : 0)
+  );
+}
+
+// What does not reach out of an element with this tag.
+function nestingShields(tag: string): number {
+  if (nestingScopes.has(tag)) {
+    return NEST_P | NEST_A | NEST_LI | NEST_DD;
+  }
+  return (
+    (tag === 'ul' || tag === 'ol' ? NEST_LI : 0) | (tag === 'dl' ? NEST_DD : 0)
+  );
+}
+
+function isHeadingTag(tag: string): boolean {
+  return (
+    tag.length === 2 &&
+    tag.charCodeAt(0) === 104 /* h */ &&
+    tag[1] >= '1' &&
+    tag[1] <= '6'
+  );
+}
+
+function isTableContent(tag: string): boolean {
+  return (
+    tag === 'table' ||
+    tag === 'thead' ||
+    tag === 'tbody' ||
+    tag === 'tfoot' ||
+    tag === 'tr' ||
+    tag === 'colgroup'
+  );
+}
+
+// Whether the parser moves or repairs a `tag` that is a direct child of
+// `parentTag`.
+function isRewrittenChild(parentTag: string, tag: string): boolean {
+  switch (parentTag) {
+    case 'table':
+      return !(
+        tag === 'caption' ||
+        tag === 'colgroup' ||
+        tag === 'thead' ||
+        tag === 'tbody' ||
+        tag === 'tfoot' ||
+        tag === 'style' ||
+        tag === 'script' ||
+        tag === 'template'
+      );
+    case 'thead':
+    case 'tbody':
+    case 'tfoot':
+      return !(
+        tag === 'tr' ||
+        tag === 'style' ||
+        tag === 'script' ||
+        tag === 'template'
+      );
+    case 'tr':
+      return !(
+        tag === 'td' ||
+        tag === 'th' ||
+        tag === 'style' ||
+        tag === 'script' ||
+        tag === 'template'
+      );
+    case 'colgroup':
+      return !(tag === 'col' || tag === 'template');
+  }
+  return (
+    (isHeadingTag(parentTag) && isHeadingTag(tag)) ||
+    // These are dropped outside of a table.
+    tag === 'caption' ||
+    tag === 'col' ||
+    tag === 'colgroup' ||
+    tag === 'tbody' ||
+    tag === 'td' ||
+    tag === 'tfoot' ||
+    tag === 'th' ||
+    tag === 'thead' ||
+    tag === 'tr'
+  );
+}
+
+// The parent of the element that is being resolved, and what its ancestors do
+// not allow below them. Unknown (null, 0) when the parent is not a host
+// element of this request, e.g. a Client Component.
+let hostParentTag: null | string = null;
+let hostForbidden = 0;
+let elementChildrenParentTag: null | string = null;
+let elementChildrenForbidden = 0;
+
+// The NEST_* bits of a node that React renders in place of a host element,
+// or NOT_STATIC if it is not static, or if the parser would rewrite it where
+// it is, as a child of a `parentTag` element.
+function isStaticHostNode(
+  cache: WeakMap<any, number>,
+  node: any,
+  parentTag: null | string,
+): number {
+  if (node === null || node === undefined) {
+    return 0;
+  }
+  const t = typeof node;
+  if (t === 'string' || t === 'number' || t === 'boolean') {
+    if (
+      parentTag !== null &&
+      isTableContent(parentTag) &&
+      (t === 'number' || (t === 'string' && /[^ \t\n\f\r]/.test(node)))
+    ) {
+      // Text in a table is moved out of it.
+      return NOT_STATIC;
+    }
+    return 0;
+  }
+  if (isArray(node)) {
+    let bits = 0;
+    for (let i = 0; i < node.length; i++) {
+      const childBits = isStaticHostNode(cache, node[i], parentTag);
+      if (childBits === NOT_STATIC) {
+        return NOT_STATIC;
+      }
+      bits |= childBits;
+    }
+    return bits;
+  }
+  // $FlowFixMe[invalid-compare]
+  if (t === 'object' && node.$$typeof === REACT_ELEMENT_TYPE) {
+    // Each element is classified once per request, otherwise every ancestor of
+    // a non-static element walks all of the static content below it again.
+    let bits = cache.get(node);
+    if (bits === undefined) {
+      bits = isStaticHostElement(cache, node);
+      cache.set(node, bits);
+    }
+    if (
+      bits !== NOT_STATIC &&
+      parentTag !== null &&
+      ((nestingForbids(parentTag) & bits) !== 0 ||
+        isRewrittenChild(parentTag, node.type))
+    ) {
+      return NOT_STATIC;
+    }
+    return bits;
+  }
+  return NOT_STATIC;
+}
+
+function isStaticHostElement(cache: WeakMap<any, number>, node: any): number {
+  const type = node.type;
+  if (typeof type !== 'string') {
+    return NOT_STATIC;
+  }
+  const props = node.props;
+  if (nonStubbableTags.has(type)) {
+    if (
+      !enableFlightHTMLFirst ||
+      (type !== 'style' && type !== 'script') ||
+      !isStubbableStyleOrScript(type, props)
+    ) {
+      return NOT_STATIC;
+    }
+  }
+  for (const k in props) {
+    if (k === 'children') {
+      continue;
+    }
+    if (k === 'ref' || !isStaticPropValue(props[k])) {
+      return NOT_STATIC;
+    }
+  }
+  const childBits = isStaticHostNode(cache, props.children, type);
+  if (childBits === NOT_STATIC) {
+    return NOT_STATIC;
+  }
+  return nestingBits(type) | (childBits & ~nestingShields(type));
+}
+
+// A stub costs the browser a component that adopts the DOM. For a small
+// element, such as a <span> around a label, that is a bad trade: a page with
+// thousands of them hydrates slower than it does with the elements, and can
+// even get larger. So an element needs MIN_STUB_NODES host nodes (elements and
+// text) to be stubbed, unless it takes BIG_STUB_WEIGHT bytes in the payload:
+// the payload of a large element, such as a long script or a block of inner
+// HTML, is worth a component whatever its nodes. So is one that is mostly
+// attributes, such as an <svg> path: DENSE_STUB_WEIGHT bytes of tags and props,
+// not counting more than MAX_TEXT_WEIGHT bytes of each text, which the HTML
+// has anyway. staticWeight and staticNodes stop counting at the limit, so they
+// cost nothing for a large tree. They return what is left of the budget.
+const BIG_STUB_WEIGHT = 512;
+const MIN_STUB_NODES = 8;
+const DENSE_STUB_WEIGHT = 80;
+const MAX_TEXT_WEIGHT = 8;
+
+function staticWeight(node: any, budget: number, textLimit: number): number {
+  if (typeof node === 'string') {
+    return budget - (node.length < textLimit ? node.length : textLimit);
+  }
+  if (node === null || typeof node !== 'object') {
+    return budget - 1;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length && budget > 0; i++) {
+      budget = staticWeight(node[i], budget, textLimit);
+    }
+    return budget;
+  }
+  // ["$","tag",null,{...}]
+  budget -= 16 + node.type.length;
+  const props = node.props;
+  for (const k in props) {
+    if (budget <= 0) {
+      break;
+    }
+    const value: mixed = props[k];
+    if (k === 'children') {
+      budget = staticWeight(value, budget, textLimit);
+    } else if (typeof value === 'string') {
+      budget -= k.length + 6 + value.length;
+    } else if (value != null && typeof value === 'object') {
+      const object: {[key: string]: mixed} = value as any;
+      budget -= k.length + 5;
+      for (const j in object) {
+        const v = object[j];
+        budget -= j.length + 6 + (typeof v === 'string' ? v.length : 4);
+      }
+    } else {
+      budget -= k.length + 8;
+    }
+  }
+  return budget;
+}
+
+function staticNodes(node: any, budget: number): number {
+  if (typeof node === 'string') {
+    return node === '' ? budget : budget - 1;
+  }
+  if (typeof node === 'number') {
+    return budget - 1;
+  }
+  if (node === null || typeof node !== 'object') {
+    return budget;
+  }
+  if (isArray(node)) {
+    for (let i = 0; i < node.length && budget > 0; i++) {
+      budget = staticNodes(node[i], budget);
+    }
+    return budget;
+  }
+  // ["$","tag",null,{...}]
+  budget--;
+  return budget > 0 ? staticNodes(node.props.children, budget) : budget;
+}
+
+function tryStubHostElement(
+  request: Request,
+  task: Task,
+  element: ReactElement,
+): null | string {
+  const onStubbedRow = request.onStubbedRow;
+  const cache = request.staticHostCache;
+  if (
+    onStubbedRow === null ||
+    cache === null ||
+    stubbingDepth > 0 ||
+    typeof element.type !== 'string' ||
+    voidTags.has(element.type) ||
+    // The stub is "$J<id>:<tag>[:<key>]", so the tag can't contain a colon.
+    element.type.indexOf(':') !== -1
+  ) {
+    return null;
+  }
+  const bits = isStaticHostNode(cache, element, hostParentTag);
+  if (bits === NOT_STATIC || (hostForbidden & bits) !== 0) {
+    return null;
+  }
+  if (
+    staticNodes(element, MIN_STUB_NODES) > 0 &&
+    staticWeight(element, BIG_STUB_WEIGHT, Infinity) > 0 &&
+    staticWeight(element, DENSE_STUB_WEIGHT, MAX_TEXT_WEIGHT) > 0
+  ) {
+    return null;
+  }
+  // The stub keeps the key of the element (including the keys of the Server
+  // Components around it), so that reordering or swapping it remounts.
+  let key: ReactKey = element.key;
+  const keyPath = task.keyPath;
+  if (keyPath === REACT_OPTIMISTIC_KEY || key === REACT_OPTIMISTIC_KEY) {
+    // Optimistic keys are not representable in the stub.
+    return null;
+  }
+  if (key === null) {
+    key = keyPath;
+  } else if (keyPath !== null) {
+    key = keyPath + ',' + key;
+  }
+  const keySuffix = key === null ? '' : ':' + key;
+  const id = request.nextChunkId++;
+  const onStubbedValue = request.onStubbedValue;
+  if (onStubbedValue !== null) {
+    if (enableTaint) {
+      assertNoTaint(element, new Set());
+    }
+    onStubbedValue(id, element);
+    return '$J' + id.toString(16) + ':' + element.type + keySuffix;
+  }
+  const prevSize = serializedSize;
+  const prevKeyPath = task.keyPath;
+  const prevImplicitSlot = task.implicitSlot;
+  // The stubbed row is emitted whole; never defer pieces of it into new tasks.
+  serializedSize = -Infinity;
+  stubbingDepth++;
+  let json: string;
+  try {
+    const rendered = renderModelDestructive(
+      request,
+      task,
+      {'': element} as any,
+      '',
+      element as any,
+    );
+    // The element consumed the key context of the Server Components around it.
+    // Its children must not see it again (an array child would be wrapped in
+    // a keyed Fragment forever), so reset it before resolving them, like a
+    // finished render does when it returns to its caller.
+    task.keyPath = null;
+    task.implicitSlot = false;
+    const resolved =
+      rendered !== null && typeof rendered === 'object'
+        ? resolveModelChildren(request, task, rendered)
+        : rendered;
+    // $FlowFixMe[incompatible-type] stringify can return null for undefined but we never do
+    json = stringify(resolved);
+  } finally {
+    stubbingDepth--;
+    serializedSize = prevSize;
+    task.keyPath = prevKeyPath;
+    task.implicitSlot = prevImplicitSlot;
+  }
+  // Not written to the stream: handed to the framework instead.
+  onStubbedRow(id, json);
+  return '$J' + id.toString(16) + ':' + element.type + keySuffix;
+}
+
+// A live row (onValue) skips serialization, which is where taint is
+// enforced, so apply the same checks to the value before handing it out.
+function assertNoTaint(value: any, seen: Set<any>): void {
+  if (typeof value === 'string' || typeof value === 'bigint') {
+    const tainted = TaintRegistryValues.get(value);
+    if (tainted !== undefined) {
+      throwTaintViolation(tainted.message);
+    }
+    return;
+  }
+  if (value === null || typeof value !== 'object' || seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+  const tainted = TaintRegistryObjects.get(value);
+  if (tainted !== undefined) {
+    throwTaintViolation(tainted);
+  }
+  if (value.$$typeof === REACT_ELEMENT_TYPE) {
+    assertNoTaint(value.props, seen);
+  } else if (isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      assertNoTaint(value[i], seen);
+    }
+  } else {
+    for (const key in value) {
+      assertNoTaint(value[key], seen);
+    }
+  }
+}
+
 function renderModel(
   request: Request,
   task: Task,
@@ -4220,6 +4988,16 @@ function renderModelDestructive(
   if (typeof value === 'object') {
     switch ((value as any).$$typeof) {
       case REACT_ELEMENT_TYPE: {
+        if (
+          enableFlightHTMLFirst &&
+          request.onStubbedRow !== null &&
+          hostPosition
+        ) {
+          const stubbed = tryStubHostElement(request, task, value as any);
+          if (stubbed !== null) {
+            return stubbed;
+          }
+        }
         let elementEntry = null;
         const writtenObjects = request.writtenObjects;
         if (task.keyPath !== null || task.implicitSlot) {
@@ -4724,7 +5502,15 @@ function renderModelDestructive(
       }
     }
     // $FlowFixMe[invalid-compare]
-    if (value.length >= 1024 && byteLengthOfChunk !== null) {
+    if (
+      value.length >= 1024 &&
+      // $FlowFixMe[invalid-compare]
+      byteLengthOfChunk !== null &&
+      // A stubbed row is one self-contained JSON string
+      // for the side channel. Its big strings stay inline in that string so
+      // nothing it contains reaches the main stream.
+      !(stubbingDepth > 0)
+    ) {
       // For large strings, we encode them outside the JSON payload so that we
       // don't have to double encode and double parse the strings. This can also
       // be more compact in case the string has a lot of escaped characters.
@@ -4906,6 +5692,9 @@ function logRecoverableError(
 function fatalError(request: Request, error: mixed): void {
   const onFatalError = request.onFatalError;
   onFatalError(error);
+  if (enableFlightHTMLFirst) {
+    releaseStubbedHold(request);
+  }
   if (enableTaint) {
     cleanupTaintQueue(request);
   }
@@ -5258,6 +6047,159 @@ function emitHintChunk<Code: HintCode>(
   const row = ':H' + code + json + '\n';
   const processedChunk = stringToChunk(row);
   request.completedHintChunks.push(processedChunk);
+}
+
+function emitStubbedRowsRequestIdChunk(
+  request: Request,
+  requestId: number,
+): void {
+  // enableFlightHTMLFirst: identify the internal row registry across tee().
+  const row = ':P' + requestId.toString(16) + '\n';
+  request.completedHintChunks.push(stringToChunk(row));
+}
+
+// enableFlightHTMLFirst, late rows. The consumer that renders HTML only
+// renders part of what was stubbed: the children of a closed modal or of a
+// client-only wrapper never reach the HTML, so a browser that mounts them later
+// has nothing to adopt. Once the claimer has rendered, the rows it did not
+// render are written to the stream as ordinary rows under the id their stub
+// refers to, and the browser resolves the stub from those.
+//
+// The stream is kept open for that with one pending chunk. When everything
+// else is written, `:q` tells the claimer that it has seen it all, and the
+// claimer calls entry.settle() once its renderer had a chance to run. A wrong
+// guess is safe either way: a late row for content that is in the HTML only
+// costs bytes, and a stub without HTML or a late row asks the framework for
+// the full payload as before (onMissingHTML).
+function holdForLateStubbedRows(
+  request: Request,
+  entry: StubbedRowsEntry,
+): void {
+  request.stubbedEntry = entry;
+  request.pendingChunks++;
+  // The entry is reachable from the global registry until it is claimed, and
+  // must not keep the request alive (see releaseStubbedRowsWhenCollected).
+  if (typeof WeakRef === 'function') {
+    const weakRequest = new WeakRef(request);
+    entry.settle = () => {
+      const strongRequest = weakRequest.deref();
+      if (strongRequest !== undefined) {
+        settleStubbedRows(strongRequest);
+      }
+    };
+  } else {
+    entry.settle = settleStubbedRows.bind(null, request);
+  }
+}
+
+// How long a claimer that never settles (it stopped reading the stream) can
+// keep the stream open after everything else was written.
+const STUBBED_SETTLE_TIMEOUT = 1000;
+
+// Called at the end of a flush that left nothing but the hold pending.
+function flushStubbedEnd(request: Request): void {
+  if (request.stubbedEnd === 0) {
+    request.stubbedEnd = 1;
+    request.completedHintChunks.push(stringToChunk(':q\n'));
+    if (request.destination !== null) {
+      flushCompletedChunks(request);
+    }
+    return;
+  }
+  if (request.stubbedEnd === 1 && request.completedHintChunks.length === 0) {
+    request.stubbedEnd = 2;
+    // A consumer in this process claims the rows as soon as it reads the first
+    // bytes. If nothing did shortly after the last bytes were written, the
+    // stream goes somewhere else (or is read later, from a buffer) and nobody
+    // is going to settle it.
+    scheduleWork(() => {
+      scheduleWork(() => {
+        const entry = request.stubbedEntry;
+        if (entry === null) {
+          return;
+        }
+        if (entry.claimed) {
+          request.stubbedTimeout = setTimeout(
+            settleStubbedRows.bind(null, request),
+            STUBBED_SETTLE_TIMEOUT,
+          );
+        } else {
+          if (!canReleaseStubbedRowsWhenCollected()) {
+            // Without FinalizationRegistry nothing else would ever drop them.
+            releaseStubbedRowsRegistry(request.stubbedRequestId);
+          }
+          finishStubbedHold(request);
+        }
+      });
+    });
+  }
+}
+
+function releaseStubbedHold(request: Request): void {
+  const entry = request.stubbedEntry;
+  if (entry !== null) {
+    entry.settle = null;
+    request.stubbedEntry = null;
+    request.pendingChunks--;
+    if (request.stubbedTimeout !== null) {
+      clearTimeout(request.stubbedTimeout);
+      request.stubbedTimeout = null;
+    }
+  }
+}
+
+function finishStubbedHold(request: Request): void {
+  try {
+    releaseStubbedHold(request);
+    flushCompletedChunks(request);
+  } catch (error) {
+    logRecoverableError(request, error, null);
+    fatalError(request, error);
+  }
+}
+
+function settleStubbedRows(request: Request): void {
+  const entry = request.stubbedEntry;
+  if (entry === null || request.status > OPEN) {
+    return;
+  }
+  // The late rows are complete, and nothing after this point has a consumer
+  // that could still render it to HTML.
+  request.onStubbedRow = null;
+  request.onStubbedValue = null;
+  // All ready was already reported if it was reached, the late rows are not
+  // part of it.
+  const onAllReady = request.onAllReady;
+  request.onAllReady = noop;
+  try {
+    const rendered = entry.rendered;
+    entry.rows.forEach((value, id) => {
+      if (!rendered.has(id)) {
+        const task = createTaskWithID(
+          request,
+          id,
+          value as any,
+          null,
+          false,
+          createRootFormatContext(),
+          request.abortableTasks,
+          enableProfilerTimer ? performance.now() : 0,
+          null,
+          null,
+          null,
+          request.rootUnit,
+        );
+        retryTask(request, task);
+      }
+    });
+  } catch (error) {
+    logRecoverableError(request, error, null);
+    fatalError(request, error);
+    return;
+  } finally {
+    request.onAllReady = onAllReady;
+  }
+  finishStubbedHold(request);
 }
 
 function emitLedgerChunk(request: Request, row: string): void {
@@ -6943,6 +7885,8 @@ function retryTaskImpl(request: Request, task: Task): void {
 
 function retryTaskWithRequest(request: Request, task: Task): void {
   const prevCanEmitDebugInfo = canEmitDebugInfo;
+  const prevHostPosition = hostPosition;
+  hostPosition = task.hostPosition;
   task.status = RENDERING;
 
   // We stash the outer parent size so we can restore it when we exit.
@@ -7068,6 +8012,7 @@ function retryTaskWithRequest(request: Request, task: Task): void {
     if (__DEV__) {
       canEmitDebugInfo = prevCanEmitDebugInfo;
     }
+    hostPosition = prevHostPosition;
     serializedSize = parentSerializedSize;
   }
 }
@@ -7086,9 +8031,12 @@ function tryStreamTaskWithRequest(request: Request, task: Task): void {
     canEmitDebugInfo = false;
   }
   const parentSerializedSize = serializedSize;
+  const prevHostPosition = hostPosition;
+  hostPosition = task.hostPosition;
   try {
     emitChunk(request, task, task.model);
   } finally {
+    hostPosition = prevHostPosition;
     serializedSize = parentSerializedSize;
     if (__DEV__) {
       canEmitDebugInfo = prevCanEmitDebugInfo;
@@ -7394,6 +8342,15 @@ function flushCompletedChunks(request: Request): void {
       flushBuffered(destination);
     }
   }
+  if (
+    enableFlightHTMLFirst &&
+    request.pendingChunks === 1 &&
+    request.stubbedEntry !== null &&
+    request.stubbedEnd !== 2
+  ) {
+    flushStubbedEnd(request);
+    return;
+  }
   if (request.pendingChunks === 0) {
     // There are no pending chunks left, so the render is complete and its cache
     // signal is aborted here. Debug chunks can still be pending, but they carry
@@ -7629,6 +8586,15 @@ export function abort(request: Request, reason: mixed): void {
   }
   try {
     request.status = ABORTING;
+    if (enableFlightHTMLFirst && request.stubbedRequestId !== 0) {
+      // No createFrom* claimed the rows (cancelled before SSR). Drop them.
+      releaseStubbedRowsRegistry(request.stubbedRequestId);
+      request.stubbedRequestId = 0;
+    }
+    if (enableFlightHTMLFirst) {
+      // Nothing waits for late rows of an aborted render.
+      releaseStubbedHold(request);
+    }
     if (enableProfilerTimer) {
       request.abortTime = performance.now();
     }

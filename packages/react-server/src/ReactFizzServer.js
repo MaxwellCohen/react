@@ -74,6 +74,7 @@ import {
   writeCompletedSegmentInstruction,
   writeHoistablesForBoundary,
   pushTextInstance,
+  pushStubMarker,
   pushStartInstance,
   pushEndInstance,
   pushSegmentFinale,
@@ -188,7 +189,12 @@ import {
   enableViewTransitionParentEnterExit,
   enableFizzBlockingRender,
   enableCPUSuspense,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
+import {
+  markStubbedRendered,
+  getStubbedRenderedMarker,
+} from 'shared/ReactFlightHTMLFirstRegistry';
 
 import assign from 'shared/assign';
 import noop from 'shared/noop';
@@ -348,6 +354,20 @@ const ERRORED = 4;
 const POSTPONED = 5;
 
 type Root = null;
+
+// enableFlightHTMLFirst: whether a task renders inside an Activity boundary.
+// It is a context, so that the tasks that continue the render after a
+// suspension have it too.
+const ActivityMarkerContext: ReactContext<boolean> = {
+  $$typeof: REACT_CONTEXT_TYPE,
+  _currentValue: false,
+  _currentValue2: false,
+  _threadCount: 0,
+  Provider: null as any,
+  Consumer: null as any,
+  _currentRenderer: null,
+  _currentRenderer2: null,
+};
 
 type Segment = {
   status: 0 | 1 | 2 | 3 | 4 | 5,
@@ -832,13 +852,20 @@ export function resumeAndPrerenderRequest(
 let currentRequest: null | Request = null;
 
 export function resolveRequest(): null | Request {
-  if (currentRequest) return currentRequest;
+  // Prefer AsyncLocalStorage so concurrent Fizz renders stay correct even if
+  // currentRequest is pinned to a suspended sibling (see performWork).
   // $FlowFixMe[constant-condition]
   if (supportsRequestStorage) {
     const store = requestStorage.getStore();
     if (store) return store;
   }
-  return null;
+  return currentRequest;
+}
+
+function clearCurrentRequest(request: Request): void {
+  if (currentRequest === request) {
+    currentRequest = null;
+  }
 }
 
 function pingTask(request: Request, task: Task): void {
@@ -1457,9 +1484,11 @@ function fatalError(
     onFatalError(error);
   }
   endRenderLifetime(request);
-  if (request.destination !== null) {
+  const destination = request.destination;
+  if (destination !== null) {
     request.status = CLOSED;
-    closeWithError(request.destination, error);
+    clearCurrentRequest(request);
+    closeWithError(destination, error);
   } else {
     request.status = CLOSING;
     // abort() already stored the reason that every remaining task must
@@ -3032,9 +3061,15 @@ function renderActivity(
       // A visible Activity boundary has its children rendered inside the boundary.
       const prevKeyPath = task.keyPath;
       task.keyPath = keyPath;
+      if (enableFlightHTMLFirst) {
+        task.context = pushProvider(ActivityMarkerContext, true);
+      }
       // We use the non-destructive form because if something suspends, we still
       // need to pop back up and finish the end comment.
       renderNode(request, task, props.children, -1);
+      if (enableFlightHTMLFirst) {
+        task.context = popProvider(ActivityMarkerContext);
+      }
       task.keyPath = prevKeyPath;
       pushEndActivityBoundary(segment.chunks, request.renderState);
       segment.lastPushedText = false;
@@ -3403,6 +3438,33 @@ function replayElement(
   }
   // We didn't find any matching nodes. We assume that this element was already
   // rendered in the prelude and skip it.
+  if (enableFlightHTMLFirst) {
+    markStubsInPrelude(props.children, type);
+  }
+}
+
+// enableFlightHTMLFirst: the stubs of a Flight response that sit in host
+// position below an element the prelude contains are in the prelude's HTML. Not
+// the props of a Client Component: they may never render. Not a Suspense
+// boundary either: one that errored is client rendered, so the prelude only has
+// its fallback.
+function markStubsInPrelude(node: any, type: any): void {
+  if (typeof type !== 'string' && type !== REACT_FRAGMENT_TYPE) {
+    return;
+  }
+  if (node === null || typeof node !== 'object') {
+    return;
+  }
+  const $$typeof = node.$$typeof;
+  if ($$typeof === REACT_LAZY_TYPE) {
+    markStubbedRendered(node);
+  } else if ($$typeof === REACT_ELEMENT_TYPE) {
+    markStubsInPrelude(node.props.children, node.type);
+  } else if (isArray(node)) {
+    for (let i = 0; i < node.length; i++) {
+      markStubsInPrelude(node[i], type);
+    }
+  }
 }
 
 function validateIterable(
@@ -3646,6 +3708,20 @@ function retryNode(request: Request, task: Task): void {
         if (request.aborted) {
           // eslint-disable-next-line no-throw-literal
           throw null;
+        }
+        if (enableFlightHTMLFirst) {
+          const segment = task.blockedSegment;
+          // React can only discard DOM that is in a boundary, which it hydrates
+          // on its own, so a stub outside of them has no marker.
+          const marker =
+            segment === null ||
+            (task.blockedBoundary === null &&
+              !readContext(ActivityMarkerContext))
+              ? null
+              : getStubbedRenderedMarker(lazyNode);
+          if (segment !== null && marker !== null) {
+            pushStubMarker(segment.chunks, marker, request.renderState);
+          }
         }
         // Now we render the resolved node
         renderNodeDestructive(request, task, resolvedNode, childIndex);
@@ -5784,7 +5860,20 @@ export function performWork(request: Request): void {
       // we'll to restore the context to what it was before returning.
       switchContext(prevContext);
     }
-    currentRequest = prevRequest;
+    // Keep currentRequest pinned to this in-flight request while it is still
+    // open so Float hints that arrive via an overlapping in-process Flight
+    // write (outside requestStorage) can still resolve resources. Never leave
+    // a closed/aborted request pinned (that breaks later renders in-process).
+    if (request.aborted || request.status > OPEN) {
+      currentRequest =
+        prevRequest !== null &&
+        !prevRequest.aborted &&
+        !(prevRequest.status > OPEN)
+          ? prevRequest
+          : null;
+    } else if (prevRequest !== null) {
+      currentRequest = prevRequest;
+    }
   }
 }
 
@@ -6494,6 +6583,7 @@ function flushCompletedQueues(
       // We're done.
       endRenderLifetime(request);
       request.status = CLOSED;
+      clearCurrentRequest(request);
       close(destination);
       // We need to stop flowing now because we do not want any async contexts which might call
       // float methods to initiate any flushes after this point
@@ -6602,6 +6692,7 @@ export function prepareForStartFlowingIfBeforeAllReady(request: Request) {
 export function startFlowing(request: Request, destination: Destination): void {
   if (request.status === CLOSING) {
     request.status = CLOSED;
+    clearCurrentRequest(request);
     let error = request.fatalError;
     if (isRecoverableError(error)) {
       // An aborted request keeps its original branded reason while tasks
