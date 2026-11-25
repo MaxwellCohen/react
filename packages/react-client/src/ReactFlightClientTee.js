@@ -50,6 +50,7 @@ type TeeInstance = {
   +_version: string,
   +_dispatcher: FlightTeeDispatcher,
   +_elementFields: Object,
+  +_requestId: number,
   _response: Response,
   // Keeps the response alive until it's read, since rows can arrive while
   // nothing else is waiting on it.
@@ -276,6 +277,26 @@ export const teeDispatcher: FlightTeeDispatcher = Object.freeze({
   X /* error */: teeError,
 });
 
+// enableFlightHTMLFirst: identifies the payload, so that the stubs of every
+// decode of it in the browser share the node that hydration adopted. It must
+// not repeat across servers or restarts, or a browser would mix up the nodes
+// of two payloads. Non-zero, at most 2^53 - 1. Made when the tee is created,
+// not by the render, which frameworks may forbid from reading randomness.
+function randomRequestId(): number {
+  // $FlowFixMe[cannot-resolve-name]
+  const crypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+  let high, low;
+  if (crypto != null && typeof crypto.getRandomValues === 'function') {
+    const words = crypto.getRandomValues(new Uint32Array(2));
+    high = words[0] & 0x1fffff;
+    low = words[1];
+  } else {
+    high = Math.floor(Math.random() * 0x200000);
+    low = Math.floor(Math.random() * 0x100000000);
+  }
+  return high * 0x100000000 + low || 1;
+}
+
 export function createTee(response: Response): FlightTee {
   if (!enableFlightTee) {
     throw new Error('createTee is not supported in this build of React.');
@@ -285,6 +306,7 @@ export function createTee(response: Response): FlightTee {
     _version: FLIGHT_TEE_VERSION,
     _dispatcher: teeDispatcher,
     _elementFields: ELEMENT_FIELDS,
+    _requestId: randomRequestId(),
     _response: response,
     _retainedResponse: retainResponse(response),
     // There's no stream to show as the I/O's value in DEV.

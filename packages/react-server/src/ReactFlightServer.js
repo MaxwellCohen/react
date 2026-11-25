@@ -1007,7 +1007,7 @@ function stubForTee(
   htmlFirstDone: Thenable<mixed>,
 ): void {
   const entry: StubbedRowsEntry = {
-    requestId: randomStubbedRequestId(),
+    requestId: tee._requestId,
     rows: new Map(),
     rendered: new Set(),
   };
@@ -5074,23 +5074,28 @@ function copyStaticHostElement(request: Request, node: any): mixed {
 // BIG_STUB_WEIGHT bytes it also needs MIN_STUB_NODES host nodes,
 // because a component costs more than hydrating a handful of nodes. The
 // payload of a large element, such as a long script or a block of inner HTML,
-// is worth a component whatever its nodes. staticWeight and staticNodes
-// estimate that, and stop counting at the limit, so they cost nothing for a
-// large tree. They return what is left of the budget.
+// is worth a component whatever its nodes. So is one that is mostly
+// attributes, such as an <svg> path: DENSE_STUB_WEIGHT bytes of tags and props,
+// not counting more than MAX_TEXT_WEIGHT bytes of each text, which the HTML
+// has anyway. staticWeight and staticNodes estimate that, and stop counting at
+// the limit, so they cost nothing for a large tree. They return what is left of
+// the budget.
 const MIN_STUB_WEIGHT = 48;
 const BIG_STUB_WEIGHT = 512;
 const MIN_STUB_NODES = 8;
+const DENSE_STUB_WEIGHT = 80;
+const MAX_TEXT_WEIGHT = 8;
 
-function staticWeight(node: any, budget: number): number {
+function staticWeight(node: any, budget: number, textLimit: number): number {
   if (typeof node === 'string') {
-    return budget - node.length;
+    return budget - (node.length < textLimit ? node.length : textLimit);
   }
   if (node === null || typeof node !== 'object') {
     return budget - 1;
   }
   if (isArray(node)) {
     for (let i = 0; i < node.length && budget > 0; i++) {
-      budget = staticWeight(node[i], budget);
+      budget = staticWeight(node[i], budget, textLimit);
     }
     return budget;
   }
@@ -5103,7 +5108,7 @@ function staticWeight(node: any, budget: number): number {
     }
     const value: mixed = props[k];
     if (k === 'children') {
-      budget = staticWeight(value, budget);
+      budget = staticWeight(value, budget, textLimit);
     } else if (typeof value === 'string') {
       budget -= k.length + 6 + value.length;
     } else if (value != null && typeof value === 'object') {
@@ -5168,9 +5173,10 @@ function tryStubHostElement(
   const value = copyStaticHostNode(request, element);
   if (
     value === NOT_STATIC ||
-    staticWeight(value, MIN_STUB_WEIGHT) > 0 ||
-    (staticNodes(value, MIN_STUB_NODES) > 0 &&
-      staticWeight(value, BIG_STUB_WEIGHT) > 0)
+    (staticWeight(value, DENSE_STUB_WEIGHT, MAX_TEXT_WEIGHT) > 0 &&
+      (staticWeight(value, MIN_STUB_WEIGHT, Infinity) > 0 ||
+        (staticNodes(value, MIN_STUB_NODES) > 0 &&
+          staticWeight(value, BIG_STUB_WEIGHT, Infinity) > 0)))
   ) {
     return null;
   }
@@ -6450,25 +6456,6 @@ function emitHintChunk<Code: HintCode>(
   const row = ':H' + code + json + '\n';
   request.completedHintChunks.push(stringToChunk(row));
   teeWireRow(request, row);
-}
-
-// enableFlightHTMLFirst: identifies the payload, so that the stubs of every
-// decode of it in the browser share the node that hydration adopted. It must
-// not repeat across servers or restarts, or a browser would mix up the nodes
-// of two payloads. Non-zero, at most 2^53 - 1.
-function randomStubbedRequestId(): number {
-  // $FlowFixMe[cannot-resolve-name]
-  const crypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
-  let high, low;
-  if (crypto != null && typeof crypto.getRandomValues === 'function') {
-    const words = crypto.getRandomValues(new Uint32Array(2));
-    high = words[0] & 0x1fffff;
-    low = words[1];
-  } else {
-    high = Math.floor(Math.random() * 0x200000);
-    low = Math.floor(Math.random() * 0x100000000);
-  }
-  return high * 0x100000000 + low || 1;
 }
 
 function emitStubbedRowsRequestIdChunk(
