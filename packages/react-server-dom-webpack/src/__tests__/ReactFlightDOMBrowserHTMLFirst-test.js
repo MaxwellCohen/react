@@ -1146,6 +1146,38 @@ describe('ReactFlightDOMBrowser HTML-first Flight', () => {
     );
   });
 
+  it('stubs a small element that is mostly attributes', async () => {
+    const Counter = clientExports(function Counter() {
+      return <button>count</button>;
+    });
+    function App() {
+      return (
+        <main>
+          <Counter />
+          <span
+            data-first="aaaaaaaaaaaaaaaaaaaa"
+            data-second="bbbbbbbbbbbbbbbbbbbb"
+            data-third="cccccccccccccccccccc">
+            x
+          </span>
+          <p>{'medium-sentence that is over the minimum weight but not big'}</p>
+        </main>
+      );
+    }
+    const {main, rows} = await flight(<App />);
+    // The <span> has two nodes and under 512 bytes, but its attributes take 80
+    // bytes. The <p> has as many bytes, nearly all of them text.
+    expect(main).toMatch(/\$J[0-9a-f]+:span"/);
+    expect(main).not.toContain('data-first');
+    expect(main).toContain('medium-sentence');
+    const html = await ssr({main, rows});
+    const {container, errors} = await hydrate(main, html);
+    expect(errors).toEqual([]);
+    expect(container.querySelector('span').getAttribute('data-third')).toBe(
+      'cccccccccccccccccccc',
+    );
+  });
+
   it('adopts a stubbed element that has no inline style', async () => {
     const Counter = clientExports(function Counter() {
       return <button>count</button>;
