@@ -9,6 +9,7 @@
 
 import type {
   Request,
+  HTMLFirstOption,
   ReactClientValue,
 } from 'react-server/src/ReactFlightServer';
 import type {Destination} from 'react-server/src/ReactServerStreamConfigNode';
@@ -17,6 +18,7 @@ import type {ServerManifest} from 'react-client/src/ReactFlightClientConfig';
 import type {Busboy} from 'busboy';
 import type {Writable} from 'stream';
 import type {Thenable} from 'shared/ReactTypes';
+import type {FlightTee} from 'shared/ReactFlightTee';
 
 import type {Duplex} from 'stream';
 
@@ -34,6 +36,7 @@ import {
   stopFlowing,
   abort,
   attachAbortSignal,
+  attachTee,
   resolveDebugMessage,
   closeDebugChannel,
 } from 'react-server/src/ReactFlightServer';
@@ -149,6 +152,10 @@ function startReadingFromDebugChannelReadable(
 }
 
 type Options = {
+  // enableFlightHTMLFirst: a thenable that settles when the HTML render that
+  // reads the `tee` is done. Static host elements are stubbed in the bytes for
+  // that reader. {onValue} takes the stubbed elements instead.
+  htmlFirst?: HTMLFirstOption,
   debugChannel?: Readable | Writable | Duplex | WebSocket,
   environmentName?: string | (() => string),
   filterStackFrame?: (url: string, functionName: string) => boolean,
@@ -156,6 +163,7 @@ type Options = {
   identifierPrefix?: string,
   temporaryReferences?: TemporaryReferenceSet,
   startTime?: number,
+  tee?: FlightTee,
 };
 
 type PipeableStream = {
@@ -197,7 +205,11 @@ function renderToPipeableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.htmlFirst : undefined,
   );
+  if (options && options.tee) {
+    attachTee(request, options.tee);
+  }
   let hasStartedFlowing = false;
   startWork(request);
   if (debugChannelWritable !== undefined) {
@@ -356,7 +368,11 @@ function renderToReadableStream(
     __DEV__ && options ? options.environmentName : undefined,
     __DEV__ && options ? options.filterStackFrame : undefined,
     debugChannelReadable !== undefined,
+    options ? options.htmlFirst : undefined,
   );
+  if (options && options.tee) {
+    attachTee(request, options.tee);
+  }
   if (options && options.signal) {
     attachAbortSignal(request, options.signal);
   }
@@ -429,6 +445,7 @@ type PrerenderOptions = {
   temporaryReferences?: TemporaryReferenceSet,
   signal?: AbortSignal,
   startTime?: number,
+  tee?: FlightTee,
 };
 
 type StaticResult = {
@@ -465,6 +482,9 @@ function prerenderToNodeStream(
       __DEV__ && options ? options.filterStackFrame : undefined,
       false,
     );
+    if (options && options.tee) {
+      attachTee(request, options.tee);
+    }
     if (options && options.signal) {
       attachAbortSignal(request, options.signal);
     }
@@ -519,6 +539,9 @@ function prerender(
       __DEV__ && options ? options.filterStackFrame : undefined,
       false,
     );
+    if (options && options.tee) {
+      attachTee(request, options.tee);
+    }
     if (options && options.signal) {
       attachAbortSignal(request, options.signal);
     }

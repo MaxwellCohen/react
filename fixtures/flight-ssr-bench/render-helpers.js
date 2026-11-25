@@ -56,17 +56,58 @@ function renderFlightFizzNode(
   const inject = !opts || opts.inject !== false;
   const React = require('react');
   const {renderToPipeableStream} = require('react-dom/server');
-  const {createFromNodeStream} = require('react-server-dom-webpack/client');
+  const {
+    createFromNodeStream,
+    createTee,
+    createFromTee,
+  } = require('react-server-dom-webpack/client');
 
+  // opts.stub: enableFlightHTMLFirst. SSR reads the render through a tee and
+  // the render gets `htmlFirst: <thenable>`, which settles when this HTML
+  // render is done: resolved after Fizz allReady, rejected if Fizz reports an
+  // error or is aborted (React then writes a late row for every stub).
+  // opts.tee alone: a tee without stubbing (`htmlFirst: false`).
+  const stub = !!(opts && opts.stub);
+  const tee = stub || (opts && opts.tee) ? createTee(ssrManifest) : null;
+  let htmlDone = null;
+  const htmlFirst = stub
+    ? new Promise(function (resolve, reject) {
+        htmlDone = {resolve, reject, settled: false};
+      })
+    : false;
+  function settleHTML(error) {
+    if (htmlDone === null || htmlDone.settled) return;
+    htmlDone.settled = true;
+    if (error === undefined) htmlDone.resolve();
+    else htmlDone.reject(error);
+  }
   const {pipe: rscPipe} = renderRSCNode(
     clientManifest,
     AppComponent,
-    itemCount
+    itemCount,
+    {htmlFirst, tee: tee || undefined}
   );
 
   let flightStream;
   let flightScripts = '';
-  if (inject) {
+  // Resolves when the Flight stream has ended (late rows come after Fizz is
+  // done, so the injector waits for it before it writes the trailer).
+  let flightEnded = Promise.resolve();
+  if (tee !== null) {
+    // SSR reads the tee, so the bytes only go to the inlined scripts.
+    const forInline = new PassThrough();
+    flightEnded = new Promise(function (resolve) {
+      forInline.on('end', resolve);
+      forInline.on('error', resolve);
+    });
+    forInline.on('data', function (chunk) {
+      flightScripts +=
+        '<script>(self.__FLIGHT_DATA||=[]).push(' +
+        JSON.stringify(chunk.toString()) +
+        ')</script>';
+    });
+    rscPipe(forInline);
+  } else if (inject) {
     // Tee the Flight stream into SSR + script injection
     const trunk = new PassThrough();
     const forSsr = new PassThrough();
@@ -90,6 +131,9 @@ function renderFlightFizzNode(
 
   let cachedResult;
   function Root() {
+    if (!cachedResult && tee !== null) {
+      cachedResult = createFromTee(tee);
+    }
     if (!cachedResult) {
       cachedResult = createFromNodeStream(flightStream, ssrManifest);
     }
@@ -98,7 +142,10 @@ function renderFlightFizzNode(
 
   const output = new PassThrough();
 
-  const {pipe} = renderToPipeableStream(React.createElement(Root), {
+  const {pipe, abort} = renderToPipeableStream(React.createElement(Root), {
+    onAllReady() {
+      settleHTML();
+    },
     onShellReady() {
       if (inject) {
         // Buffer HTML chunks within a tick to avoid injecting scripts mid-tag.
@@ -128,23 +175,25 @@ function renderFlightFizzNode(
             cb();
           },
           flush(cb) {
-            if (timeout) {
-              clearTimeout(timeout);
-              for (const buf of buffered) {
-                let str = buf.toString();
-                if (str.endsWith(trailer)) {
-                  str = str.slice(0, -trailer.length);
+            flightEnded.then(() => {
+              if (timeout) {
+                clearTimeout(timeout);
+                for (const buf of buffered) {
+                  let str = buf.toString();
+                  if (str.endsWith(trailer)) {
+                    str = str.slice(0, -trailer.length);
+                  }
+                  this.push(str);
                 }
-                this.push(str);
+                buffered.length = 0;
               }
-              buffered.length = 0;
-            }
-            if (flightScripts) {
-              this.push(flightScripts);
-              flightScripts = '';
-            }
-            this.push(trailer);
-            cb();
+              if (flightScripts) {
+                this.push(flightScripts);
+                flightScripts = '';
+              }
+              this.push(trailer);
+              cb();
+            });
           },
         });
         pipe(injector);
@@ -154,10 +203,18 @@ function renderFlightFizzNode(
       }
     },
     onError(e) {
+      if (e && /^This rendered a large document/.test(e.message)) return; // advisory, not a failure
+      settleHTML(e);
       console.error('Flight+Fizz Node error:', e);
-      output.destroy(e);
+      if (!(opts && opts.recoverErrors)) output.destroy(e);
     },
   });
+
+  // The HTML stream going away before Fizz finished counts as an abort.
+  output.on('close', function () {
+    settleHTML(new Error('HTML render aborted'));
+  });
+  output.abort = abort;
 
   return output;
 }

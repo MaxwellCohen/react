@@ -47,7 +47,10 @@ import {
   enableComponentPerformanceTrack,
   enableFlightWeakThenables,
   enableFlightObjectReferences,
+  enableFlightHTMLFirst,
 } from 'shared/ReactFeatureFlags';
+import type {StubbedRowsEntry} from 'shared/ReactFlightTee';
+import {canUseDOM} from 'shared/ExecutionEnvironment';
 
 import {
   resolveClientReference,
@@ -90,9 +93,11 @@ import {
 
 import {
   REACT_LAZY_TYPE,
+  REACT_STUBBED_RENDERED_TYPE,
   REACT_ELEMENT_TYPE,
   ASYNC_ITERATOR,
   REACT_FRAGMENT_TYPE,
+  REACT_STATIC_STUB_TYPE,
 } from 'shared/ReactSymbols';
 
 import getComponentNameFromType from 'shared/getComponentNameFromType';
@@ -110,6 +115,8 @@ import {OMITTED_PROP_ERROR} from 'shared/ReactFlightPropertyAccess';
 import ReactVersion from 'shared/ReactVersion';
 
 import isArray from 'shared/isArray';
+
+import reportUncaughtError from 'shared/reportGlobalError';
 
 import * as React from 'react';
 
@@ -391,6 +398,19 @@ type Response = {
   _encodeFormAction: void | EncodeFormActionCallback,
   _nonce: ?string,
   _chunks: Map<number, SomeChunk<any>>,
+  // enableFlightHTMLFirst: the elements the server stubbed in the bytes, which
+  // a tee handed to this response to render the HTML from.
+  _stubbedEntry: null | StubbedRowsEntry,
+  // enableFlightHTMLFirst: the `:P` id of the payload, which names it.
+  _stubbedRequestId: number,
+  // enableFlightHTMLFirst: resolves when the stream ends, for stubs that
+  // wait for a late row.
+  _stubbedEnd: null | {promise: Promise<void>, resolve: () => void},
+  // enableFlightHTMLFirst: see recoverStubbedContent.
+  _onMissingHTML: null | (() => void),
+  _stubbedRecovery: null | Promise<empty>,
+  // enableFlightHTMLFirst: see getStubbedNodeHolder.
+  _stubbedHolders: null | StubbedHolderGroup,
   _stringDecoder: StringDecoder,
   _closed: boolean,
   _closedReason: mixed,
@@ -433,6 +453,25 @@ export type {WeakResponse as Response};
 
 function hasGCedResponse(weakResponse: WeakResponse): boolean {
   return __DEV__ && weakResponse.weak.deref() === undefined;
+}
+
+// enableFlightHTMLFirst: the stubbed elements of the render a tee reads.
+export function setStubbedRowsEntry(
+  weakResponse: WeakResponse,
+  entry: StubbedRowsEntry,
+): void {
+  if (enableFlightHTMLFirst) {
+    unwrapWeakResponse(weakResponse)._stubbedEntry = entry;
+  }
+}
+
+export function attachMissingHTML(
+  weakResponse: WeakResponse,
+  onMissingHTML: () => void,
+): void {
+  if (enableFlightHTMLFirst) {
+    unwrapWeakResponse(weakResponse)._onMissingHTML = onMissingHTML;
+  }
 }
 
 function unwrapWeakResponse(weakResponse: WeakResponse): Response {
@@ -1523,6 +1562,9 @@ export function reportGlobalError(
   const response = unwrapWeakResponse(weakResponse);
   response._closed = true;
   response._closedReason = error;
+  if (enableFlightHTMLFirst) {
+    endStubbedRows(response);
+  }
   response._chunks.forEach((chunk, id) => {
     settleChunkOnClose(response, chunk, id, error);
   });
@@ -2993,6 +3035,528 @@ export function decodeModelString(
   );
 }
 
+/**
+ * Stubbed host elements (enableFlightHTMLFirst).
+ *
+ * The server replaced a static host subtree with "$J<rowId>:<tag>" and the row
+ * itself was dropped from the payload inlined in the HTML. We decode that to
+ * <StaticStub tag>, which renders an element of the same tag with
+ * dangerouslySetInnerHTML + suppressHydrationWarning. That is the standard
+ * "static island" idiom: during hydration React matches the existing DOM node
+ * by tag/position, does not descend into or patch its children or attributes,
+ * and does not warn. No props are retained.
+ *
+ * Why a wrapper component type rather than a bare host element: on navigation
+ * the full payload has a real <tag> at this position. Because the component
+ * type differs React unmounts the stub and mounts fresh DOM, unless that DOM
+ * would be the same as what the stub adopted: then the renderer keeps the stub
+ * (it knows the type by its $$typeof, see canKeepStaticStub). A same-type host
+ * element would instead diff against {dangerouslySetInnerHTML: {__html: ''}}
+ * and append the new children after the stale server HTML.
+ *
+ * This is only correct while hydrating server-rendered HTML. A stub that is
+ * client rendered instead (a boundary or root that React client-renders after
+ * a server error or a hydration mismatch) has no DOM to adopt and no content.
+ * It suspends, so React keeps what is on screen (the server HTML or the
+ * boundary's fallback) instead of committing an empty element, and the
+ * framework is asked once to render the full payload (see
+ * recoverStubbedContent). That payload has real elements where the stubs were,
+ * which replace them.
+ */
+function StaticStub(
+  props: {
+    tag: string,
+    response: Response,
+    id: number,
+    saved: StubbedNodeHolder,
+  },
+  // The renderer that mounts a stub passes whether it is hydrating it (it
+  // knows the type by its $$typeof), so that the stub needs no hook, effect or
+  // second render to find out. A renderer that passes nothing, like Fizz,
+  // renders the element the browser adopts.
+  hydrating: void | boolean,
+): React$Node {
+  // A stub that adopted server DOM keeps that node. When the same stub mounts
+  // again later (a framework re-rendering a cached payload, e.g. on back
+  // navigation), it takes the content from that node instead of asking for
+  // the full payload. Only a stub that never had DOM has to recover.
+  const [slot, setSlot] = React.useState(() => ({
+    saved: props.saved,
+    mode: hydrating !== false ? ADOPT : modeWithoutHTML(props.saved),
+    generation: 0,
+  }));
+  // React reuses this fiber for a different stub when unkeyed siblings swap
+  // places (tabs that render one of their children). Start over for that
+  // stub, on a new node (the key), so the old node keeps its own content.
+  let current = slot;
+  if (current.saved !== props.saved) {
+    current = {
+      saved: props.saved,
+      mode: modeWithoutHTML(props.saved),
+      generation: slot.generation + 1,
+    };
+    setSlot(current);
+  }
+  const mode = current.mode;
+  if (mode === RECOVER) {
+    // The server sends the rows that its HTML render did not reach after all.
+    const late = getLateStubbedRow(props.response, props.id);
+    if (late !== null) {
+      return late;
+    }
+    // Suspends until the stream ends, then (rendering again) forever.
+    React.use(recoverStubbedContent(props.response, props.tag));
+  }
+  return React.createElement(props.tag, {
+    key: current.generation,
+    suppressHydrationWarning: true,
+    dangerouslySetInnerHTML: EMPTY_HTML,
+    ref: getStubbedRef(props.saved, mode === RESTORE),
+  });
+}
+
+// Lets the renderer keep a stub (and its DOM) when the full payload has the
+// same content in its place.
+StaticStub.$$typeof = REACT_STATIC_STUB_TYPE;
+
+function modeWithoutHTML(saved: StubbedNodeHolder): number {
+  return saved.node !== null ||
+    saved.html !== null ||
+    takeStubbedMarkerNode(saved)
+    ? RESTORE
+    : RECOVER;
+}
+
+// The server writes <!--J<payload id>:<row id>--> right before the DOM of every
+// stub. React can throw that DOM away before the stub adopts it: it
+// client-renders a boundary that did not hydrate yet (the old DOM is deleted
+// when that commits), or removes a dehydrated boundary and shows it again
+// later. The stub then rebuilds from the DOM the marker leads to, instead of
+// asking for the content again. The comments are indexed once, when the first
+// stub finds no DOM to adopt (React has not discarded it yet then) or when the
+// stream ends, whichever comes first: the walk is a pass over the document, so
+// it stays off the path of a stub that adopts. An entry stays while its stub
+// uses the DOM (a stub that has a node ignores it) and goes when the stub lets
+// go of the node, so a detached node is not held by the index.
+let stubbedMarkers: null | Map<string, Element> = null;
+
+function indexStubbedMarkers(): Map<string, Element> {
+  let index = stubbedMarkers;
+  if (index === null) {
+    index = stubbedMarkers = new Map();
+    if (canUseDOM) {
+      const walker: any = document.createTreeWalker(
+        document,
+        128, // NodeFilter.SHOW_COMMENT
+      );
+      let comment: any;
+      while ((comment = walker.nextNode()) !== null) {
+        const data: string = comment.data;
+        const node = comment.nextSibling;
+        if (
+          data.charCodeAt(0) === 74 /* "J" */ &&
+          node !== null &&
+          node.nodeType === 1
+        ) {
+          index.set(data, node);
+        }
+      }
+    }
+  }
+  return index;
+}
+
+// Takes what the stub's DOM had from the marker into `saved`, as when it is
+// detached, and says whether the marker led to it.
+function stubbedMarkerKey(saved: StubbedNodeHolder): string {
+  return 'J' + saved.requestId.toString(16) + ':' + saved.id.toString(16);
+}
+
+function takeStubbedMarkerNode(saved: StubbedNodeHolder): boolean {
+  const index = indexStubbedMarkers();
+  const node = index.get(stubbedMarkerKey(saved));
+  if (node === undefined) {
+    return false;
+  }
+  rememberStubbedNode(saved, node);
+  snapshotStubbedNode(saved);
+  return true;
+}
+
+const ADOPT = 0;
+const RESTORE = 1;
+const RECOVER = 2;
+const EMPTY_HTML = {__html: ''};
+
+// The node a stub adopted while it is attached. When it is detached (unmounted,
+// or hidden by an Activity) the holder keeps its attributes and HTML instead,
+// so the detached DOM can be collected.
+type StubbedNodeHolder = {
+  // The group of the payload (it keeps the group alive), and the payload and
+  // row ids of the marker the server wrote before the DOM, see
+  // indexStubbedMarkers.
+  group: null | StubbedHolderGroup,
+  requestId: number,
+  id: number,
+  node: null | Element,
+  display: null | string,
+  attributes: null | Array<string>,
+  html: null | string,
+  // The ref callbacks of the stub, made when it first renders.
+  remember: null | ((node: null | Element) => void),
+  restore: null | ((node: null | Element) => void),
+};
+
+function getStubbedRef(
+  saved: StubbedNodeHolder,
+  restore: boolean,
+): (node: null | Element) => void {
+  let ref = restore ? saved.restore : saved.remember;
+  if (ref === null) {
+    ref = (restore ? restoreStubbedNode : rememberStubbedNode).bind(
+      null,
+      saved,
+    );
+    if (restore) {
+      saved.restore = ref;
+    } else {
+      saved.remember = ref;
+    }
+  }
+  return ref;
+}
+
+function snapshotStubbedNode(saved: StubbedNodeHolder): void {
+  const node = saved.node;
+  if (node === null) {
+    return;
+  }
+  const attributes: Array<string> = [];
+  const list = node.attributes;
+  for (let i = 0; i < list.length; i++) {
+    attributes.push(list[i].name, list[i].value);
+  }
+  saved.attributes = attributes;
+  saved.html = node.innerHTML;
+  saved.node = null;
+  if (stubbedMarkers !== null) {
+    // The index holds only DOM that no stub has used, not a detached node.
+    stubbedMarkers.delete(stubbedMarkerKey(saved));
+  }
+}
+
+function rememberStubbedNode(
+  saved: StubbedNodeHolder,
+  node: null | Element,
+): void {
+  if (node === null) {
+    snapshotStubbedNode(saved);
+    return;
+  }
+  saved.node = node;
+  if (saved.html !== null) {
+    // The ref of a node that was hidden by an Activity is attached again when
+    // it is shown. React restores `display` from the style prop then, and the
+    // stub has no props of its own, so put back what the server rendered.
+    restoreStubbedDisplay(saved, node);
+  } else if (saved.display === null) {
+    // Adopted while hydrating, so this is the server's inline display.
+    // Not every element has an inline style (MathML in some environments).
+    // Reading `style` makes the browser create the declaration object, which
+    // costs on every stub, so look at the attribute first.
+    const style = node.hasAttribute('style') ? (node as any).style : null;
+    const inline = style == null ? '' : style.display;
+    if (typeof inline === 'string' && inline !== '') {
+      saved.display = inline;
+    }
+  }
+}
+
+// React never renders inline event handlers, so one on the old node was added
+// by something else after hydration and must not be carried over.
+function setStubbedAttribute(node: Element, name: string, value: string) {
+  if (
+    name.length > 2 &&
+    (name[0] === 'o' || name[0] === 'O') &&
+    (name[1] === 'n' || name[1] === 'N')
+  ) {
+    return;
+  }
+  node.setAttribute(name, value);
+}
+
+// Copies the attributes and content of the node this stub had before onto
+// the element React just created for it. The content is moved, or copied if
+// the old node is still in the document.
+function restoreStubbedNode(
+  saved: StubbedNodeHolder,
+  node: null | Element,
+): void {
+  if (node === null) {
+    snapshotStubbedNode(saved);
+    return;
+  }
+  const from = saved.node;
+  saved.node = node;
+  if (from === node) {
+    return;
+  }
+  if (from === null) {
+    // Rebuild from the snapshot taken when the old node was detached.
+    const attributes = saved.attributes;
+    if (attributes !== null) {
+      for (let i = 0; i < attributes.length; i += 2) {
+        setStubbedAttribute(node, attributes[i], attributes[i + 1]);
+      }
+    }
+    if (saved.html !== null) {
+      node.innerHTML = saved.html;
+    }
+    restoreStubbedDisplay(saved, node);
+    return;
+  }
+  const attributes = from.attributes;
+  for (let i = 0; i < attributes.length; i++) {
+    setStubbedAttribute(node, attributes[i].name, attributes[i].value);
+  }
+  restoreStubbedDisplay(saved, node);
+  if (from.isConnected) {
+    let child = from.firstChild;
+    while (child != null) {
+      node.appendChild(child.cloneNode(true));
+      child = child.nextSibling;
+    }
+  } else {
+    let child = from.firstChild;
+    while (child != null) {
+      node.appendChild(child);
+      child = from.firstChild;
+    }
+  }
+}
+
+// The old node may have been detached while a hidden Activity had set
+// display: none on it. Put back the display the server rendered.
+function restoreStubbedDisplay(saved: StubbedNodeHolder, node: Element): void {
+  const style = (node as any).style;
+  if (style == null) {
+    return;
+  }
+  if (saved.display !== null) {
+    style.setProperty('display', saved.display);
+  } else {
+    style.removeProperty('display');
+  }
+}
+
+// Called when a stub has to render without server HTML. The first call asks
+// the framework (the onMissingHTML option) to render the full,
+// non-stubbed payload. Without that option the page can't get the content
+// back, so it reports an error instead. Either way the stubs stay suspended.
+function recoverStubbedContent(
+  response: Response,
+  tag: string,
+): Promise<mixed> {
+  if (!response._closed) {
+    // A late row for this stub can still arrive. They are the last rows of
+    // the stream, so look again when it ends.
+    let end = response._stubbedEnd;
+    if (end === null) {
+      let resolve: () => void = noop;
+      const promise = new Promise<void>(r => {
+        resolve = r;
+      });
+      end = response._stubbedEnd = {promise, resolve};
+    }
+    return end.promise;
+  }
+  let pending = response._stubbedRecovery;
+  if (pending === null) {
+    pending = response._stubbedRecovery = new Promise(noop);
+    const onMissingHTML = response._onMissingHTML;
+    // Not during render: the framework will update the root.
+    Promise.resolve().then(
+      onMissingHTML !== null
+        ? onMissingHTML
+        : () =>
+            reportUncaughtError(
+              // eslint-disable-next-line react-internal/prod-error-codes
+              new Error(
+                'Static content that the server left out of this payload ' +
+                  'is needed on the client (for example a <' +
+                  tag +
+                  '>), but there is no server HTML to adopt it from. This ' +
+                  'happens when content passed as children mounts after ' +
+                  'hydration (a modal or a client-only wrapper), or when a ' +
+                  'boundary is client rendered after a server error or a ' +
+                  'hydration mismatch. Pass onMissingHTML to ' +
+                  'createFromReadableStream or createFromFetch and use it ' +
+                  'to render the full payload.',
+              ),
+            ),
+    );
+  }
+  return pending;
+}
+
+function noop(): void {}
+
+function endStubbedRows(response: Response): void {
+  if (response._stubbedRequestId !== 0) {
+    indexStubbedMarkers();
+  }
+  const end = response._stubbedEnd;
+  if (end !== null) {
+    end.resolve();
+  }
+}
+
+// The row of a stubbed element, if the server sent it after all. This never
+// creates a chunk: nothing else refers to the id, so one only exists once its
+// row arrived.
+function getLateStubbedRow(response: Response, id: number): null | React$Node {
+  const chunk = response._chunks.get(id);
+  if (chunk === undefined) {
+    return null;
+  }
+  return createLazyChunkWrapper(chunk, 0) as any;
+}
+
+// Rendered in place of the stub by the tee's reader (the one that renders
+// HTML), in the slot StaticStub takes in the browser. It is a lazy node: Fizz
+// resolves it only when it renders that position, which records that the HTML
+// contains this row. The server sends the rows that were never rendered to the
+// browser once the HTML render is done. A lazy node costs far less than a
+// component render per row.
+type StubbedRenderedPayload = {
+  $$typeof: symbol,
+  entry: StubbedRowsEntry,
+  id: number,
+};
+
+function initStubbedRendered(payload: StubbedRenderedPayload): any {
+  payload.entry.rendered.add(payload.id);
+  return payload.entry.rows.get(payload.id);
+}
+
+function createStubbedRenderedElement(
+  entry: StubbedRowsEntry,
+  id: number,
+): any {
+  const payload: StubbedRenderedPayload = {
+    $$typeof: REACT_STUBBED_RENDERED_TYPE,
+    entry,
+    id,
+  };
+  return {
+    $$typeof: REACT_LAZY_TYPE,
+    _payload: payload,
+    _init: initStubbedRendered,
+  };
+}
+
+// A framework can decode the same payload more than once (Next.js decodes part
+// of the initial payload again for its client cache). The stubs of every
+// decode share the node that hydration adopted, keyed by the payload's `:P` id
+// and the row id. The holders of a payload live in one group, which the map
+// holds weakly, so the nodes live only as long as some decoded payload still
+// references one of its stubs. The key is dropped once its group is collected,
+// so the map does not grow with every payload.
+type StubbedHolderGroup = {
+  requestId: number,
+  holders: Map<number, StubbedNodeHolder>,
+};
+
+const stubbedHolderGroups: Map<number, any> = new Map();
+
+function dropStubbedHolderGroup(requestId: number): void {
+  const ref = stubbedHolderGroups.get(requestId);
+  if (ref !== undefined && ref.deref() === undefined) {
+    stubbedHolderGroups.delete(requestId);
+  }
+}
+
+const stubbedHolderCleanup: null | FinalizationRegistry<number> =
+  // $FlowFixMe[cannot-resolve-name]
+  typeof FinalizationRegistry === 'function'
+    ? // $FlowFixMe[cannot-resolve-name]
+      new FinalizationRegistry(dropStubbedHolderGroup)
+    : null;
+
+function createStubbedNodeHolder(
+  group: null | StubbedHolderGroup,
+  requestId: number,
+  id: number,
+): StubbedNodeHolder {
+  return {
+    group,
+    requestId,
+    id,
+    node: null,
+    display: null,
+    attributes: null,
+    html: null,
+    remember: null,
+    restore: null,
+  };
+}
+
+function getStubbedNodeHolder(
+  response: Response,
+  id: number,
+): StubbedNodeHolder {
+  const requestId = response._stubbedRequestId;
+  // Only a document adopts nodes; a server would only accumulate keys.
+  if (
+    requestId === 0 ||
+    !canUseDOM ||
+    typeof WeakRef !== 'function' ||
+    stubbedHolderCleanup === null
+  ) {
+    return createStubbedNodeHolder(null, 0, id);
+  }
+  let group = response._stubbedHolders;
+  if (group === null || group.requestId !== requestId) {
+    const ref = stubbedHolderGroups.get(requestId);
+    const existing: void | StubbedHolderGroup =
+      ref !== undefined ? ref.deref() : undefined;
+    if (existing === undefined) {
+      group = {requestId, holders: new Map()};
+      // $FlowFixMe[cannot-resolve-name]
+      stubbedHolderGroups.set(requestId, new WeakRef(group));
+      stubbedHolderCleanup.register(group, requestId);
+    } else {
+      group = existing;
+    }
+    response._stubbedHolders = group;
+  }
+  let holder = group.holders.get(id);
+  if (holder === undefined) {
+    holder = createStubbedNodeHolder(group, requestId, id);
+    group.holders.set(id, holder);
+  }
+  return holder;
+}
+
+function createStaticStubElement(
+  response: Response,
+  id: number,
+  tag: string,
+  key: null | string,
+): React$Element<any> {
+  const saved = getStubbedNodeHolder(response, id);
+  const props: any = {tag, response, id, saved};
+  if (key !== null) {
+    props.key = key;
+  }
+  const element: any = React.createElement(StaticStub, props);
+  if (__DEV__) {
+    // Stubbed elements keep their key if they had one, don't warn about it in lists.
+    element._store.validated = 1;
+  }
+  return element;
+}
+
 function parseModelString(
   response: Response,
   parentObject: Object,
@@ -3013,6 +3577,37 @@ function parseModelString(
       case '$': {
         // This was an escaped string value.
         return value.slice(1);
+      }
+      case 'J': {
+        if (enableFlightHTMLFirst) {
+          // Stubbed host element: "$J<rowId>:<tag>[:<key>]". See StaticStub below.
+          const colon = value.indexOf(':');
+          const keyColon = value.indexOf(':', colon + 1);
+          const ref = value.slice(2, colon);
+          const id = parseInt(ref, 16);
+          const stubKey = keyColon === -1 ? null : value.slice(keyColon + 1);
+          const entry = response._stubbedEntry;
+          if (entry !== null) {
+            // This reader renders the HTML and has the element by value. The
+            // browser keeps a stub even when the row arrived late, so one slot
+            // never holds a stub and a real element for different rows (tabs
+            // swapping unkeyed children).
+            return createStubbedRenderedElement(entry, id);
+          }
+          return createStaticStubElement(
+            response,
+            id,
+            value.slice(colon + 1, keyColon === -1 ? value.length : keyColon),
+            stubKey,
+          );
+        }
+        // The server stubbed an element but this client was built without
+        // support. Never parse the id as a lazy reference to an unrelated row.
+        // eslint-disable-next-line react-internal/prod-error-codes
+        throw new Error(
+          'Received a stubbed host element but enableFlightHTMLFirst is ' +
+            'off in this client. The server and client builds must match.',
+        );
       }
       case 'L': {
         // Lazy node
@@ -3363,6 +3958,12 @@ function ResponseInstance(
   this._encodeFormAction = encodeFormAction;
   this._nonce = nonce;
   this._chunks = chunks;
+  this._stubbedEntry = null;
+  this._stubbedRequestId = 0;
+  this._stubbedEnd = null;
+  this._onMissingHTML = null;
+  this._stubbedRecovery = null;
+  this._stubbedHolders = null;
   // Preserve a leading U+FEFF instead of consuming it as an encoding signature.
   this._stringDecoder = createStringDecoder(true);
   this._closed = false;
@@ -5619,6 +6220,14 @@ function processFullStringRow(
       resolveHint(response, code, row.slice(1));
       return;
     }
+    case 80 /* "P" */: {
+      // enableFlightHTMLFirst: the id of the payload, see
+      // getStubbedNodeHolder.
+      if (enableFlightHTMLFirst) {
+        response._stubbedRequestId = parseInt(row, 16);
+      }
+      return;
+    }
     case 69 /* "E" */: {
       resolveErrorModel(response, id, row, streamState);
       return;
@@ -6138,6 +6747,9 @@ export function close(weakResponse: WeakResponse): void {
   if (response._allowPartialStream) {
     // For partial streams, we halt pending chunks instead of erroring them.
     response._closed = true;
+    if (enableFlightHTMLFirst) {
+      endStubbedRows(response);
+    }
     response._chunks.forEach((chunk, id) => {
       if (
         chunk.status === PENDING ||

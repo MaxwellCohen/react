@@ -122,6 +122,13 @@ export const enableDefaultTransitionIndicator = __EXPERIMENTAL__;
 
 export const enableOptimisticKey = __EXPERIMENTAL__;
 
+// HTML-first Flight. When on, static host markup that a Server Component
+// renders in host position (including inside Suspense children) is left out of
+// the payload inlined for the browser and adopted from the SSR HTML on
+// hydration. A render opts in with the `htmlFirst` option and hands the
+// stubbed elements to the tee that reads it for SSR (enableFlightTee).
+export const enableFlightHTMLFirst: boolean = false;
+
 /**
  * Switches Fiber creation to a simple object instead of a constructor.
  */

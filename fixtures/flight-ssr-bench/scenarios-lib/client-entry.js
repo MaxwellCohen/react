@@ -1,0 +1,83 @@
+// Browser entry for scenarios: hydrates `document` from the inlined Flight data
+// (self.__FLIGHT_DATA) like e2e/entry-client.js, and exposes __navigate.
+import {use, startTransition, useEffect} from 'react';
+import {hydrateRoot} from 'react-dom/client';
+import {
+  createFromReadableStream,
+  createFromFetch,
+} from 'react-server-dom-webpack/client.browser';
+import 'scenario-registry';
+
+window.__webpack_chunk_load__ = () => Promise.resolve();
+
+function Shell({response}) {
+  const tree = use(response);
+  useEffect(() => {
+    if (window.__hydratedAt === undefined) {
+      window.__hydratedAt = performance.now();
+      // End of the hydration cost window (scenarios-hydration.js): this passive
+      // effect runs after all child effects, and the post-hydration re-render of
+      // stubs (useSyncExternalStore snapshot switch) is flushed with it; two
+      // macrotask turns later nothing React scheduled by then is pending.
+      setTimeout(() => {
+        setTimeout(() => {
+          window.__hydrateEnd = performance.now();
+          performance.mark('hydrate-end');
+        }, 0);
+      }, 0);
+    }
+  }, []);
+  return tree;
+}
+
+const encoder = new TextEncoder();
+const flightStream = new ReadableStream({
+  start(controller) {
+    const push = chunk => controller.enqueue(encoder.encode(chunk));
+    (self.__FLIGHT_DATA || []).forEach(push);
+    self.__FLIGHT_DATA = {push};
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => controller.close());
+    } else {
+      controller.close();
+    }
+  },
+});
+
+let root;
+function start() {
+  window.__hydrateStart = performance.now();
+  performance.mark('hydrate-start');
+  root = hydrateRoot(
+    document,
+    <Shell
+      response={createFromReadableStream(flightStream, {
+        // A boundary or the root client-rendered where static HTML was stubbed:
+        // re-render from the full payload, like a navigation to the same URL.
+        onMissingHTML() {
+          const [, v, id] = location.pathname.split('/');
+          window.__stubbedRecoveries = (window.__stubbedRecoveries || 0) + 1;
+          root.render(
+            <Shell response={createFromFetch(fetch('/' + v + '/rsc/' + id))} />
+          );
+        },
+      })}
+    />,
+    {
+      onRecoverableError(e) {
+        (window.__recoverable ||= []).push(String(e && e.message));
+      },
+    }
+  );
+}
+// scenarios-hydration.js: hydrate after the first paint, so that paint is not in the measured window.
+if (window.__SCN_AFTER_PAINT)
+  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(start)));
+else start();
+window.__navigate = url =>
+  new Promise(resolve => {
+    startTransition(() => {
+      root.render(<Shell response={createFromFetch(fetch(url))} />);
+    });
+    setTimeout(resolve, 0);
+  });
